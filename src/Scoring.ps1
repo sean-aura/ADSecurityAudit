@@ -139,6 +139,11 @@ $Script:ADFindingMetadataMap = @{
     'Certificate Template Does Not Require RA Signatures'               = @{ Mitre = 'T1649'; Anssi = 'vuln2_adcs_ra_signature'; Weight = 20 }
     'Overly Permissive CA Permissions (ESC7)'                          = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_esc7';        Weight = 40 }
     'Low-Privilege CA Management Rights'                               = @{ Mitre = 'T1649'; Anssi = 'vuln2_adcs_ca_mgmt';     Weight = 20 }
+    'Certificate Template with Weak ACL (ESC4)'                        = @{ Mitre = 'T1649'; Anssi = 'vuln2_adcs_esc4';        Weight = 20 }
+    'Certificate Template Allows High-Risk Enrollment Without Manager Approval' = @{ Mitre = 'T1649'; Anssi = 'vuln2_adcs_no_approval'; Weight = 20 }
+    'CA Web Enrollment over HTTP (ESC8)'                               = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_esc8';        Weight = 40 }
+    'ROCA-Vulnerable Certificate Key'                                  = @{ Mitre = 'T1649'; Anssi = 'vuln2_adcs_roca';        Weight = 20 }
+    'Weak Signature Algorithm in PKI Trust Store'                      = @{ Mitre = 'T1649'; Anssi = 'vuln3_adcs_weak_signature'; Weight = 10 }
 
     # --- Kerberos Security (KRBTGT) ---
     'KRBTGT Password Age Exceeds Recommended Threshold'   = @{ Mitre = 'T1558.001'; Anssi = 'vuln1_krbtgt_age';              Weight = 40 }

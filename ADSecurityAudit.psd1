@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.6.0'
+    ModuleVersion = '1.7.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -19,6 +19,7 @@
         'Test-ADDangerousPermissions',
         'Get-ADPrivilegedUsers',
         'Test-ADCertificateServices',
+        'Test-ADCSExtended',
         'Test-KRBTGTAccount',
         'Test-ADDomainTrusts',
         'Test-LAPSDeployment',
@@ -47,6 +48,12 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.7.0 - AD CS Beyond ESC1/2/3/7 (ESC4, ESC8, ROCA, Weak PKI Crypto)
+- Added Test-ADCSExtended: ESC4 (dangerous template ACLs granting Write/WriteDacl/WriteOwner/GenericAll/GenericWrite to low-privileged principals), a high-risk-without-approval check (enrollee-supplied subject/SAN or Any-Purpose EKU with no manager-approval gate, distinct from the existing ESC1/ESC2 checks), ESC8 (CA web enrollment reachable over HTTP without Extended Protection for Authentication), and a ROCA (CVE-2017-15361) / weak-signature-algorithm / weak-RSA-modulus sweep of the CA certificates and the NTAuth/AIA/Root store.
+- Detection only: reads template/CA attributes, ACLs, and already-published certificate bytes; ESC8's only live-network step is a read-only remote check of the CA host's web-enrollment configuration. Never requests, forges, or relays a certificate, and sends no coercion/PoC traffic.
+- Snapshot-aware where the data allows it: template/CA enumeration and the approval-gate and CA-certificate weak-crypto checks read from Snapshot.ADCS (unchanged snapshot schema). ESC4's per-template ACL read, the ESC8 CA-host probe, and the NTAuth/AIA/Root store sweep are live-only and are skipped entirely when run from a snapshot (-FromSnapshot performs no live AD/network access), consistent with Test-ADCoercionAndRelayExposure and the anonymous-bind probe in Test-ADDomainHardeningFlags.
+- Registered in Invoke-ADRuleSet and Start-ADSecurityAudit's live test set; tagged in the central Scoring.ps1 mapping table (PingCastle parity: A-CertEnrollHttp, A-CertTempNoSecurity, A-CertTempAnyPurpose, A-CertTempAnyone, A-CertTempCustomSubject, A-CertROCA, A-CertWeakRsaComponent, A-MD5RootCert, A-SHA1RootCert).
+
 v1.6.0 - Coercion & NTLM Relay Exposure
 - Added Test-ADCoercionAndRelayExposure: audits each Domain Controller for the configuration that enables coerce-then-relay attacks - Print Spooler running (PrinterBug), WebClient running (WebDAV coercion), NTDS LDAPServerIntegrity not requiring signing, and LdapEnforceChannelBinding not requiring Extended Protection for Authentication (EPA).
 - Detection only: reads service and NTDS registry state per DC (remote registry / Invoke-Command); never sends a coercion trigger, never relays, and performs no exploitation or PoC traffic.

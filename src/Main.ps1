@@ -168,6 +168,7 @@ function Start-ADSecurityAudit {
             'DomainSecurity' = { Test-ADDomainSecurity }
             'DangerousPermissions' = { Test-ADDangerousPermissions }
             'CertificateServices' = { Test-ADCertificateServices }
+            'ADCSExtended' = { Test-ADCSExtended }
             'KRBTGTAccount' = { Test-KRBTGTAccount -MaxPasswordAgeDays 180 }
             'DomainTrusts' = { Test-ADDomainTrusts }
             'LAPSDeployment' = { Test-LAPSDeployment }

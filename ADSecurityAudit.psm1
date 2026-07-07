@@ -9,7 +9,7 @@
 
 .NOTES
     Author: AlchemicalChef
-    Version: 1.5.0
+    Version: 1.7.0
     Requires: Active Directory PowerShell Module, Windows Server 2016+
 
 .EXAMPLE
@@ -34,6 +34,7 @@ $moduleScripts = @(
     'src/PermissionsAudits.ps1',
     'src/PrivilegedUsers.ps1',
     'src/CertificateServicesAudits.ps1',
+    'src/CertificateServicesExtendedAudits.ps1',
     'src/KrbtgtAudits.ps1',
     'src/DomainTrustAudits.ps1',
     'src/LapsAudits.ps1',
@@ -68,6 +69,7 @@ Export-ModuleMember -Function @(
     'Test-ADDangerousPermissions',
     'Get-ADPrivilegedUsers',
     'Test-ADCertificateServices',
+    'Test-ADCSExtended',
     'Test-KRBTGTAccount',
     'Test-ADDomainTrusts',
     'Test-LAPSDeployment',

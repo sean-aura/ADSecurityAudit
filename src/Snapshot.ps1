@@ -42,6 +42,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'DomainSecurity'           = 'Test-ADDomainSecurity'
     'DangerousPermissions'     = 'Test-ADDangerousPermissions'
     'CertificateServices'      = 'Test-ADCertificateServices'
+    'ADCSExtended'             = 'Test-ADCSExtended'
     'KRBTGTAccount'            = 'Test-KRBTGTAccount'
     'DomainTrusts'             = 'Test-ADDomainTrusts'
     'LAPSDeployment'           = 'Test-LAPSDeployment'
