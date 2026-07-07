@@ -48,6 +48,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'AuditPolicyConfiguration' = 'Test-AuditPolicyConfiguration'
     'ConstrainedDelegation'    = 'Test-ConstrainedDelegation'
     'DomainAdminEquivalence'   = 'Test-ADDomainAdminEquivalence'
+    'MachineAccountQuota'      = 'Test-ADMachineAccountQuota'
 }
 
 function ConvertTo-ADHashtable {
@@ -148,7 +149,8 @@ function Get-ADSnapshot {
         via Start-ADSecurityAudit -FromSnapshot.
     .OUTPUTS
         [hashtable] with keys: CollectedDate, Domain, DomainControllers,
-        Users, Computers, Groups, GPOs, ACLs, ADCS, DnsZones, Trusts.
+        Users, Computers, Groups, GPOs, ACLs, ADCS, DnsZones, Trusts,
+        MachineAccountQuota.
     #>
     [CmdletBinding()]
     param(
@@ -170,6 +172,7 @@ function Get-ADSnapshot {
         ADCS              = @{}
         DnsZones          = @()
         Trusts            = @()
+        MachineAccountQuota = $null
     }
 
     # --- Domain + DC inventory ---
@@ -189,6 +192,24 @@ function Get-ADSnapshot {
     }
     catch {
         Write-Warning "Get-ADSnapshot: failed to collect domain controllers: $_"
+    }
+
+    # --- Machine Account Quota (ms-DS-MachineAccountQuota on domain root) ---
+    # Get-ADDomain does not expose this attribute directly, so it's read via
+    # a separate Get-ADObject call against the domain root DN.
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting ms-DS-MachineAccountQuota..."
+        $domainForMaq = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -ErrorAction Stop }
+        $maqObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject ms-DS-MachineAccountQuota (snapshot)' -Query {
+            Get-ADObject -Identity $domainForMaq.DistinguishedName -Properties 'ms-DS-MachineAccountQuota' -ErrorAction Stop
+        }
+        if ($maqObject) {
+            $snapshot.MachineAccountQuota = $maqObject.'ms-DS-MachineAccountQuota'
+        }
+        Write-Verbose "Get-ADSnapshot: ms-DS-MachineAccountQuota = $($snapshot.MachineAccountQuota)"
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect ms-DS-MachineAccountQuota: $_"
     }
 
     # --- Users (paged) ---

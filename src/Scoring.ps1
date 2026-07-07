@@ -56,6 +56,7 @@ $Script:MitreTechniqueNames = @{
     'T1098'      = 'Account Manipulation'
     'T1110'      = 'Brute Force'
     'T1134.005'  = 'Access Token Manipulation: SID-History Injection'
+    'T1136.002'  = 'Create Account: Domain Account'
     'T1210'      = 'Exploitation of Remote Services'
     'T1482'      = 'Domain Trust Discovery'
     'T1484.001'  = 'Domain Policy Modification: Group Policy Modification'
@@ -168,6 +169,10 @@ $Script:ADFindingMetadataMap = @{
     'Privileged SID in History'                          = @{ Mitre = 'T1134.005'; Anssi = 'vuln1_privileged_sid_history';    Weight = 40 }
     'Legacy Logon Script Defined'                        = @{ Mitre = 'T1037';     Anssi = 'vuln4_legacy_logon_script';      Weight = 4  }
     'Domain Admin Equivalent Access Detected'            = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_da_equivalent_access';      Weight = 20 }
+
+    # --- Machine Account Quota ---
+    'Default Machine Account Quota Not Restricted'       = @{ Mitre = 'T1136.002'; Anssi = 'vuln2_maq_default';              Weight = 20 }
+    'Non-Zero Machine Account Quota'                     = @{ Mitre = 'T1136.002'; Anssi = 'vuln3_maq_nonzero';              Weight = 10 }
 }
 
 function Get-ADFindingMetadataMap {
