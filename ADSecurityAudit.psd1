@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.14.0'
+    ModuleVersion = '1.15.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -36,6 +36,7 @@
         'Test-ADGpoDeployedSecrets',
         'Test-ADKnownDCVulnerabilities',
         'Test-ADExchangeEscalation',
+        'Test-ADRodcSecurity',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -55,6 +56,13 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.15.0 - Read-Only Domain Controller Security Posture
+- Added Test-ADRodcSecurity: audits Read-Only Domain Controller configuration - Tier-0/privileged principals present in msDS-RevealedUsers (already cached) or the msDS-RevealOnDemandGroup allowed list (cross-referenced against Get-ADTier0Principal), password replication policy gaps (an allowed list that is too broad or a denied list missing expected privileged groups, via msDS-NeverRevealGroup), and orphaned RODC-specific krbtgt_* accounts left behind after an RODC was demoted/removed.
+- Detection only: every determination is a read of RODC computer-object attributes (msDS-RevealedUsers, msDS-RevealOnDemandGroup, msDS-NeverRevealGroup) and a krbtgt_* account inventory cross-referenced against current RODC computer objects. No exploitation, coercion, relay, ticket forging, or PoC traffic is ever sent to any host.
+- Clean exit when the domain has no RODCs.
+- Snapshot-aware: accepts an optional -Snapshot parameter, falling back to live Get-ADDomainController/Get-ADObject reads when not supplied.
+- Registered in Start-ADSecurityAudit's live test set and the offline rule registry; tagged in the central Scoring.ps1 mapping table (PingCastle parity: P-RODCAdminRevealed, P-RODCAllowedGroup, P-RODCDeniedGroup, P-RODCNeverReveal, P-RODCRevealOnDemand, P-RODCKrbtgtOrphan, P-RODCSYSVOLWrite).
+
 v1.14.0 - Exchange-in-AD Privilege Escalation (Exchange Windows Permissions / WriteDACL)
 - Added Test-ADExchangeEscalation: flags Exchange security groups (Exchange Windows Permissions, Exchange Trusted Subsystem, Exchange Servers, Exchange Enterprise Servers, Organization Management) holding GenericAll/WriteDacl/WriteOwner on the domain head object (PrivExchange-style escalation to DCSync), and the same principals holding those rights on AdminSDHolder. Fires on RESIDUAL ACEs even when Exchange has been fully decommissioned from the forest, since the ACE is not cleaned up automatically.
 - Detection only: every determination is a read of nTSecurityDescriptor.Access on the domain head and CN=AdminSDHolder,CN=System,<domain>. No PrivExchange push-subscription request, NTLM relay, or any other exploitation/coercion/PoC traffic is ever sent to any host.

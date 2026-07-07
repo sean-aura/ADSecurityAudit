@@ -185,6 +185,7 @@ function Start-ADSecurityAudit {
             'GpoDeployedSecrets' = { Test-ADGpoDeployedSecrets }
             'KnownDCVulnerabilities' = { Test-ADKnownDCVulnerabilities }
             'ExchangeEscalation' = { Test-ADExchangeEscalation }
+            'RodcSecurity' = { Test-ADRodcSecurity }
         }
         
         # Determine which tests to run

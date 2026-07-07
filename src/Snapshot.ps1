@@ -59,6 +59,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'GpoDeployedSecrets'       = 'Test-ADGpoDeployedSecrets'
     'KnownDCVulnerabilities'   = 'Test-ADKnownDCVulnerabilities'
     'ExchangeEscalation'       = 'Test-ADExchangeEscalation'
+    'RodcSecurity'             = 'Test-ADRodcSecurity'
 }
 
 function ConvertTo-ADHashtable {

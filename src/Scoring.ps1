@@ -238,6 +238,11 @@ $Script:ADFindingMetadataMap = @{
     # --- Exchange-in-AD Privilege Escalation (Exchange Windows Permissions / WriteDACL) ---
     'Exchange Group Holds WriteDACL on Domain Object'     = @{ Mitre = 'T1098';     Anssi = 'vuln1_exchange_domain_writedacl'; Weight = 40 }
     'Exchange-Related AdminSDHolder ACE'                  = @{ Mitre = 'T1098';     Anssi = 'vuln2_exchange_adminsdholder_ace'; Weight = 20 }
+
+    # --- Read-Only Domain Controller Security Posture ---
+    'Privileged Account Revealed to RODC'                 = @{ Mitre = 'T1003';     Anssi = 'vuln1_rodc_privileged_revealed'; Weight = 40 }
+    'RODC Password Replication Policy Misconfigured'      = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_rodc_prp_misconfigured';   Weight = 20 }
+    'Orphaned RODC krbtgt Account'                        = @{ Mitre = 'T1078.002'; Anssi = 'vuln3_rodc_krbtgt_orphan';       Weight = 10 }
 }
 
 function Get-ADFindingMetadataMap {
