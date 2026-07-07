@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.5.0'
+    ModuleVersion = '1.6.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -27,6 +27,7 @@
         'Test-ADDomainAdminEquivalence',
         'Test-ADMachineAccountQuota',
         'Test-ADDomainHardeningFlags',
+        'Test-ADCoercionAndRelayExposure',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -46,6 +47,12 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.6.0 - Coercion & NTLM Relay Exposure
+- Added Test-ADCoercionAndRelayExposure: audits each Domain Controller for the configuration that enables coerce-then-relay attacks - Print Spooler running (PrinterBug), WebClient running (WebDAV coercion), NTDS LDAPServerIntegrity not requiring signing, and LdapEnforceChannelBinding not requiring Extended Protection for Authentication (EPA).
+- Detection only: reads service and NTDS registry state per DC (remote registry / Invoke-Command); never sends a coercion trigger, never relays, and performs no exploitation or PoC traffic.
+- Live per-DC probes are skipped entirely when run from a snapshot (-FromSnapshot performs no live AD/network access), consistent with the anonymous-bind probe in Test-ADDomainHardeningFlags; the DC list itself is still read from the snapshot when supplied.
+- Registered in Invoke-ADRuleSet and Start-ADSecurityAudit's live test set; tagged in the central Scoring.ps1 mapping table (PingCastle parity: A-DC-Coerce, A-DC-Spooler, A-DC-WebClient, A-DCLdapSign, A-DCLdapsChannelBinding).
+
 v1.5.0 - Domain Hardening Flags
 - Added Test-ADDomainHardeningFlags: audits dSHeuristics for dangerous positional flags (anonymous access, List Object security mode, AdminSDHolder exclusion mask weakening), flags broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group, and performs a strictly read-only anonymous LDAP/RootDSE bind probe (success is the finding; refusal is secure).
 - Snapshot-aware for dSHeuristics and Pre-Windows 2000 membership: Get-ADSnapshot now also collects DsHeuristics and PreWin2000Members. The anonymous-bind probe is a live network operation and is skipped when running from a snapshot (-FromSnapshot performs no live AD/network access).

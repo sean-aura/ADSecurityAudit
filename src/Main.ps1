@@ -176,6 +176,7 @@ function Start-ADSecurityAudit {
             'DomainAdminEquivalence' = { Test-ADDomainAdminEquivalence }
             'MachineAccountQuota' = { Test-ADMachineAccountQuota }
             'DomainHardeningFlags' = { Test-ADDomainHardeningFlags }
+            'CoercionAndRelayExposure' = { Test-ADCoercionAndRelayExposure }
         }
         
         # Determine which tests to run

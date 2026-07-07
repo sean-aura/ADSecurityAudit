@@ -42,6 +42,7 @@ $moduleScripts = @(
     'src/DomainAdminEquivalence.ps1',
     'src/MachineAccountQuotaAudits.ps1',
     'src/DomainHardeningAudits.ps1',
+    'src/CoercionRelayAudits.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
 )
@@ -75,6 +76,7 @@ Export-ModuleMember -Function @(
     'Test-ADDomainAdminEquivalence',
     'Test-ADMachineAccountQuota',
     'Test-ADDomainHardeningFlags',
+    'Test-ADCoercionAndRelayExposure',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',

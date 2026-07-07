@@ -50,6 +50,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'DomainAdminEquivalence'   = 'Test-ADDomainAdminEquivalence'
     'MachineAccountQuota'      = 'Test-ADMachineAccountQuota'
     'DomainHardeningFlags'     = 'Test-ADDomainHardeningFlags'
+    'CoercionAndRelayExposure' = 'Test-ADCoercionAndRelayExposure'
 }
 
 function ConvertTo-ADHashtable {

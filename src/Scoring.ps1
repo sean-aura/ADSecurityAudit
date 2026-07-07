@@ -58,11 +58,13 @@ $Script:MitreTechniqueNames = @{
     'T1110'      = 'Brute Force'
     'T1134.005'  = 'Access Token Manipulation: SID-History Injection'
     'T1136.002'  = 'Create Account: Domain Account'
+    'T1187'      = 'Forced Authentication'
     'T1210'      = 'Exploitation of Remote Services'
     'T1482'      = 'Domain Trust Discovery'
     'T1484.001'  = 'Domain Policy Modification: Group Policy Modification'
     'T1485'      = 'Data Destruction'
     'T1556'      = 'Modify Authentication Process'
+    'T1557.001'  = 'Adversary-in-the-Middle: LLMNR/NBT-NS Poisoning and SMB Relay'
     'T1558'      = 'Steal or Forge Kerberos Tickets'
     'T1558.001'  = 'Steal or Forge Kerberos Tickets: Golden Ticket'
     'T1558.002'  = 'Steal or Forge Kerberos Tickets: Silver Ticket'
@@ -179,6 +181,12 @@ $Script:ADFindingMetadataMap = @{
     'Dangerous dsHeuristics Flag Set'                    = @{ Mitre = 'T1556';     Anssi = 'vuln2_dsheuristics_dangerous';  Weight = 20 }
     'Broad Membership in Pre-Windows 2000 Compatible Access' = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_prewin2000_broad';    Weight = 20 }
     'Anonymous LDAP / RootDSE Binding Permitted'         = @{ Mitre = 'T1087.002'; Anssi = 'vuln3_anonymous_bind';          Weight = 10 }
+
+    # --- Coercion & NTLM Relay Exposure ---
+    'Print Spooler Running on Domain Controller'         = @{ Mitre = 'T1187';     Anssi = 'vuln1_dc_spooler_running';      Weight = 40 }
+    'WebClient Service Enabled on Domain Controller'     = @{ Mitre = 'T1187';     Anssi = 'vuln1_dc_webclient_running';    Weight = 40 }
+    'LDAP Signing Not Enforced on Domain Controller'     = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_ldap_signing_not_enforced'; Weight = 40 }
+    'LDAP Channel Binding Not Enforced'                  = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_ldap_channel_binding_not_enforced'; Weight = 40 }
 }
 
 function Get-ADFindingMetadataMap {

@@ -28,6 +28,7 @@ The repository also includes a responsive web dashboard (in `ui/`) that visualiz
 - **Collect-Once Snapshot & Offline Mode**: `Get-ADSnapshot` performs a single paged collection pass reused across checks, and `Start-ADSecurityAudit -FromSnapshot` re-runs the full audit offline with no live AD access
 - **Machine Account Quota**: Audits `ms-DS-MachineAccountQuota` on the domain root and flags the unmodified default of 10 or any other non-zero value that lets authenticated users self-service-join computer accounts, a common foothold for RBCD relay and SamAccountName-spoofing privilege escalation
 - **Domain Hardening Flags**: Positionally parses the `dSHeuristics` attribute for dangerous settings (anonymous access, List Object security mode, AdminSDHolder exclusion mask weakening), flags broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group, and performs a strictly read-only anonymous LDAP/RootDSE bind probe
+- **Coercion & NTLM Relay Exposure**: Checks every Domain Controller for the configuration that enables coerce-then-relay attacks - Print Spooler (PrinterBug) or WebClient (WebDAV) running, LDAP signing not enforced, and LDAP channel binding (EPA) not required
 
 ## Requirements
 
@@ -101,7 +102,7 @@ All tagging flows from a **single source-of-truth mapping table** in `src/Scorin
 As of v1.3.0, AD collection is decoupled from rule evaluation:
 
 - **`Get-ADSnapshot [-ToJson <path>]`** performs one paged, read-only collection pass over users, computers, groups, GPOs (+ permissions), ACLs on key objects (AdminSDHolder, domain root, certificate templates container), AD CS configuration, DNS zones, domain trusts, DC inventory, and the domain's `ms-DS-MachineAccountQuota` attribute, returning a single structured snapshot. Pass `-ToJson` to also persist it to disk for later offline re-analysis.
-- **`Invoke-ADRuleSet -Snapshot $snapshot`** dispatches the `Test-*` audit functions against that snapshot. Before passing `-Snapshot` to a function it checks whether that function actually declares the parameter (`(Get-Command $fn).Parameters.ContainsKey('Snapshot')`); functions that haven't been retrofitted yet are simply invoked live instead of erroring. Audit modules are being retrofitted with an optional `-Snapshot` parameter gradually (currently `Test-ADUserSecurity`, `Test-KRBTGTAccount`, `Test-ADMachineAccountQuota`, and `Test-ADDomainHardeningFlags` (dSHeuristics and Pre-Windows 2000 membership only - its anonymous-bind check is a live network probe and is skipped in offline mode)); this list will grow across future releases.
+- **`Invoke-ADRuleSet -Snapshot $snapshot`** dispatches the `Test-*` audit functions against that snapshot. Before passing `-Snapshot` to a function it checks whether that function actually declares the parameter (`(Get-Command $fn).Parameters.ContainsKey('Snapshot')`); functions that haven't been retrofitted yet are simply invoked live instead of erroring. Audit modules are being retrofitted with an optional `-Snapshot` parameter gradually (currently `Test-ADUserSecurity`, `Test-KRBTGTAccount`, `Test-ADMachineAccountQuota`, `Test-ADDomainHardeningFlags` (dSHeuristics and Pre-Windows 2000 membership only - its anonymous-bind check is a live network probe and is skipped in offline mode), and `Test-ADCoercionAndRelayExposure` (its Spooler/WebClient/LDAP-registry checks are live per-DC network probes and are skipped entirely in offline mode; only the DC list is taken from the snapshot)); this list will grow across future releases.
 - **`Start-ADSecurityAudit -FromSnapshot <path>`** re-runs the full audit offline against a previously saved snapshot - no live AD access is performed - and produces the same JSON/HTML/CSV report and risk score as a live run.
 - **`Get-ADTier0Principal [-Snapshot $snapshot]`** returns the shared privileged/Tier-0 principal set (recursive membership of the protected groups) used across detection modules; it can be derived from a snapshot or from live AD.
 
@@ -203,6 +204,12 @@ Each finding includes:
 - Dangerous `dSHeuristics` positional flags: anonymous access, List Object security mode, or AdminSDHolder exclusion mask weakening
 - Broad principals (Authenticated Users, Everyone, ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group
 - Anonymous LDAP/RootDSE binding permitted (a null-session indicator)
+
+### Coercion & NTLM Relay Exposure
+- Print Spooler service running on a Domain Controller (PrinterBug coercion surface)
+- WebClient (WebDAV) service running on a Domain Controller (WebDAV coercion surface)
+- LDAP signing not enforced (`LDAPServerIntegrity` not set to require signing)
+- LDAP channel binding / Extended Protection for Authentication not required (`LdapEnforceChannelBinding` not set to `2`)
 
 ### Monitoring & Logging
 - Disabled audit policies for critical events
@@ -309,7 +316,20 @@ Always:
 
 ## Version History
 
-### v1.3.0 (Current)
+### v1.6.0 (Current)
+- Added `Test-ADCoercionAndRelayExposure`: audits every Domain Controller for the configuration that enables coerce-then-relay attacks - Print Spooler running (PrinterBug), WebClient running (WebDAV coercion), NTDS `LDAPServerIntegrity` not requiring signing, and `LdapEnforceChannelBinding` not requiring Extended Protection for Authentication (EPA)
+- Detection only: reads service and NTDS registry state per DC; never sends a coercion trigger, never relays, and performs no exploitation or PoC traffic
+- Live per-DC probes are skipped entirely when run from a snapshot (`-FromSnapshot` performs no live AD/network access); the DC list itself is still read from the snapshot when supplied
+
+### v1.5.0
+- Added `Test-ADDomainHardeningFlags`: positionally parses `dSHeuristics` for dangerous settings (anonymous access, List Object security mode, AdminSDHolder exclusion mask weakening), flags broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group, and performs a strictly read-only anonymous LDAP/RootDSE bind probe
+- `Get-ADSnapshot` now also collects `DsHeuristics` and `PreWin2000Members`; the dsHeuristics and Pre-Windows 2000 checks are snapshot-aware, while the anonymous-bind probe (a live network operation) is skipped when running from a snapshot
+
+### v1.4.0
+- Added `Test-ADMachineAccountQuota`: flags `ms-DS-MachineAccountQuota` left at the unmodified default of 10 (High) or any other non-zero value (Medium), which lets any authenticated user self-service-join computer accounts - a common foothold for RBCD relay and SamAccountName-spoofing privilege escalation
+- `Get-ADSnapshot` now also collects `ms-DS-MachineAccountQuota`; the new check is snapshot-aware
+
+### v1.3.0
 - Added `Get-ADSnapshot`: a single paged, read-only collection pass (users, computers, groups, GPOs, ACLs on key objects, AD CS config, DNS zones, trusts, DC inventory) with `-ToJson` for serialisation
 - Added `Invoke-ADRuleSet -Snapshot`: dispatches `Test-*` functions against a snapshot, defensively passing `-Snapshot` only to functions that declare it so snapshot-unaware modules are called live and never error
 - Added `Start-ADSecurityAudit -FromSnapshot <path>` for offline re-analysis (no live AD access), reproducing the same JSON/HTML/CSV report and risk score
