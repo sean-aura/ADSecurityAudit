@@ -9,7 +9,7 @@
 
 .NOTES
     Author: AlchemicalChef
-    Version: 1.7.0
+    Version: 1.8.0
     Requires: Active Directory PowerShell Module, Windows Server 2016+
 
 .EXAMPLE
@@ -20,6 +20,17 @@
 #Requires -RunAsAdministrator
 
 $script:ModuleRoot = $PSScriptRoot
+
+# Single source of truth for the module version used at runtime (e.g. in the
+# HTML report footer). Read from the manifest instead of being hardcoded a
+# second time, so the two can never drift out of sync again.
+try {
+    $script:ModuleVersion = (Import-PowerShellDataFile -Path (Join-Path $script:ModuleRoot 'ADSecurityAudit.psd1')).ModuleVersion
+}
+catch {
+    Write-Verbose "Could not read ModuleVersion from manifest: $_"
+    $script:ModuleVersion = 'Unknown'
+}
 
 $moduleScripts = @(
     'src/Common.ps1',
@@ -44,6 +55,7 @@ $moduleScripts = @(
     'src/MachineAccountQuotaAudits.ps1',
     'src/DomainHardeningAudits.ps1',
     'src/CoercionRelayAudits.ps1',
+    'src/DnsSecurityAudits.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
 )
@@ -79,6 +91,7 @@ Export-ModuleMember -Function @(
     'Test-ADMachineAccountQuota',
     'Test-ADDomainHardeningFlags',
     'Test-ADCoercionAndRelayExposure',
+    'Test-ADDnsSecurity',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',

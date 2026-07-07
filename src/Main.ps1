@@ -178,6 +178,7 @@ function Start-ADSecurityAudit {
             'MachineAccountQuota' = { Test-ADMachineAccountQuota }
             'DomainHardeningFlags' = { Test-ADDomainHardeningFlags }
             'CoercionAndRelayExposure' = { Test-ADCoercionAndRelayExposure }
+            'DnsSecurity' = { Test-ADDnsSecurity }
         }
         
         # Determine which tests to run

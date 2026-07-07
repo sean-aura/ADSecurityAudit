@@ -64,6 +64,7 @@ $Script:MitreTechniqueNames = @{
     'T1484.001'  = 'Domain Policy Modification: Group Policy Modification'
     'T1485'      = 'Data Destruction'
     'T1556'      = 'Modify Authentication Process'
+    'T1557'      = 'Adversary-in-the-Middle'
     'T1557.001'  = 'Adversary-in-the-Middle: LLMNR/NBT-NS Poisoning and SMB Relay'
     'T1558'      = 'Steal or Forge Kerberos Tickets'
     'T1558.001'  = 'Steal or Forge Kerberos Tickets: Golden Ticket'
@@ -71,6 +72,8 @@ $Script:MitreTechniqueNames = @{
     'T1558.003'  = 'Steal or Forge Kerberos Tickets: Kerberoasting'
     'T1558.004'  = 'Steal or Forge Kerberos Tickets: AS-REP Roasting'
     'T1562.002'  = 'Impair Defenses: Disable Windows Event Logging'
+    'T1574.002'  = 'Hijack Execution Flow: DLL Side-Loading'
+    'T1590.002'  = 'Gather Victim Network Information: DNS'
     'T1649'      = 'Steal or Forge Authentication Certificates'
 }
 
@@ -192,6 +195,12 @@ $Script:ADFindingMetadataMap = @{
     'WebClient Service Enabled on Domain Controller'     = @{ Mitre = 'T1187';     Anssi = 'vuln1_dc_webclient_running';    Weight = 40 }
     'LDAP Signing Not Enforced on Domain Controller'     = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_ldap_signing_not_enforced'; Weight = 40 }
     'LDAP Channel Binding Not Enforced'                  = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_ldap_channel_binding_not_enforced'; Weight = 40 }
+
+    # --- DNS Security (AD-integrated DNS) ---
+    'Non-Default Members in DnsAdmins'                        = @{ Mitre = 'T1574.002'; Anssi = 'vuln1_dnsadmins_members';        Weight = 40 }
+    'DNS Zone Transfer Allowed'                               = @{ Mitre = 'T1590.002'; Anssi = 'vuln3_dns_zone_transfer';        Weight = 10 }
+    'Insecure Dynamic DNS Updates Enabled'                    = @{ Mitre = 'T1557';     Anssi = 'vuln3_dns_insecure_updates';     Weight = 10 }
+    'Authenticated Users Can Create Child Objects in DNS Zone' = @{ Mitre = 'T1557';    Anssi = 'vuln2_dns_adidns_createchild';   Weight = 20 }
 }
 
 function Get-ADFindingMetadataMap {

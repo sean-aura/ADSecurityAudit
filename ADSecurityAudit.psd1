@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.7.0'
+    ModuleVersion = '1.8.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -29,6 +29,7 @@
         'Test-ADMachineAccountQuota',
         'Test-ADDomainHardeningFlags',
         'Test-ADCoercionAndRelayExposure',
+        'Test-ADDnsSecurity',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -48,6 +49,13 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.8.0 - AD-Integrated DNS Security (DnsAdmins, Zone Transfer, Insecure Updates, ADIDNS)
+- Added Test-ADDnsSecurity: audits DnsAdmins group membership (a well-known Domain-Controller code-execution path via the DNS server's ServerLevelPluginDll mechanism), zone transfer exposure (transfers to any server or any NS-listed server, rather than an explicit secondary list), insecure (nonsecure) dynamic DNS updates, and overly broad CreateChild rights on AD-integrated zone objects granted to Authenticated Users/Everyone/ANONYMOUS LOGON (ADIDNS spoofing/MITM surface).
+- Detection only: reads DnsAdmins group membership, AD-integrated zone object attributes (dNSProperty) and ACLs (nTSecurityDescriptor), and optionally the read-only Get-DnsServerZone/Get-DnsServerZoneTransfer cmdlets when the DnsServer RSAT module is available, falling back to a best-effort dNSProperty attribute parse otherwise. Never creates, deletes, or modifies a DNS record, zone, or plugin DLL configuration, and performs no exploitation, coercion, relay, or PoC traffic.
+- Snapshot-aware for the DnsAdmins membership check (reads Snapshot.Groups); the zone transfer, dynamic update, and ADIDNS CreateChild checks are live-only (zone-level attributes/ACLs are not part of the current snapshot schema) and are skipped entirely when run from a snapshot (-FromSnapshot performs no live AD/network access), consistent with Test-ADCoercionAndRelayExposure and the anonymous-bind probe in Test-ADDomainHardeningFlags.
+- Registered in Invoke-ADRuleSet and Start-ADSecurityAudit's live test set; tagged in the central Scoring.ps1 mapping table (PingCastle parity: P-DNSAdmin, P-DNSDelegation, A-DnsZoneTransfert, A-DnsZoneUpdate1, A-DnsZoneUpdate2, A-DnsZoneAUCreateChild).
+- Fixed: the HTML report footer's module version string was hardcoded and had drifted out of sync with ModuleVersion since v1.7.0; it is now read from the module manifest at import time so it can no longer go stale.
+
 v1.7.0 - AD CS Beyond ESC1/2/3/7 (ESC4, ESC8, ROCA, Weak PKI Crypto)
 - Added Test-ADCSExtended: ESC4 (dangerous template ACLs granting Write/WriteDacl/WriteOwner/GenericAll/GenericWrite to low-privileged principals), a high-risk-without-approval check (enrollee-supplied subject/SAN or Any-Purpose EKU with no manager-approval gate, distinct from the existing ESC1/ESC2 checks), ESC8 (CA web enrollment reachable over HTTP without Extended Protection for Authentication), and a ROCA (CVE-2017-15361) / weak-signature-algorithm / weak-RSA-modulus sweep of the CA certificates and the NTAuth/AIA/Root store.
 - Detection only: reads template/CA attributes, ACLs, and already-published certificate bytes; ESC8's only live-network step is a read-only remote check of the CA host's web-enrollment configuration. Never requests, forges, or relays a certificate, and sends no coercion/PoC traffic.
