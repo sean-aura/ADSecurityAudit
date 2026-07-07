@@ -63,6 +63,8 @@ $Script:MitreTechniqueNames = @{
     'T1482'      = 'Domain Trust Discovery'
     'T1484.001'  = 'Domain Policy Modification: Group Policy Modification'
     'T1485'      = 'Data Destruction'
+    'T1552.001'  = 'Unsecured Credentials: Credentials In Files'
+    'T1552.006'  = 'Unsecured Credentials: Group Policy Preferences'
     'T1556'      = 'Modify Authentication Process'
     'T1557'      = 'Adversary-in-the-Middle'
     'T1557.001'  = 'Adversary-in-the-Middle: LLMNR/NBT-NS Poisoning and SMB Relay'
@@ -220,6 +222,18 @@ $Script:ADFindingMetadataMap = @{
     'Duplicate Service Principal Names'                   = @{ Mitre = 'T1098';     Anssi = 'vuln3_duplicate_spn';          Weight = 10 }
     'DC Subnet/Site Registration Gap'                     = @{ Mitre = 'T1590.002'; Anssi = 'vuln4_dc_subnet_missing';      Weight = 4  }
     'Insufficient Domain Controller Count'                = @{ Mitre = 'T1485';     Anssi = 'vuln3_insufficient_dc_count';  Weight = 10 }
+
+    # --- GPO-Deployed Secrets & Insecure Settings (GPP cpassword, script credentials) ---
+    'GPP cpassword Found in SYSVOL'                       = @{ Mitre = 'T1552.006'; Anssi = 'vuln1_gpp_cpassword';          Weight = 40 }
+    'Credentials Referenced in Logon/Startup Script'      = @{ Mitre = 'T1552.001'; Anssi = 'vuln2_script_credentials';     Weight = 20 }
+    'Insecure Setting Deployed via GPO'                   = @{ Mitre = 'T1484.001'; Anssi = 'vuln3_gpo_insecure_setting';   Weight = 10 }
+
+    # --- Known DC Vulnerabilities by Patch/Build (MS14-068, MS17-010, ZeroLogon, PrintNightmare, BadSuccessor) ---
+    'DC Missing ZeroLogon Patch'                          = @{ Mitre = 'T1068';     Anssi = 'vuln1_zerologon_unpatched';    Weight = 40 }
+    'DC Vulnerable to MS17-010'                           = @{ Mitre = 'T1210';     Anssi = 'vuln1_ms17010_unpatched';      Weight = 40 }
+    'DC Vulnerable to MS14-068'                           = @{ Mitre = 'T1558.001'; Anssi = 'vuln1_ms14068_unpatched';      Weight = 40 }
+    'PrintNightmare Exposure on DC'                       = @{ Mitre = 'T1068';     Anssi = 'vuln2_printnightmare_exposed'; Weight = 20 }
+    'BadSuccessor / dMSA Escalation Exposure'             = @{ Mitre = 'T1098';     Anssi = 'vuln2_badsuccessor_dmsa';      Weight = 20 }
 }
 
 function Get-ADFindingMetadataMap {

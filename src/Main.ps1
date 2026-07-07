@@ -182,6 +182,8 @@ function Start-ADSecurityAudit {
             'LegacyAuthSurface' = { Test-ADLegacyAuthSurface }
             'KerberosHardening' = { Test-ADKerberosHardening }
             'StaleObjectDepth' = { Test-ADStaleObjectDepth }
+            'GpoDeployedSecrets' = { Test-ADGpoDeployedSecrets }
+            'KnownDCVulnerabilities' = { Test-ADKnownDCVulnerabilities }
         }
         
         # Determine which tests to run

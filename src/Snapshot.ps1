@@ -56,6 +56,8 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'LegacyAuthSurface'        = 'Test-ADLegacyAuthSurface'
     'KerberosHardening'        = 'Test-ADKerberosHardening'
     'StaleObjectDepth'         = 'Test-ADStaleObjectDepth'
+    'GpoDeployedSecrets'       = 'Test-ADGpoDeployedSecrets'
+    'KnownDCVulnerabilities'   = 'Test-ADKnownDCVulnerabilities'
 }
 
 function ConvertTo-ADHashtable {

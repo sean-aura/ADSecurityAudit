@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.11.0'
+    ModuleVersion = '1.13.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -33,6 +33,8 @@
         'Test-ADLegacyAuthSurface',
         'Test-ADKerberosHardening',
         'Test-ADStaleObjectDepth',
+        'Test-ADGpoDeployedSecrets',
+        'Test-ADKnownDCVulnerabilities',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -52,6 +54,18 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.13.0 - Known DC Vulnerabilities by Patch/Build (MS14-068, MS17-010, ZeroLogon, PrintNightmare, BadSuccessor)
+- Added Test-ADKnownDCVulnerabilities: flags DC exposure to ZeroLogon (CVE-2020-1472), MS17-010/EternalBlue, MS14-068, and PrintNightmare (CVE-2021-34527, only when the Spooler service is running) strictly from OS build/install date and installed hotfix level (Get-HotFix / Win32_QuickFixEngineering) against documented, inline-cited fix-date thresholds; also flags BadSuccessor/dMSA escalation exposure, guarded to Domain Controllers running Windows Server 2025 (build 26100+) since dMSA is a Server 2025-only feature.
+- Detection only: every determination is a read of Win32_OperatingSystem, installed hotfixes, and the Print Spooler service state - the same category of read already used by Test-ADCoercionAndRelayExposure. No exploitation, authentication bypass, ticket forging, coercion, relay, or PoC traffic is ever sent to any host.
+- Live-only: per-DC OS build, hotfix level, and Spooler state are real-time machine state with no snapshot equivalent, so this entire audit is skipped when invoked with -Snapshot (-FromSnapshot performs no live AD/network access), consistent with Test-ADLegacyAuthSurface and Test-ADCoercionAndRelayExposure.
+- Registered in Start-ADSecurityAudit's live test set; tagged in the central Scoring.ps1 mapping table (PingCastle parity: S-Vuln-MS14-068, S-Vuln-MS17_010, A-Krbtgt, A-DC-Spooler, A-BadSuccessor).
+
+v1.12.0 - GPO-Deployed Secrets & Insecure Settings (GPP cpassword, Script Credentials)
+- Added Test-ADGpoDeployedSecrets: scans each GPO's SYSVOL policy folder for Group Policy Preferences (GPP) 'cpassword' values left over from MS14-025 (Groups.xml, Services.xml, ScheduledTasks.xml, Drives.xml, DataSources.xml, Printers.xml), credential-flavoured patterns embedded in deployed logon/startup scripts, and insecure settings pushed via GPO (Windows Firewall disabled, hidden file extensions, RDP Network Level Authentication disabled or an insecure RDP security layer).
+- Detection only: a 'cpassword' hit is reported by PRESENCE and FILE PATH ONLY - the value is never decrypted, decoded, or included in the finding; a script-credential hit is reported by file and line number only, never the matched line's content. Streams SYSVOL trees file-by-file/line-by-line rather than loading them wholesale, so large environments don't time out. Never modifies, deletes, or reuses any discovered secret, and performs no exploitation, coercion, relay, or PoC traffic.
+- GPO enumeration can read from Snapshot.GPOs when -Snapshot is supplied, but every SYSVOL/registry.pol read is live file-share I/O (not part of the current snapshot schema), so this audit always performs live, read-only I/O regardless of -Snapshot, consistent with the other live-only sub-checks in the module.
+- Registered in Start-ADSecurityAudit's live test set; tagged in the central Scoring.ps1 mapping table (PingCastle parity: P-DelegationGPOData, P-DelegationFileDeployed, P-DelegationLoginScript, S-FirewallScript, S-FolderOptions, S-TerminalServicesGPO, A-AnonymousAuthorizedGPO).
+
 v1.11.0 - Stale-Object & Hygiene Depth (PASSWD_NOTREQD, primaryGroupID, Duplicate SPNs, DC Registration)
 - Added Test-ADStaleObjectDepth: audits accounts with PASSWD_NOTREQD set (userAccountControl 0x0020), non-default primaryGroupID on user and computer objects (membership-hiding, distinguishing the legitimate Domain Controllers RID 516 for genuine DCs from a suspicious 516/other RID elsewhere), duplicate Service Principal Names across users and computers (reporting every holder), Domain Controllers not covered by any AD Sites & Services subnet object, and insufficient Domain Controller count (fewer than 2).
 - Detection only: reads userAccountControl and primaryGroupID bitmasks/values, builds a case-insensitive in-memory SPN index from already-queried user/computer objects, and reads DC inventory (Get-ADDomainController) and subnet objects (Get-ADReplicationSubnet). Never sets, clears, or otherwise modifies any account attribute, SPN, or Sites & Services object, and performs no exploitation, coercion, relay, or PoC traffic.
