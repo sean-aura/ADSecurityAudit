@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.13.0'
+    ModuleVersion = '1.14.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -35,6 +35,7 @@
         'Test-ADStaleObjectDepth',
         'Test-ADGpoDeployedSecrets',
         'Test-ADKnownDCVulnerabilities',
+        'Test-ADExchangeEscalation',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -54,6 +55,12 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.14.0 - Exchange-in-AD Privilege Escalation (Exchange Windows Permissions / WriteDACL)
+- Added Test-ADExchangeEscalation: flags Exchange security groups (Exchange Windows Permissions, Exchange Trusted Subsystem, Exchange Servers, Exchange Enterprise Servers, Organization Management) holding GenericAll/WriteDacl/WriteOwner on the domain head object (PrivExchange-style escalation to DCSync), and the same principals holding those rights on AdminSDHolder. Fires on RESIDUAL ACEs even when Exchange has been fully decommissioned from the forest, since the ACE is not cleaned up automatically.
+- Detection only: every determination is a read of nTSecurityDescriptor.Access on the domain head and CN=AdminSDHolder,CN=System,<domain>. No PrivExchange push-subscription request, NTLM relay, or any other exploitation/coercion/PoC traffic is ever sent to any host.
+- Snapshot-aware with no schema change: reads from Snapshot.ACLs.DomainRoot / Snapshot.ACLs.AdminSDHolder (both already collected by Get-ADSnapshot since v1.3.0), so -FromSnapshot is fully supported without any collection changes.
+- Registered in Start-ADSecurityAudit's live test set and the offline rule registry; tagged in the central Scoring.ps1 mapping table (PingCastle parity: P-ExchangePrivEsc, P-ExchangeAdminSDHolder).
+
 v1.13.0 - Known DC Vulnerabilities by Patch/Build (MS14-068, MS17-010, ZeroLogon, PrintNightmare, BadSuccessor)
 - Added Test-ADKnownDCVulnerabilities: flags DC exposure to ZeroLogon (CVE-2020-1472), MS17-010/EternalBlue, MS14-068, and PrintNightmare (CVE-2021-34527, only when the Spooler service is running) strictly from OS build/install date and installed hotfix level (Get-HotFix / Win32_QuickFixEngineering) against documented, inline-cited fix-date thresholds; also flags BadSuccessor/dMSA escalation exposure, guarded to Domain Controllers running Windows Server 2025 (build 26100+) since dMSA is a Server 2025-only feature.
 - Detection only: every determination is a read of Win32_OperatingSystem, installed hotfixes, and the Print Spooler service state - the same category of read already used by Test-ADCoercionAndRelayExposure. No exploitation, authentication bypass, ticket forging, coercion, relay, or PoC traffic is ever sent to any host.

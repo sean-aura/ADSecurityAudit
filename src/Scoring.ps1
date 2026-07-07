@@ -234,6 +234,10 @@ $Script:ADFindingMetadataMap = @{
     'DC Vulnerable to MS14-068'                           = @{ Mitre = 'T1558.001'; Anssi = 'vuln1_ms14068_unpatched';      Weight = 40 }
     'PrintNightmare Exposure on DC'                       = @{ Mitre = 'T1068';     Anssi = 'vuln2_printnightmare_exposed'; Weight = 20 }
     'BadSuccessor / dMSA Escalation Exposure'             = @{ Mitre = 'T1098';     Anssi = 'vuln2_badsuccessor_dmsa';      Weight = 20 }
+
+    # --- Exchange-in-AD Privilege Escalation (Exchange Windows Permissions / WriteDACL) ---
+    'Exchange Group Holds WriteDACL on Domain Object'     = @{ Mitre = 'T1098';     Anssi = 'vuln1_exchange_domain_writedacl'; Weight = 40 }
+    'Exchange-Related AdminSDHolder ACE'                  = @{ Mitre = 'T1098';     Anssi = 'vuln2_exchange_adminsdholder_ace'; Weight = 20 }
 }
 
 function Get-ADFindingMetadataMap {

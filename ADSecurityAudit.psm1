@@ -9,7 +9,7 @@
 
 .NOTES
     Author: AlchemicalChef
-    Version: 1.12.0
+    Version: 1.14.0
     Requires: Active Directory PowerShell Module, Windows Server 2016+
 
 .EXAMPLE
@@ -61,6 +61,7 @@ $moduleScripts = @(
     'src/StaleObjectDepthAudits.ps1',
     'src/GpoSecretsAudits.ps1',
     'src/KnownVulnAudits.ps1',
+    'src/ExchangeEscalationAudits.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
 )
@@ -102,6 +103,7 @@ Export-ModuleMember -Function @(
     'Test-ADStaleObjectDepth',
     'Test-ADGpoDeployedSecrets',
     'Test-ADKnownDCVulnerabilities',
+    'Test-ADExchangeEscalation',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',
