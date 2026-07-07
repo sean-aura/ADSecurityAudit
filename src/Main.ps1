@@ -19,7 +19,15 @@ function Start-ADSecurityAudit {
         [string[]]$ExcludeTests = @(),
         
         [Parameter()]
-        [switch]$IncludePrivilegedUsersReport
+        [switch]$IncludePrivilegedUsersReport,
+
+        # Added in v1.3.0 (collect-once snapshot contract, see
+        # docs/features/02-domain-snapshot.md). Path to a JSON snapshot
+        # produced by Get-ADSnapshot -ToJson. When supplied, the audit is
+        # re-run offline against that snapshot via Invoke-ADRuleSet instead
+        # of querying AD live - no live AD access is performed.
+        [Parameter()]
+        [string]$FromSnapshot
     )
     
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -49,6 +57,52 @@ function Start-ADSecurityAudit {
         Write-Host "==================================================" -ForegroundColor Cyan
         Write-Host "Start Time: $startTime`n" -ForegroundColor Gray
         
+        if ($FromSnapshot) {
+            # --- Offline re-analysis path (v1.3.0): no live AD access ---
+            Write-Host "Offline mode: re-analysing snapshot '$FromSnapshot' (no live AD access)`n" -ForegroundColor Cyan
+
+            if (-not (Test-Path $FromSnapshot)) {
+                Write-Error "Snapshot file not found: $FromSnapshot"
+                return
+            }
+
+            try {
+                $rawSnapshot = Get-Content -Path $FromSnapshot -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                $snapshot = ConvertTo-ADHashtable -InputObject $rawSnapshot
+            }
+            catch {
+                Write-Error "Failed to load snapshot from '$FromSnapshot': $_"
+                return
+            }
+
+            $domain = $snapshot.Domain
+            if (-not $domain) {
+                Write-Error "Snapshot '$FromSnapshot' does not contain domain information; cannot proceed."
+                return
+            }
+
+            Write-Host "Domain: $($domain.DNSRoot)" -ForegroundColor Green
+            Write-Host "Domain DN: $($domain.DistinguishedName)`n" -ForegroundColor Green
+            Write-Host "Snapshot collected: $($snapshot.CollectedDate)`n" -ForegroundColor Gray
+
+            # Determine which tests to run (same semantics as live mode).
+            if ($IncludeTests) {
+                $testsToRun = $Script:ADTestFunctionRegistry.Keys | Where-Object { $_ -in $IncludeTests -and $_ -notin $ExcludeTests }
+            }
+            else {
+                $testsToRun = $Script:ADTestFunctionRegistry.Keys | Where-Object { $_ -notin $ExcludeTests }
+            }
+
+            Write-Host "Running $($testsToRun.Count) test(s) via Invoke-ADRuleSet...`n" -ForegroundColor Yellow
+            $allFindings = @(Invoke-ADRuleSet -Snapshot $snapshot -IncludeTests $testsToRun `
+                -InactiveDaysThreshold $InactiveDaysThreshold -PasswordAgeThreshold $PasswordAgeThreshold)
+
+            if ($IncludePrivilegedUsersReport) {
+                Write-Warning "IncludePrivilegedUsersReport requires live AD access and is not available in -FromSnapshot mode; skipping."
+            }
+            $privilegedUsers = $null
+        }
+        else {
         # Verify AD module is available
         if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
             Write-Error "Active Directory PowerShell module is not installed. Please install RSAT tools."
@@ -193,6 +247,7 @@ function Start-ADSecurityAudit {
             catch {
                 Write-Warning "Failed to enumerate privileged users: $_"
             }
+        }
         }
         
         $endTime = Get-Date

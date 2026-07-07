@@ -10,13 +10,41 @@ function Test-ADUserSecurity {
         [int]$InactiveDaysThreshold = 90,
         
         [Parameter()]
-        [int]$PasswordAgeThreshold = 180
+        [int]$PasswordAgeThreshold = 180,
+
+        # Added in v1.3.0 (collect-once snapshot contract, see
+        # docs/features/02-domain-snapshot.md). Optional and backward
+        # compatible: when omitted, this function queries AD live exactly as
+        # before.
+        [Parameter()]
+        [hashtable]$Snapshot
     )
     
     Write-Verbose "Starting user account security audit..."
     $findings = @()
     
     try {
+        if ($Snapshot -and $Snapshot.ContainsKey('Users') -and $Snapshot.Users) {
+            Write-Verbose "Test-ADUserSecurity: using snapshot data."
+            $users = @($Snapshot.Users)
+            if ($SearchBase) {
+                $users = @($users | Where-Object { $_.DistinguishedName -like "*$SearchBase" })
+            }
+
+            # PasswordLastSet/LastLogonDate may come back as [string] after a
+            # JSON round-trip (-ToJson / -FromSnapshot); normalise to
+            # [datetime] so the age-comparison logic below is unaffected.
+            foreach ($u in $users) {
+                foreach ($dateField in @('PasswordLastSet', 'LastLogonDate')) {
+                    $val = $u.$dateField
+                    if ($val -and $val -isnot [datetime]) {
+                        try { $u.$dateField = [datetime]$val }
+                        catch { Write-Verbose "Test-ADUserSecurity: could not parse $dateField '$val' for $($u.SamAccountName)." }
+                    }
+                }
+            }
+        }
+        else {
         $getUserParams = @{
             Filter = '*'
             ErrorAction = 'Stop'
@@ -34,7 +62,8 @@ function Test-ADUserSecurity {
         }
         
         $getUserParams['ResultPageSize'] = 500
-        $users = Get-ADUser @getUserParams
+            $users = Get-ADUser @getUserParams
+        }
 
         Write-Verbose "Analyzing $($users.Count) user accounts..."
 

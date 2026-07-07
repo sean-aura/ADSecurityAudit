@@ -130,6 +130,113 @@ function Invoke-ADQueryWithRetry {
     return $null
 }
 
+# Retrieve the domain's privileged / Tier-0 principal set (users + groups).
+#
+# This is the single shared definition of "Tier-0" used across detection
+# modules (introduced in v1.3.0 alongside Get-ADSnapshot). Later features
+# (Exchange, RODC, graph-based analysis, etc.) should call this instead of
+# re-deriving their own privileged-principal list, so the definition stays
+# consistent everywhere it's used.
+#
+# Detection only: this performs read-only group-membership enumeration
+# (recursive) against $Script:ProtectedGroups. It does not touch or modify
+# any object.
+function Get-ADTier0Principal {
+    <#
+    .SYNOPSIS
+        Returns the set of Tier-0 (privileged) principals for the domain.
+    .DESCRIPTION
+        Recursively expands $Script:ProtectedGroups (Domain Admins, Enterprise
+        Admins, Schema Admins, built-in Administrators, DCs, RODCs, and the
+        other groups the module already treats as privileged) and returns one
+        record per unique principal (user, computer, or group) along with the
+        list of protected groups that grant it privileged status.
+
+        Accepts an optional -Snapshot (as produced by Get-ADSnapshot) so
+        callers can derive the Tier-0 set offline from a prior collection
+        pass instead of re-querying AD live.
+    .PARAMETER Snapshot
+        Optional snapshot hashtable (from Get-ADSnapshot). When supplied and
+        it contains a 'Groups' collection with member data, the Tier-0 set is
+        derived from the snapshot instead of live AD queries.
+    .OUTPUTS
+        PSCustomObject[] with SID, SamAccountName, ObjectClass, DistinguishedName,
+        and PrivilegedGroups (the protected groups this principal belongs to).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [hashtable]$Snapshot
+    )
+
+    Write-Verbose "Resolving Tier-0 principal set..."
+    $tier0 = [System.Collections.ArrayList]::new()
+    $seen = @{}
+
+    if ($Snapshot -and $Snapshot.ContainsKey('Groups') -and $Snapshot.Groups) {
+        Write-Verbose "Get-ADTier0Principal: deriving Tier-0 set from snapshot."
+        foreach ($group in $Snapshot.Groups) {
+            if ($group.Name -notin $Script:ProtectedGroups) { continue }
+            foreach ($memberDN in @($group.Members)) {
+                if (-not $memberDN) { continue }
+                if (-not $seen.ContainsKey($memberDN)) {
+                    $seen[$memberDN] = [System.Collections.ArrayList]::new()
+                    [void]$tier0.Add([PSCustomObject]@{
+                        DistinguishedName = $memberDN
+                        SID               = $null
+                        SamAccountName    = $null
+                        ObjectClass       = $null
+                        PrivilegedGroups  = $seen[$memberDN]
+                    })
+                }
+                [void]$seen[$memberDN].Add($group.Name)
+            }
+        }
+        return @($tier0 | ForEach-Object { $_.PrivilegedGroupsString = ($_.PrivilegedGroups -join '; '); $_ })
+    }
+
+    foreach ($groupName in $Script:ProtectedGroups) {
+        try {
+            $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+        }
+        catch {
+            Write-Verbose "Get-ADTier0Principal: failed to get group '$groupName': $_"
+            continue
+        }
+
+        if (-not $group) { continue }
+
+        $members = $null
+        try {
+            $members = Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+        }
+        catch {
+            Write-Verbose "Get-ADTier0Principal: failed to get members of '$groupName': $_"
+            continue
+        }
+
+        foreach ($member in @($members)) {
+            $key = $member.SID.Value
+            if (-not $key) { $key = $member.DistinguishedName }
+
+            if (-not $seen.ContainsKey($key)) {
+                $seen[$key] = [System.Collections.ArrayList]::new()
+                [void]$tier0.Add([PSCustomObject]@{
+                    DistinguishedName = $member.DistinguishedName
+                    SID               = $member.SID.Value
+                    SamAccountName    = $member.SamAccountName
+                    ObjectClass       = $member.objectClass
+                    PrivilegedGroups  = $seen[$key]
+                })
+            }
+            [void]$seen[$key].Add($groupName)
+        }
+    }
+
+    Write-Verbose "Get-ADTier0Principal: resolved $($tier0.Count) unique Tier-0 principals."
+    return @($tier0 | ForEach-Object { $_.PrivilegedGroupsString = ($_.PrivilegedGroups -join '; '); $_ })
+}
+
 # Sanitize values for CSV export to prevent formula injection
 function ConvertTo-SafeCsvValue {
     [CmdletBinding()]

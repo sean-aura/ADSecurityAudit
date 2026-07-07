@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0]
+### Added
+- `Get-ADSnapshot` collect-once pass with `-ToJson` and `Invoke-ADRuleSet` rule-runner.
+- `Start-ADSecurityAudit -FromSnapshot <path>` offline re-analysis.
+- Shared `Get-ADTier0Principal` privileged-principal helper.
+### Changed
+- Rule-runner invokes audit functions defensively (passes `-Snapshot` only to functions that declare it), so snapshot-unaware modules are unaffected.
+
 ## [1.2.0]
 ### Added
 - Risk score (0–100), per-category sub-scores, and ANSSI-style 1–5 maturity level.

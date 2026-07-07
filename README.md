@@ -25,6 +25,7 @@ The repository also includes a responsive web dashboard (in `ui/`) that visualiz
 - **Audit Policy Configuration**: Verifies critical audit policies are enabled on domain controllers, validates SACL configurations on sensitive objects, and ensures proper security event logging
 - **Constrained Delegation Analysis**: Identifies accounts with constrained delegation, dangerous protocol transition (T2A4D), and resource-based constrained delegation (RBCD) configurations
 - **Risk Scoring, ANSSI Maturity & MITRE ATT&CK Tagging**: Rolls findings up into a 0-100 risk score with per-category sub-scores, a 1-5 ANSSI-style maturity level, and MITRE ATT&CK technique tagging, all driven by a single source-of-truth mapping table (`Get-ADRiskScore`, `Set-ADFindingMetadata`)
+- **Collect-Once Snapshot & Offline Mode**: `Get-ADSnapshot` performs a single paged collection pass reused across checks, and `Start-ADSecurityAudit -FromSnapshot` re-runs the full audit offline with no live AD access
 
 ## Requirements
 
@@ -66,6 +67,12 @@ Customize the audit with additional parameters:
 
 Start-ADSecurityAudit -OutputPath "C:\ADReports" -Verbose
 
+### Offline / Snapshot-Based Audit
+Collect once, analyze later or elsewhere, with no live AD access at analysis time:
+
+Get-ADSnapshot -ToJson "C:\Snapshots\contoso.json"
+Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso.json" -ExportPath "C:\ADReports"
+
 
 ### Output Formats
 The script generates these report formats:
@@ -86,6 +93,25 @@ As of v1.2.0 every audit run produces an executive roll-up on top of the raw fin
 All tagging flows from a **single source-of-truth mapping table** in `src/Scoring.ps1` (`Issue → MITRE technique → ANSSI control → weight`). To extend coverage for a new check, add one entry there keyed by the finding's exact `Issue` string; `Set-ADFindingMetadata` and `Get-ADRiskScore` pick it up automatically. The output schema is **additive-only**: new finding fields and CSV columns are appended, never reordered or removed.
 
 > Note: MITRE technique IDs are authoritative; the ANSSI control identifiers follow ANSSI/PingCastle maturity conventions and should be reviewed against the current official ANSSI Active Directory control catalogue before use in formal compliance reporting.
+
+## Collect-Once Snapshot & Offline Analysis
+
+As of v1.3.0, AD collection is decoupled from rule evaluation:
+
+- **`Get-ADSnapshot [-ToJson <path>]`** performs one paged, read-only collection pass over users, computers, groups, GPOs (+ permissions), ACLs on key objects (AdminSDHolder, domain root, certificate templates container), AD CS configuration, DNS zones, domain trusts, and DC inventory, returning a single structured snapshot. Pass `-ToJson` to also persist it to disk for later offline re-analysis.
+- **`Invoke-ADRuleSet -Snapshot $snapshot`** dispatches the `Test-*` audit functions against that snapshot. Before passing `-Snapshot` to a function it checks whether that function actually declares the parameter (`(Get-Command $fn).Parameters.ContainsKey('Snapshot')`); functions that haven't been retrofitted yet are simply invoked live instead of erroring. Audit modules are being retrofitted with an optional `-Snapshot` parameter gradually (currently `Test-ADUserSecurity` and `Test-KRBTGTAccount`); this list will grow across future releases.
+- **`Start-ADSecurityAudit -FromSnapshot <path>`** re-runs the full audit offline against a previously saved snapshot - no live AD access is performed - and produces the same JSON/HTML/CSV report and risk score as a live run.
+- **`Get-ADTier0Principal [-Snapshot $snapshot]`** returns the shared privileged/Tier-0 principal set (recursive membership of the protected groups) used across detection modules; it can be derived from a snapshot or from live AD.
+
+```powershell
+# Collect once, on the DC or a management host with AD access:
+Get-ADSnapshot -ToJson "C:\Snapshots\contoso_2026-07-07.json" -Verbose
+
+# Later, anywhere, without AD access:
+Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso_2026-07-07.json" -ExportPath "C:\ADReports"
+```
+
+New audit modules going forward should accept an optional `[hashtable]$Snapshot` parameter and read from it when supplied, falling back to live queries when it's not - keeping every module runnable both live and offline.
 
 ### Visual dashboard
 
@@ -267,7 +293,14 @@ Always:
 
 ## Version History
 
-### v1.2.0 (Current)
+### v1.3.0 (Current)
+- Added `Get-ADSnapshot`: a single paged, read-only collection pass (users, computers, groups, GPOs, ACLs on key objects, AD CS config, DNS zones, trusts, DC inventory) with `-ToJson` for serialisation
+- Added `Invoke-ADRuleSet -Snapshot`: dispatches `Test-*` functions against a snapshot, defensively passing `-Snapshot` only to functions that declare it so snapshot-unaware modules are called live and never error
+- Added `Start-ADSecurityAudit -FromSnapshot <path>` for offline re-analysis (no live AD access), reproducing the same JSON/HTML/CSV report and risk score
+- Added shared `Get-ADTier0Principal` privileged/Tier-0 principal helper for reuse across detection modules
+- Began retrofitting existing audit functions (`Test-ADUserSecurity`, `Test-KRBTGTAccount`) with an optional `-Snapshot` parameter; remaining modules will be retrofitted gradually
+
+### v1.2.0
 - Added risk score (0-100), per-category sub-scores, and an ANSSI-style 1-5 maturity level via `Get-ADRiskScore`
 - Added MITRE ATT&CK technique and ANSSI control tagging on every finding through a central mapping table (`src/Scoring.ps1`) and `Set-ADFindingMetadata`
 - Added additive `MitreTechnique`, `AnssiControl`, and `Weight` fields to `ADSecurityFinding` (output schema is now additive-only / contract-stable)
