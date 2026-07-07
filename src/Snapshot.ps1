@@ -54,6 +54,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'CoercionAndRelayExposure' = 'Test-ADCoercionAndRelayExposure'
     'DnsSecurity'              = 'Test-ADDnsSecurity'
     'LegacyAuthSurface'        = 'Test-ADLegacyAuthSurface'
+    'KerberosHardening'        = 'Test-ADKerberosHardening'
 }
 
 function ConvertTo-ADHashtable {

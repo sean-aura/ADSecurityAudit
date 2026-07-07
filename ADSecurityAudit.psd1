@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.9.0'
+    ModuleVersion = '1.10.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -31,6 +31,7 @@
         'Test-ADCoercionAndRelayExposure',
         'Test-ADDnsSecurity',
         'Test-ADLegacyAuthSurface',
+        'Test-ADKerberosHardening',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -50,6 +51,12 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.10.0 - Kerberos Hardening Depth (AES Enforcement, FAST/Armoring, Cross-Trust TGT Delegation)
+- Added Test-ADKerberosHardening: audits RC4 Kerberos encryption still being permitted (Tier-0 privileged accounts and krbtgt via msDS-SupportedEncryptionTypes, trusts missing TRUST_USES_AES_KEYS, and the domain-wide 'Configure encryption types allowed for Kerberos' GPO/registry policy), Kerberos Armoring (FAST) not enabled (KDC and client EnableCbacAndArmor policy), and cross-trust TGT delegation (trustAttributes CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION).
+- Detection only: reads msDS-SupportedEncryptionTypes bitmasks, GPO-linked registry policy (falling back to a direct per-DC registry read only when no linked GPO defines a setting), and trustAttributes via Get-ADTrust. Never sets, clears, or otherwise modifies any account attribute, policy, or registry value, never forges or requests a Kerberos ticket, and performs no exploitation, coercion, relay, or PoC traffic.
+- Snapshot-aware for the account-level RC4 check (Snapshot.Users + the Tier-0 set) and both trust-level checks (Snapshot.Trusts); the domain-wide encryption-type policy and Kerberos Armoring (FAST) checks are live-only GPO/registry reads and are skipped entirely when run from a snapshot (-FromSnapshot performs no live AD/network access), consistent with Test-ADLegacyAuthSurface and Test-ADCoercionAndRelayExposure.
+- Registered in Invoke-ADRuleSet and Start-ADSecurityAudit's live test set; tagged in the central Scoring.ps1 mapping table (PingCastle parity: S-AesNotEnabled, T-AlgsAES, S-KerberosArmoring, S-KerberosArmoringDC, T-TGTDelegation).
+
 v1.9.0 - Legacy Auth & Name-Poisoning Surface (SMBv1, Signing, LM/NTLMv1, LLMNR, WSUS-HTTP)
 - Added Test-ADLegacyAuthSurface: audits legacy/weak authentication and name-resolution poisoning surface enforced (or left unenforced) via GPO/registry - SMBv1 enabled/not disabled by policy, SMB signing not required, LM/NTLMv1 authentication permitted (LmCompatibilityLevel < 3), LLMNR not disabled by policy, and WSUS delivered over HTTP (package-injection MITM surface).
 - Detection only: reads GPO-linked registry policy values via Get-GPRegistryValue against each linked GPO's registry.pol (Domain Controllers OU first, then domain root), and falls back to a direct per-DC registry read only when no linked GPO defines a setting, so a locally configured (non-policy) value is still caught. Every finding's Details distinguishes a policy-enforced value (naming the source GPO) from one observed via live registry read with no enforcing policy found. Never sets, clears, or otherwise modifies any policy or registry value, and performs no exploitation, coercion, relay, or PoC traffic (e.g. no Responder-style poisoning or SMB relay is ever triggered).

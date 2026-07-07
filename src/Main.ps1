@@ -180,6 +180,7 @@ function Start-ADSecurityAudit {
             'CoercionAndRelayExposure' = { Test-ADCoercionAndRelayExposure }
             'DnsSecurity' = { Test-ADDnsSecurity }
             'LegacyAuthSurface' = { Test-ADLegacyAuthSurface }
+            'KerberosHardening' = { Test-ADKerberosHardening }
         }
         
         # Determine which tests to run

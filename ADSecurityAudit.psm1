@@ -57,6 +57,7 @@ $moduleScripts = @(
     'src/CoercionRelayAudits.ps1',
     'src/DnsSecurityAudits.ps1',
     'src/LegacyAuthAudits.ps1',
+    'src/KerberosHardeningAudits.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
 )
@@ -94,6 +95,7 @@ Export-ModuleMember -Function @(
     'Test-ADCoercionAndRelayExposure',
     'Test-ADDnsSecurity',
     'Test-ADLegacyAuthSurface',
+    'Test-ADKerberosHardening',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',

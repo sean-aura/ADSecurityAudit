@@ -208,6 +208,11 @@ $Script:ADFindingMetadataMap = @{
     'LM/NTLMv1 Authentication Permitted'                  = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_lm_ntlmv1_permitted';     Weight = 40 }
     'LLMNR Not Disabled by Policy'                        = @{ Mitre = 'T1557.001'; Anssi = 'vuln3_llmnr_not_disabled';     Weight = 10 }
     'WSUS Delivered over HTTP'                            = @{ Mitre = 'T1210';     Anssi = 'vuln1_wsus_http';              Weight = 40 }
+
+    # --- Kerberos Hardening Depth (AES enforcement, FAST/armoring, cross-trust TGT delegation) ---
+    'RC4 Kerberos Encryption Still Permitted'             = @{ Mitre = 'T1558.003'; Anssi = 'vuln2_rc4_kerberos_permitted'; Weight = 20 }
+    'Kerberos Armoring (FAST) Not Enabled'                = @{ Mitre = 'T1558';     Anssi = 'vuln2_kerberos_armoring_not_enabled'; Weight = 20 }
+    'Cross-Trust TGT Delegation Enabled'                  = @{ Mitre = 'T1558';     Anssi = 'vuln1_cross_trust_tgt_delegation'; Weight = 40 }
 }
 
 function Get-ADFindingMetadataMap {
