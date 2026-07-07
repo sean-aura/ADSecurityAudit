@@ -31,6 +31,7 @@ The repository also includes a responsive web dashboard (in `ui/`) that visualiz
 - **Coercion & NTLM Relay Exposure**: Checks every Domain Controller for the configuration that enables coerce-then-relay attacks - Print Spooler (PrinterBug) or WebClient (WebDAV) running, LDAP signing not enforced, and LDAP channel binding (EPA) not required
 - **AD CS Extended (ESC4, ESC8, ROCA, Weak PKI Crypto)**: Extends AD CS coverage beyond ESC1/2/3/7 with dangerous template ACLs (ESC4), high-risk templates missing a manager-approval gate, CA web enrollment reachable over HTTP without Extended Protection for Authentication (ESC8), ROCA-vulnerable (CVE-2017-15361) RSA keys, and weak signature algorithms/RSA key sizes across the CA certificates and the NTAuth/AIA/Root store
 - **AD-Integrated DNS Security**: Audits DnsAdmins group membership (a well-known Domain-Controller code-execution path via the DNS server's `ServerLevelPluginDll` mechanism), DNS zone transfer exposure (transfers to any server or any NS-listed server rather than an explicit secondary list), insecure (nonsecure) dynamic DNS updates, and overly broad CreateChild rights on AD-integrated zone objects granted to Authenticated Users/Everyone/ANONYMOUS LOGON (ADIDNS spoofing/MITM surface)
+- **Legacy Auth & Name-Poisoning Surface**: Audits GPO/registry-enforced legacy authentication and name-resolution poisoning surface - SMBv1 enabled/not disabled by policy, SMB signing not required, LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3), LLMNR not disabled by policy, and WSUS delivered over HTTP (package-injection MITM surface) - distinguishing policy-enforced values (naming the source GPO) from unset/local ones
 
 ## Requirements
 
@@ -104,7 +105,7 @@ All tagging flows from a **single source-of-truth mapping table** in `src/Scorin
 As of v1.3.0, AD collection is decoupled from rule evaluation:
 
 - **`Get-ADSnapshot [-ToJson <path>]`** performs one paged, read-only collection pass over users, computers, groups, GPOs (+ permissions), ACLs on key objects (AdminSDHolder, domain root, certificate templates container), AD CS configuration, DNS zones, domain trusts, DC inventory, and the domain's `ms-DS-MachineAccountQuota` attribute, returning a single structured snapshot. Pass `-ToJson` to also persist it to disk for later offline re-analysis.
-- **`Invoke-ADRuleSet -Snapshot $snapshot`** dispatches the `Test-*` audit functions against that snapshot. Before passing `-Snapshot` to a function it checks whether that function actually declares the parameter (`(Get-Command $fn).Parameters.ContainsKey('Snapshot')`); functions that haven't been retrofitted yet are simply invoked live instead of erroring. Audit modules are being retrofitted with an optional `-Snapshot` parameter gradually (currently `Test-ADUserSecurity`, `Test-KRBTGTAccount`, `Test-ADMachineAccountQuota`, `Test-ADDomainHardeningFlags` (dSHeuristics and Pre-Windows 2000 membership only - its anonymous-bind check is a live network probe and is skipped in offline mode), `Test-ADCoercionAndRelayExposure` (its Spooler/WebClient/LDAP-registry checks are live per-DC network probes and are skipped entirely in offline mode; only the DC list is taken from the snapshot), and `Test-ADCSExtended` (template/CA enumeration and the approval-gate/CA-certificate weak-crypto checks read from `Snapshot.ADCS`; the per-template ACL read (ESC4), the CA-host web-enrollment probe (ESC8), and the NTAuth/AIA/Root store sweep are live-only and are skipped entirely in offline mode), and `Test-ADDnsSecurity` (the DnsAdmins membership check reads from `Snapshot.Groups`; the zone transfer, dynamic-update, and ADIDNS CreateChild checks read zone-level attributes/ACLs not present in the current snapshot schema and are skipped entirely in offline mode)); this list will grow across future releases.
+- **`Invoke-ADRuleSet -Snapshot $snapshot`** dispatches the `Test-*` audit functions against that snapshot. Before passing `-Snapshot` to a function it checks whether that function actually declares the parameter (`(Get-Command $fn).Parameters.ContainsKey('Snapshot')`); functions that haven't been retrofitted yet are simply invoked live instead of erroring. Audit modules are being retrofitted with an optional `-Snapshot` parameter gradually (currently `Test-ADUserSecurity`, `Test-KRBTGTAccount`, `Test-ADMachineAccountQuota`, `Test-ADDomainHardeningFlags` (dSHeuristics and Pre-Windows 2000 membership only - its anonymous-bind check is a live network probe and is skipped in offline mode), `Test-ADCoercionAndRelayExposure` (its Spooler/WebClient/LDAP-registry checks are live per-DC network probes and are skipped entirely in offline mode; only the DC list is taken from the snapshot), and `Test-ADCSExtended` (template/CA enumeration and the approval-gate/CA-certificate weak-crypto checks read from `Snapshot.ADCS`; the per-template ACL read (ESC4), the CA-host web-enrollment probe (ESC8), and the NTAuth/AIA/Root store sweep are live-only and are skipped entirely in offline mode), and `Test-ADDnsSecurity` (the DnsAdmins membership check reads from `Snapshot.Groups`; the zone transfer, dynamic-update, and ADIDNS CreateChild checks read zone-level attributes/ACLs not present in the current snapshot schema and are skipped entirely in offline mode)); `Test-ADLegacyAuthSurface` declares an optional `-Snapshot` parameter for registry consistency but is entirely live-only (GPO-linked registry policy state and per-DC registry reads have no snapshot equivalent) and returns no findings when invoked with `-Snapshot`; this list will grow across future releases.
 - **`Start-ADSecurityAudit -FromSnapshot <path>`** re-runs the full audit offline against a previously saved snapshot - no live AD access is performed - and produces the same JSON/HTML/CSV report and risk score as a live run.
 - **`Get-ADTier0Principal [-Snapshot $snapshot]`** returns the shared privileged/Tier-0 principal set (recursive membership of the protected groups) used across detection modules; it can be derived from a snapshot or from live AD.
 
@@ -149,6 +150,10 @@ The audit generates findings across multiple severity levels:
 - ROCA-vulnerable (CVE-2017-15361) certificate keys
 - Non-default membership in the DnsAdmins group (DNS server plugin-DLL code-execution path)
 - AD-integrated DNS zones granting Authenticated Users/Everyone/ANONYMOUS LOGON broad CreateChild rights (ADIDNS spoofing)
+- SMBv1 enabled or not disabled by policy
+- SMB signing not required
+- LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3)
+- WSUS delivered over HTTP (package-injection MITM surface)
 
 ### Medium Findings
 - Nested groups in privileged groups
@@ -161,6 +166,7 @@ The audit generates findings across multiple severity levels:
 - Weak signature algorithms (MD2/MD4/MD5/SHA0/SHA1) or undersized RSA keys in the PKI trust store
 - AD-integrated DNS zones allowing transfer to any server or any NS-listed server
 - AD-integrated DNS zones permitting insecure (nonsecure) dynamic updates
+- LLMNR not disabled by policy
 
 ### Low Findings
 - Informational findings about domain configuration
@@ -231,6 +237,13 @@ Each finding includes:
 - AD-integrated zones configured to allow zone transfer to any server or any server listed as an NS record, instead of an explicit secondary-server list
 - AD-integrated zones permitting nonsecure (unauthenticated) dynamic DNS updates
 - AD-integrated zone objects granting Authenticated Users, Everyone, or ANONYMOUS LOGON the right to create child objects (ADIDNS spoofing/MITM surface)
+
+### Legacy Auth & Name-Poisoning Surface
+- SMBv1 permitted (enabled or not explicitly disabled by policy)
+- SMB signing not required (`RequireSecuritySignature` not enforced)
+- LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3)
+- LLMNR not disabled by policy (no confirmed GPO sets `EnableMulticast` to 0)
+- WSUS delivering updates over unencrypted HTTP (`WUServer` set to an `http://` URL - a known package-injection MITM vector)
 
 ### Monitoring & Logging
 - Disabled audit policies for critical events
@@ -337,7 +350,12 @@ Always:
 
 ## Version History
 
-### v1.8.0 (Current)
+### v1.9.0 (Current)
+- Added `Test-ADLegacyAuthSurface`: audits legacy/weak authentication and name-resolution poisoning surface enforced (or left unenforced) via GPO/registry - SMBv1 enabled/not disabled by policy, SMB signing not required, LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3), LLMNR not disabled by policy, and WSUS delivered over HTTP (package-injection MITM surface)
+- Detection only: reads GPO-linked registry policy values via `Get-GPRegistryValue` against each linked GPO (Domain Controllers OU first, then domain root), falling back to a direct per-DC registry read only when no linked GPO defines a setting. Every finding distinguishes a policy-enforced value (naming the source GPO) from one observed via live registry read with no enforcing policy found. Never modifies any policy or registry value, and performs no exploitation, coercion, relay, or PoC traffic
+- Live-only: declares an optional `-Snapshot` parameter for registration consistency, but GPO-linked registry policy state and per-DC registry reads have no snapshot equivalent, so the audit is skipped entirely (returns no findings) when run from a snapshot
+
+### v1.8.0
 - Added `Test-ADDnsSecurity`: audits DnsAdmins group membership (a well-known Domain-Controller code-execution path via the DNS server's `ServerLevelPluginDll` mechanism), DNS zone transfer exposure (transfers to any server or any NS-listed server), insecure (nonsecure) dynamic DNS updates, and overly broad CreateChild rights on AD-integrated zone objects granted to Authenticated Users/Everyone/ANONYMOUS LOGON (ADIDNS spoofing/MITM surface)
 - Detection only: reads DnsAdmins membership, zone attributes (`dNSProperty`) and ACLs (`nTSecurityDescriptor`), and optionally the read-only `Get-DnsServerZone`/`Get-DnsServerZoneTransfer` cmdlets when available, falling back to a best-effort attribute parse otherwise. Never modifies a DNS record, zone, or plugin-DLL configuration
 - Snapshot-aware for the DnsAdmins membership check (`Snapshot.Groups`); the zone transfer, dynamic-update, and ADIDNS CreateChild checks are live-only and are skipped entirely when run from a snapshot

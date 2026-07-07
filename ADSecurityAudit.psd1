@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.8.0'
+    ModuleVersion = '1.9.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -30,6 +30,7 @@
         'Test-ADDomainHardeningFlags',
         'Test-ADCoercionAndRelayExposure',
         'Test-ADDnsSecurity',
+        'Test-ADLegacyAuthSurface',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -49,6 +50,12 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.9.0 - Legacy Auth & Name-Poisoning Surface (SMBv1, Signing, LM/NTLMv1, LLMNR, WSUS-HTTP)
+- Added Test-ADLegacyAuthSurface: audits legacy/weak authentication and name-resolution poisoning surface enforced (or left unenforced) via GPO/registry - SMBv1 enabled/not disabled by policy, SMB signing not required, LM/NTLMv1 authentication permitted (LmCompatibilityLevel < 3), LLMNR not disabled by policy, and WSUS delivered over HTTP (package-injection MITM surface).
+- Detection only: reads GPO-linked registry policy values via Get-GPRegistryValue against each linked GPO's registry.pol (Domain Controllers OU first, then domain root), and falls back to a direct per-DC registry read only when no linked GPO defines a setting, so a locally configured (non-policy) value is still caught. Every finding's Details distinguishes a policy-enforced value (naming the source GPO) from one observed via live registry read with no enforcing policy found. Never sets, clears, or otherwise modifies any policy or registry value, and performs no exploitation, coercion, relay, or PoC traffic (e.g. no Responder-style poisoning or SMB relay is ever triggered).
+- Live-only: GPO-linked registry policy state and per-DC registry reads are not part of the current snapshot schema, so this entire audit is skipped when run from a snapshot (-FromSnapshot performs no live AD/network access), consistent with Test-ADCoercionAndRelayExposure and the anonymous-bind probe in Test-ADDomainHardeningFlags.
+- Registered in Invoke-ADRuleSet and Start-ADSecurityAudit's live test set; tagged in the central Scoring.ps1 mapping table (PingCastle parity: S-SMB-v1, A-SMB2SignatureNotEnabled, A-SMB2SignatureNotRequired, A-LMHashAuthorized, S-OldNtlm, A-NoGPOLLMNR, S-WSUS-HTTP).
+
 v1.8.0 - AD-Integrated DNS Security (DnsAdmins, Zone Transfer, Insecure Updates, ADIDNS)
 - Added Test-ADDnsSecurity: audits DnsAdmins group membership (a well-known Domain-Controller code-execution path via the DNS server's ServerLevelPluginDll mechanism), zone transfer exposure (transfers to any server or any NS-listed server, rather than an explicit secondary list), insecure (nonsecure) dynamic DNS updates, and overly broad CreateChild rights on AD-integrated zone objects granted to Authenticated Users/Everyone/ANONYMOUS LOGON (ADIDNS spoofing/MITM surface).
 - Detection only: reads DnsAdmins group membership, AD-integrated zone object attributes (dNSProperty) and ACLs (nTSecurityDescriptor), and optionally the read-only Get-DnsServerZone/Get-DnsServerZoneTransfer cmdlets when the DnsServer RSAT module is available, falling back to a best-effort dNSProperty attribute parse otherwise. Never creates, deletes, or modifies a DNS record, zone, or plugin DLL configuration, and performs no exploitation, coercion, relay, or PoC traffic.

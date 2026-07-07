@@ -179,6 +179,7 @@ function Start-ADSecurityAudit {
             'DomainHardeningFlags' = { Test-ADDomainHardeningFlags }
             'CoercionAndRelayExposure' = { Test-ADCoercionAndRelayExposure }
             'DnsSecurity' = { Test-ADDnsSecurity }
+            'LegacyAuthSurface' = { Test-ADLegacyAuthSurface }
         }
         
         # Determine which tests to run

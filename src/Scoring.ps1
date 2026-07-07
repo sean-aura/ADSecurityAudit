@@ -201,6 +201,13 @@ $Script:ADFindingMetadataMap = @{
     'DNS Zone Transfer Allowed'                               = @{ Mitre = 'T1590.002'; Anssi = 'vuln3_dns_zone_transfer';        Weight = 10 }
     'Insecure Dynamic DNS Updates Enabled'                    = @{ Mitre = 'T1557';     Anssi = 'vuln3_dns_insecure_updates';     Weight = 10 }
     'Authenticated Users Can Create Child Objects in DNS Zone' = @{ Mitre = 'T1557';    Anssi = 'vuln2_dns_adidns_createchild';   Weight = 20 }
+
+    # --- Legacy Auth & Name Poisoning (SMBv1, signing, LM/NTLMv1, LLMNR, WSUS-HTTP) ---
+    'SMBv1 Enabled / Not Disabled by Policy'              = @{ Mitre = 'T1210';     Anssi = 'vuln1_smbv1_enabled';          Weight = 40 }
+    'SMB Signing Not Required'                            = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_smb_signing_not_required'; Weight = 40 }
+    'LM/NTLMv1 Authentication Permitted'                  = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_lm_ntlmv1_permitted';     Weight = 40 }
+    'LLMNR Not Disabled by Policy'                        = @{ Mitre = 'T1557.001'; Anssi = 'vuln3_llmnr_not_disabled';     Weight = 10 }
+    'WSUS Delivered over HTTP'                            = @{ Mitre = 'T1210';     Anssi = 'vuln1_wsus_http';              Weight = 40 }
 }
 
 function Get-ADFindingMetadataMap {

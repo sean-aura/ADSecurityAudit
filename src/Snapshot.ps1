@@ -53,6 +53,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'DomainHardeningFlags'     = 'Test-ADDomainHardeningFlags'
     'CoercionAndRelayExposure' = 'Test-ADCoercionAndRelayExposure'
     'DnsSecurity'              = 'Test-ADDnsSecurity'
+    'LegacyAuthSurface'        = 'Test-ADLegacyAuthSurface'
 }
 
 function ConvertTo-ADHashtable {
