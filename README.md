@@ -27,6 +27,7 @@ The repository also includes a responsive web dashboard (in `ui/`) that visualiz
 - **Risk Scoring, ANSSI Maturity & MITRE ATT&CK Tagging**: Rolls findings up into a 0-100 risk score with per-category sub-scores, a 1-5 ANSSI-style maturity level, and MITRE ATT&CK technique tagging, all driven by a single source-of-truth mapping table (`Get-ADRiskScore`, `Set-ADFindingMetadata`)
 - **Collect-Once Snapshot & Offline Mode**: `Get-ADSnapshot` performs a single paged collection pass reused across checks, and `Start-ADSecurityAudit -FromSnapshot` re-runs the full audit offline with no live AD access
 - **Machine Account Quota**: Audits `ms-DS-MachineAccountQuota` on the domain root and flags the unmodified default of 10 or any other non-zero value that lets authenticated users self-service-join computer accounts, a common foothold for RBCD relay and SamAccountName-spoofing privilege escalation
+- **Domain Hardening Flags**: Positionally parses the `dSHeuristics` attribute for dangerous settings (anonymous access, List Object security mode, AdminSDHolder exclusion mask weakening), flags broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group, and performs a strictly read-only anonymous LDAP/RootDSE bind probe
 
 ## Requirements
 
@@ -100,7 +101,7 @@ All tagging flows from a **single source-of-truth mapping table** in `src/Scorin
 As of v1.3.0, AD collection is decoupled from rule evaluation:
 
 - **`Get-ADSnapshot [-ToJson <path>]`** performs one paged, read-only collection pass over users, computers, groups, GPOs (+ permissions), ACLs on key objects (AdminSDHolder, domain root, certificate templates container), AD CS configuration, DNS zones, domain trusts, DC inventory, and the domain's `ms-DS-MachineAccountQuota` attribute, returning a single structured snapshot. Pass `-ToJson` to also persist it to disk for later offline re-analysis.
-- **`Invoke-ADRuleSet -Snapshot $snapshot`** dispatches the `Test-*` audit functions against that snapshot. Before passing `-Snapshot` to a function it checks whether that function actually declares the parameter (`(Get-Command $fn).Parameters.ContainsKey('Snapshot')`); functions that haven't been retrofitted yet are simply invoked live instead of erroring. Audit modules are being retrofitted with an optional `-Snapshot` parameter gradually (currently `Test-ADUserSecurity`, `Test-KRBTGTAccount`, and `Test-ADMachineAccountQuota`); this list will grow across future releases.
+- **`Invoke-ADRuleSet -Snapshot $snapshot`** dispatches the `Test-*` audit functions against that snapshot. Before passing `-Snapshot` to a function it checks whether that function actually declares the parameter (`(Get-Command $fn).Parameters.ContainsKey('Snapshot')`); functions that haven't been retrofitted yet are simply invoked live instead of erroring. Audit modules are being retrofitted with an optional `-Snapshot` parameter gradually (currently `Test-ADUserSecurity`, `Test-KRBTGTAccount`, `Test-ADMachineAccountQuota`, and `Test-ADDomainHardeningFlags` (dSHeuristics and Pre-Windows 2000 membership only - its anonymous-bind check is a live network probe and is skipped in offline mode)); this list will grow across future releases.
 - **`Start-ADSecurityAudit -FromSnapshot <path>`** re-runs the full audit offline against a previously saved snapshot - no live AD access is performed - and produces the same JSON/HTML/CSV report and risk score as a live run.
 - **`Get-ADTier0Principal [-Snapshot $snapshot]`** returns the shared privileged/Tier-0 principal set (recursive membership of the protected groups) used across detection modules; it can be derived from a snapshot or from live AD.
 
@@ -137,6 +138,8 @@ The audit generates findings across multiple severity levels:
 - Disabled critical audit policies
 - Constrained delegation with protocol transition
 - Machine Account Quota left at the unrestricted default of 10
+- Dangerous dsHeuristics flags (anonymous access, List Object mode, AdminSDHolder exclusion mask weakening)
+- Broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in Pre-Windows 2000 Compatible Access
 
 ### Medium Findings
 - Nested groups in privileged groups
@@ -145,6 +148,7 @@ The audit generates findings across multiple severity levels:
 - Low LAPS coverage percentage
 - Resource-based constrained delegation configurations
 - Non-zero (but reduced) Machine Account Quota
+- Anonymous LDAP/RootDSE binding permitted (null-session indicator)
 
 ### Low Findings
 - Informational findings about domain configuration
@@ -194,6 +198,11 @@ Each finding includes:
 ### Machine Account Quota
 - `ms-DS-MachineAccountQuota` left at the unmodified default of 10
 - Any non-zero quota allowing unprivileged users to self-service-join computer accounts (RBCD / SamAccountName-spoofing foothold)
+
+### Domain Hardening Flags
+- Dangerous `dSHeuristics` positional flags: anonymous access, List Object security mode, or AdminSDHolder exclusion mask weakening
+- Broad principals (Authenticated Users, Everyone, ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group
+- Anonymous LDAP/RootDSE binding permitted (a null-session indicator)
 
 ### Monitoring & Logging
 - Disabled audit policies for critical events

@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.4.0'
+    ModuleVersion = '1.5.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -26,6 +26,7 @@
         'Test-ConstrainedDelegation',
         'Test-ADDomainAdminEquivalence',
         'Test-ADMachineAccountQuota',
+        'Test-ADDomainHardeningFlags',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -45,6 +46,11 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.5.0 - Domain Hardening Flags
+- Added Test-ADDomainHardeningFlags: audits dSHeuristics for dangerous positional flags (anonymous access, List Object security mode, AdminSDHolder exclusion mask weakening), flags broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group, and performs a strictly read-only anonymous LDAP/RootDSE bind probe (success is the finding; refusal is secure).
+- Snapshot-aware for dSHeuristics and Pre-Windows 2000 membership: Get-ADSnapshot now also collects DsHeuristics and PreWin2000Members. The anonymous-bind probe is a live network operation and is skipped when running from a snapshot (-FromSnapshot performs no live AD/network access).
+- Registered in Invoke-ADRuleSet and Start-ADSecurityAudit's live test set; tagged in the central Scoring.ps1 mapping table (MITRE T1556, T1078.002, T1087.002).
+
 v1.4.0 - Machine Account Quota
 - Added Test-ADMachineAccountQuota: audits ms-DS-MachineAccountQuota on the domain root, flagging the unmodified default of 10 (High) and any other non-zero value (Medium) that lets authenticated users self-service-join computer accounts, which can be abused for RBCD relay and SamAccountName-spoofing privilege escalation.
 - Snapshot-aware from day one: Get-ADSnapshot now also collects ms-DS-MachineAccountQuota; Test-ADMachineAccountQuota reads it from a supplied -Snapshot or falls back to a live Get-ADObject read.

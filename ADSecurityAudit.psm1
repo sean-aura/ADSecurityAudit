@@ -9,7 +9,7 @@
 
 .NOTES
     Author: AlchemicalChef
-    Version: 1.4.0
+    Version: 1.5.0
     Requires: Active Directory PowerShell Module, Windows Server 2016+
 
 .EXAMPLE
@@ -41,6 +41,7 @@ $moduleScripts = @(
     'src/DelegationAudits.ps1',
     'src/DomainAdminEquivalence.ps1',
     'src/MachineAccountQuotaAudits.ps1',
+    'src/DomainHardeningAudits.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
 )
@@ -73,6 +74,7 @@ Export-ModuleMember -Function @(
     'Test-ConstrainedDelegation',
     'Test-ADDomainAdminEquivalence',
     'Test-ADMachineAccountQuota',
+    'Test-ADDomainHardeningFlags',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',

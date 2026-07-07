@@ -175,6 +175,7 @@ function Start-ADSecurityAudit {
             'ConstrainedDelegation' = { Test-ConstrainedDelegation }
             'DomainAdminEquivalence' = { Test-ADDomainAdminEquivalence }
             'MachineAccountQuota' = { Test-ADMachineAccountQuota }
+            'DomainHardeningFlags' = { Test-ADDomainHardeningFlags }
         }
         
         # Determine which tests to run

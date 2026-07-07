@@ -53,6 +53,7 @@ $Script:MitreTechniqueNames = @{
     'T1037'      = 'Boot or Logon Initialization Scripts'
     'T1078.002'  = 'Valid Accounts: Domain Accounts'
     'T1078.003'  = 'Valid Accounts: Local Accounts'
+    'T1087.002'  = 'Account Discovery: Domain Account'
     'T1098'      = 'Account Manipulation'
     'T1110'      = 'Brute Force'
     'T1134.005'  = 'Access Token Manipulation: SID-History Injection'
@@ -173,6 +174,11 @@ $Script:ADFindingMetadataMap = @{
     # --- Machine Account Quota ---
     'Default Machine Account Quota Not Restricted'       = @{ Mitre = 'T1136.002'; Anssi = 'vuln2_maq_default';              Weight = 20 }
     'Non-Zero Machine Account Quota'                     = @{ Mitre = 'T1136.002'; Anssi = 'vuln3_maq_nonzero';              Weight = 10 }
+
+    # --- Domain Hardening (dsHeuristics, Pre-Win2000, anonymous binding) ---
+    'Dangerous dsHeuristics Flag Set'                    = @{ Mitre = 'T1556';     Anssi = 'vuln2_dsheuristics_dangerous';  Weight = 20 }
+    'Broad Membership in Pre-Windows 2000 Compatible Access' = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_prewin2000_broad';    Weight = 20 }
+    'Anonymous LDAP / RootDSE Binding Permitted'         = @{ Mitre = 'T1087.002'; Anssi = 'vuln3_anonymous_bind';          Weight = 10 }
 }
 
 function Get-ADFindingMetadataMap {

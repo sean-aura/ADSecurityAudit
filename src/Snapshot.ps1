@@ -49,6 +49,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'ConstrainedDelegation'    = 'Test-ConstrainedDelegation'
     'DomainAdminEquivalence'   = 'Test-ADDomainAdminEquivalence'
     'MachineAccountQuota'      = 'Test-ADMachineAccountQuota'
+    'DomainHardeningFlags'     = 'Test-ADDomainHardeningFlags'
 }
 
 function ConvertTo-ADHashtable {
@@ -150,7 +151,8 @@ function Get-ADSnapshot {
     .OUTPUTS
         [hashtable] with keys: CollectedDate, Domain, DomainControllers,
         Users, Computers, Groups, GPOs, ACLs, ADCS, DnsZones, Trusts,
-        MachineAccountQuota.
+        MachineAccountQuota, DsHeuristics, DsHeuristicsDN, PreWin2000GroupDN,
+        PreWin2000Members.
     #>
     [CmdletBinding()]
     param(
@@ -173,6 +175,10 @@ function Get-ADSnapshot {
         DnsZones          = @()
         Trusts            = @()
         MachineAccountQuota = $null
+        DsHeuristics        = $null
+        DsHeuristicsDN      = $null
+        PreWin2000GroupDN   = $null
+        PreWin2000Members   = @()
     }
 
     # --- Domain + DC inventory ---
@@ -210,6 +216,43 @@ function Get-ADSnapshot {
     }
     catch {
         Write-Warning "Get-ADSnapshot: failed to collect ms-DS-MachineAccountQuota: $_"
+    }
+
+    # --- dSHeuristics (Directory Service object in the Configuration NC) ---
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting dSHeuristics..."
+        $configContextForDsh = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+        $dsServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configContextForDsh"
+        $snapshot.DsHeuristicsDN = $dsServiceDN
+        $dsServiceObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject dSHeuristics (snapshot)' -Query {
+            Get-ADObject -Identity $dsServiceDN -Properties dSHeuristics -ErrorAction Stop
+        }
+        if ($dsServiceObject) {
+            $snapshot.DsHeuristics = $dsServiceObject.dSHeuristics
+        }
+        Write-Verbose "Get-ADSnapshot: dSHeuristics = '$($snapshot.DsHeuristics)'"
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect dSHeuristics: $_"
+    }
+
+    # --- Pre-Windows 2000 Compatible Access membership (flattened to DNs) ---
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting Pre-Windows 2000 Compatible Access membership..."
+        $preWin2000Group = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup Pre-Windows 2000 Compatible Access (snapshot)' -Query {
+            Get-ADGroup -Filter "Name -eq 'Pre-Windows 2000 Compatible Access'" -ErrorAction Stop
+        }
+        if ($preWin2000Group) {
+            $snapshot.PreWin2000GroupDN = $preWin2000Group.DistinguishedName
+            $preWin2000Members = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroupMember Pre-Windows 2000 Compatible Access (snapshot)' -Query {
+                Get-ADGroupMember -Identity $preWin2000Group -ErrorAction Stop
+            }
+            $snapshot.PreWin2000Members = @($preWin2000Members | ForEach-Object { $_.DistinguishedName })
+        }
+        Write-Verbose "Get-ADSnapshot: collected $($snapshot.PreWin2000Members.Count) Pre-Windows 2000 Compatible Access member(s)."
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect Pre-Windows 2000 Compatible Access membership: $_"
     }
 
     # --- Users (paged) ---
