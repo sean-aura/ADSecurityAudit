@@ -9,7 +9,7 @@
 
 .NOTES
     Author: AlchemicalChef
-    Version: 1.1.0
+    Version: 1.2.0
     Requires: Active Directory PowerShell Module, Windows Server 2016+
 
 .EXAMPLE
@@ -23,6 +23,7 @@ $script:ModuleRoot = $PSScriptRoot
 
 $moduleScripts = @(
     'src/Common.ps1',
+    'src/Scoring.ps1',
     'src/UserAudits.ps1',
     'src/GroupAudits.ps1',
     'src/AdminSDAudits.ps1',
@@ -69,6 +70,9 @@ Export-ModuleMember -Function @(
     'Test-AuditPolicyConfiguration',
     'Test-ConstrainedDelegation',
     'Test-ADDomainAdminEquivalence',
+    'Get-ADRiskScore',
+    'Set-ADFindingMetadata',
+    'Get-ADFindingMetadataMap',
     'Invoke-ADQueryWithRetry',
     'ConvertTo-SafeCsvValue'
 )

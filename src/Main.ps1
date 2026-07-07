@@ -209,12 +209,28 @@ function Start-ADSecurityAudit {
             Medium = ($allFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
             Low = ($allFindings | Where-Object { $_.Severity -eq 'Low' }).Count
         }
+
+        # Tag every finding with MITRE / ANSSI / Weight from the central mapping
+        # table so findings are born score/MITRE-aware (v1.2.0 contract layer).
+        foreach ($finding in $allFindings) {
+            [void](Set-ADFindingMetadata -Finding $finding)
+        }
+
+        # Compute the risk score, per-category sub-scores, and ANSSI maturity.
+        $riskScore = Get-ADRiskScore -Findings $allFindings
         
         Write-Host "Total Findings: $($allFindings.Count)" -ForegroundColor White
         Write-Host "  Critical: $($summary.Critical)" -ForegroundColor Red
         Write-Host "  High: $($summary.High)" -ForegroundColor DarkRed
         Write-Host "  Medium: $($summary.Medium)" -ForegroundColor Yellow
         Write-Host "  Low: $($summary.Low)" -ForegroundColor Gray
+
+        Write-Host "`nRisk Score: $($riskScore.TotalScore)/100 (higher = worse)" -ForegroundColor White
+        Write-Host "ANSSI Maturity: $($riskScore.MaturityLabel)" -ForegroundColor White
+        if ($riskScore.CategoryScores -and $riskScore.CategoryScores.Count -gt 0) {
+            $worst = $riskScore.CategoryScores[0]
+            Write-Host "Worst Category: $($worst.Category) ($($worst.Score)/100)" -ForegroundColor Gray
+        }
         
         if ($privilegedUsers) {
             Write-Host "`nPrivileged Users: $($privilegedUsers.Count)" -ForegroundColor White
@@ -231,12 +247,14 @@ function Start-ADSecurityAudit {
             
             # Export to HTML
             $htmlPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.html"
-            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers
+            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore
             Write-Host "HTML report exported to: $htmlPath" -ForegroundColor Green
             
             # Export to CSV with formula injection protection
+            # NOTE (output contract): existing columns are never reordered or
+            # removed. New flat fields are APPENDED after DetectedDate.
             $csvPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.csv"
-            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate |
+            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight |
                 ForEach-Object {
                     [PSCustomObject]@{
                         Category = $_.Category | ConvertTo-SafeCsvValue
@@ -247,10 +265,19 @@ function Start-ADSecurityAudit {
                         Impact = $_.Impact | ConvertTo-SafeCsvValue
                         Remediation = $_.Remediation | ConvertTo-SafeCsvValue
                         DetectedDate = $_.DetectedDate
+                        MitreTechnique = $_.MitreTechnique | ConvertTo-SafeCsvValue
+                        AnssiControl = $_.AnssiControl | ConvertTo-SafeCsvValue
+                        Weight = $_.Weight
                     }
                 } |
                 Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
             Write-Host "CSV report exported to: $csvPath" -ForegroundColor Green
+
+            # Export the score / maturity / MITRE roll-up as a sidecar JSON so
+            # the summary does not pollute the per-finding CSV/JSON schema.
+            $scorePath = Join-Path $ExportPath "AD_Security_Score_$timestamp.json"
+            $riskScore | ConvertTo-Json -Depth 6 | Out-File -FilePath $scorePath -Encoding UTF8
+            Write-Host "Score summary exported to: $scorePath" -ForegroundColor Green
         }
         
         # Export privileged users report with formula injection protection

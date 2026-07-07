@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.1.0'
+    ModuleVersion = '1.2.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -25,6 +25,9 @@
         'Test-AuditPolicyConfiguration',
         'Test-ConstrainedDelegation',
         'Test-ADDomainAdminEquivalence',
+        'Get-ADRiskScore',
+        'Set-ADFindingMetadata',
+        'Get-ADFindingMetadataMap',
         'Invoke-ADQueryWithRetry',
         'ConvertTo-SafeCsvValue'
     )
@@ -38,6 +41,12 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.2.0 - Scoring, ANSSI Maturity & MITRE ATT&CK
+- Added 0-100 risk score (higher = worse) with per-category sub-scores and a 1-5 ANSSI-style maturity level (Get-ADRiskScore).
+- Added MITRE ATT&CK technique and ANSSI control tagging on every finding via a central mapping table (src/Scoring.ps1, Set-ADFindingMetadata).
+- Added additive MitreTechnique, AnssiControl, and Weight fields to ADSecurityFinding (output schema is now additive-only / contract-stable).
+- Added score gauge, maturity panel, and MITRE technique summary to the HTML report; appended new CSV columns and a score/maturity sidecar JSON.
+
 v1.1.0 - Reliability & Security Improvements
 - SECURITY: Fixed CSV injection vulnerability in report exports
 - Added Domain Controller failover support for improved reliability

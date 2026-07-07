@@ -17,7 +17,10 @@ function Export-ADSecurityReportHTML {
         [timespan]$Duration,
         
         [Parameter()]
-        [array]$PrivilegedUsers = $null
+        [array]$PrivilegedUsers = $null,
+
+        [Parameter()]
+        [PSCustomObject]$RiskScore = $null
     )
     
     $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -88,6 +91,35 @@ function Export-ADSecurityReportHTML {
         .footer { margin-top: 50px; padding-top: 20px; border-top: 2px solid #ecf0f1; text-align: center; color: #7f8c8d; font-size: 0.9em; }
         .warning-box { background: #fff3cd; border-left: 4px solid #f39c12; padding: 15px; margin: 20px 0; border-radius: 4px; }
         .warning-box p { color: #856404; margin: 5px 0; }
+        .scoring-grid { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); gap: 20px; margin: 20px 0; }
+        @media (max-width: 700px) { .scoring-grid { grid-template-columns: 1fr; } }
+        .score-panel, .maturity-panel { padding: 25px; border-radius: 8px; background: #f8f9fa; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .gauge-wrap { display: flex; align-items: center; justify-content: center; gap: 20px; flex-wrap: wrap; }
+        .gauge { --pct: 0; --col: #95a5a6; width: 160px; height: 160px; border-radius: 50%;
+                 background: radial-gradient(white 58%, transparent 59%),
+                 conic-gradient(var(--col) calc(var(--pct) * 1%), #e6e9ec 0);
+                 display: flex; align-items: center; justify-content: center; }
+        .gauge-inner { text-align: center; }
+        .gauge-inner .num { font-size: 2.6em; font-weight: bold; color: #2c3e50; line-height: 1; }
+        .gauge-inner .of { font-size: 0.9em; color: #7f8c8d; }
+        .score-meta { color: #555; }
+        .score-meta .hint { font-size: 0.85em; color: #7f8c8d; margin-top: 8px; }
+        .maturity-ladder { display: flex; flex-direction: column-reverse; gap: 6px; margin-top: 10px; }
+        .maturity-step { padding: 8px 12px; border-radius: 4px; background: #e6e9ec; color: #7f8c8d; font-size: 0.9em; display: flex; justify-content: space-between; }
+        .maturity-step.reached { background: #d5f5e3; color: #1e8449; font-weight: 600; }
+        .maturity-step.current { background: #2c3e50; color: white; font-weight: 700; }
+        .maturity-head { font-size: 2.2em; font-weight: bold; color: #2c3e50; }
+        .maturity-head small { font-size: 0.45em; color: #7f8c8d; font-weight: normal; }
+        .mitre-table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 0.9em; }
+        .mitre-table th { background: #34495e; color: white; padding: 10px; text-align: left; }
+        .mitre-table td { padding: 8px 10px; border-bottom: 1px solid #ecf0f1; }
+        .mitre-table tr:nth-child(even) { background: #f8f9fa; }
+        .mitre-id { font-family: 'Consolas', monospace; color: #2980b9; font-weight: 600; }
+        .cat-bar-row { display: grid; grid-template-columns: 200px 1fr 50px; align-items: center; gap: 10px; margin: 6px 0; font-size: 0.9em; }
+        .cat-bar-track { background: #e6e9ec; border-radius: 10px; height: 16px; overflow: hidden; }
+        .cat-bar-fill { height: 100%; border-radius: 10px; }
+        .tag-mitre { font-family: 'Consolas', monospace; background: #eaf2f8; color: #2471a3; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; }
+        .tag-anssi { font-family: 'Consolas', monospace; background: #f4ecf7; color: #6c3483; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; }
         @media print { body { background: white; padding: 0; } .container { box-shadow: none; } }
     </style>
 </head>
@@ -127,8 +159,114 @@ function Export-ADSecurityReportHTML {
             </div>
         </div>
 "@
-    
-    # Add privileged users section if available
+
+    # --- Risk score, ANSSI maturity & MITRE ATT&CK summary (v1.2.0) ---
+    if ($RiskScore) {
+        $score = [int]$RiskScore.TotalScore
+        # Color the gauge by severity band (higher = worse).
+        $gaugeColor = if ($score -ge 75) { '#e74c3c' }
+                      elseif ($score -ge 50) { '#e67e22' }
+                      elseif ($score -ge 25) { '#f39c12' }
+                      else { '#27ae60' }
+
+        $maturityLevel = [int]$RiskScore.MaturityLevel
+
+        $html += @"
+        <h2>🎯 Risk Score &amp; Maturity</h2>
+        <div class="scoring-grid">
+            <div class="score-panel">
+                <h3>Global Risk Score</h3>
+                <div class="gauge-wrap">
+                    <div class="gauge" style="--pct: $score; --col: $gaugeColor;">
+                        <div class="gauge-inner">
+                            <div class="num">$score</div>
+                            <div class="of">/ 100</div>
+                        </div>
+                    </div>
+                    <div class="score-meta">
+                        <p><strong>$($RiskScore.FindingCount)</strong> findings scored.</p>
+                        <p>Higher is worse. The global score equals the worst risk category (PingCastle-style).</p>
+                        <p class="hint">Weighted points across all findings: $($RiskScore.WeightedPoints)</p>
+                    </div>
+                </div>
+            </div>
+            <div class="maturity-panel">
+                <h3>ANSSI Maturity Level</h3>
+                <div class="maturity-head">$maturityLevel <small>/ 5</small></div>
+                <p style="color:#555; margin: 6px 0 4px;">$(HtmlEncode $RiskScore.MaturityLabel)</p>
+                <div class="maturity-ladder">
+"@
+        foreach ($lvl in 1..5) {
+            $cls = 'maturity-step'
+            if ($lvl -eq $maturityLevel) { $cls = 'maturity-step current' }
+            elseif ($lvl -lt $maturityLevel) { $cls = 'maturity-step reached' }
+            $labelMap = @{
+                1 = 'Critical gaps'
+                2 = 'Partial hygiene'
+                3 = 'Standard hardening'
+                4 = 'Advanced hardening'
+                5 = 'Optimal'
+            }
+            $html += @"
+                    <div class="$cls"><span>Level $lvl</span><span>$($labelMap[$lvl])</span></div>
+"@
+        }
+        $html += @"
+                </div>
+                <p class="hint" style="font-size:0.85em; color:#7f8c8d; margin-top:10px;">A single Level&nbsp;1 finding caps maturity at Level&nbsp;1. Lower level = more critical hygiene gaps remain.</p>
+            </div>
+        </div>
+"@
+
+        # Per-category sub-score bars
+        if ($RiskScore.CategoryScores -and $RiskScore.CategoryScores.Count -gt 0) {
+            $html += @"
+        <h3>Risk by Category</h3>
+        <div style="margin: 10px 0 20px;">
+"@
+            foreach ($cat in $RiskScore.CategoryScores) {
+                $cScore = [int]$cat.Score
+                $cColor = if ($cScore -ge 75) { '#e74c3c' }
+                          elseif ($cScore -ge 50) { '#e67e22' }
+                          elseif ($cScore -ge 25) { '#f39c12' }
+                          else { '#27ae60' }
+                $html += @"
+            <div class="cat-bar-row">
+                <span>$(HtmlEncode $cat.Category) <span style="color:#aaa;">($($cat.Findings))</span></span>
+                <span class="cat-bar-track"><span class="cat-bar-fill" style="width: $cScore%; background: $cColor;"></span></span>
+                <span style="text-align:right; font-weight:600; color:#555;">$cScore</span>
+            </div>
+"@
+            }
+            $html += "        </div>"
+        }
+
+        # MITRE ATT&CK technique summary
+        if ($RiskScore.MitreSummary -and $RiskScore.MitreSummary.Count -gt 0) {
+            $html += @"
+        <h3>🗺️ MITRE ATT&amp;CK Technique Summary</h3>
+        <div style="overflow-x: auto;">
+            <table class="mitre-table">
+                <thead><tr><th>Technique</th><th>Name</th><th>Findings</th></tr></thead>
+                <tbody>
+"@
+            foreach ($t in $RiskScore.MitreSummary) {
+                $html += @"
+                    <tr>
+                        <td class="mitre-id">$(HtmlEncode $t.Technique)</td>
+                        <td>$(HtmlEncode $t.Name)</td>
+                        <td>$($t.Count)</td>
+                    </tr>
+"@
+            }
+            $html += @"
+                </tbody>
+            </table>
+        </div>
+"@
+        }
+    }
+
     if ($PrivilegedUsers -and $PrivilegedUsers.Count -gt 0) {
         $html += @"
         <h2>👥 Privileged Users Summary</h2>
@@ -214,7 +352,7 @@ function Export-ADSecurityReportHTML {
     
     $html += @"
         <div class="footer">
-            <p><strong>Generated by ADSecurityAudit Module v1.0.0</strong></p>
+            <p><strong>Generated by ADSecurityAudit Module v1.2.0</strong></p>
             <p>This report should be treated as confidential and shared only with authorized personnel.</p>
             <p>Review findings, prioritize remediation by severity, and implement security best practices.</p>
         </div>
@@ -247,6 +385,15 @@ function Get-FindingHTML {
     $issue = HtmlEncode $Finding.Issue
     $category = HtmlEncode $Finding.Category
     $affectedObject = HtmlEncode $Finding.AffectedObject
+
+    # Optional metadata tags (v1.2.0) - only rendered when populated
+    $metaTags = ''
+    if (-not [string]::IsNullOrEmpty($Finding.MitreTechnique)) {
+        $metaTags += "<span><strong>MITRE:</strong> <span class=`"tag-mitre`">$(HtmlEncode $Finding.MitreTechnique)</span></span>"
+    }
+    if (-not [string]::IsNullOrEmpty($Finding.AnssiControl)) {
+        $metaTags += "<span><strong>ANSSI:</strong> <span class=`"tag-anssi`">$(HtmlEncode $Finding.AnssiControl)</span></span>"
+    }
     
     # Handle multi-line remediation
     $remediation = $remediation -replace "`r`n", '<br>' -replace "`n", '<br>'
@@ -261,6 +408,7 @@ function Get-FindingHTML {
                 <span><strong>Category:</strong> $category</span>
                 <span><strong>Affected Object:</strong> $affectedObject</span>
                 <span><strong>Detected:</strong> $($Finding.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</span>
+                $metaTags
             </div>
             <div class="finding-section">
                 <h4>📝 Description</h4>

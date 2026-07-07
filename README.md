@@ -24,6 +24,7 @@ The repository also includes a responsive web dashboard (in `ui/`) that visualiz
 - **LAPS Deployment Verification**: Validates Local Administrator Password Solution (LAPS) schema installation, checks computer coverage percentage, and identifies systems with static local admin passwords
 - **Audit Policy Configuration**: Verifies critical audit policies are enabled on domain controllers, validates SACL configurations on sensitive objects, and ensures proper security event logging
 - **Constrained Delegation Analysis**: Identifies accounts with constrained delegation, dangerous protocol transition (T2A4D), and resource-based constrained delegation (RBCD) configurations
+- **Risk Scoring, ANSSI Maturity & MITRE ATT&CK Tagging**: Rolls findings up into a 0-100 risk score with per-category sub-scores, a 1-5 ANSSI-style maturity level, and MITRE ATT&CK technique tagging, all driven by a single source-of-truth mapping table (`Get-ADRiskScore`, `Set-ADFindingMetadata`)
 
 ## Requirements
 
@@ -67,10 +68,24 @@ Start-ADSecurityAudit -OutputPath "C:\ADReports" -Verbose
 
 
 ### Output Formats
-The script generates three report formats:
-- **HTML Report**: Color-coded interactive report with severity indicators
-- **CSV Export**: Detailed findings in spreadsheet format for analysis
-- **JSON Export**: Machine-readable format for integration with SIEM or automation tools
+The script generates these report formats:
+- **HTML Report**: Color-coded interactive report with severity indicators, a risk-score gauge, an ANSSI maturity panel, per-category risk bars, and a MITRE ATT&CK technique summary
+- **CSV Export**: Detailed findings in spreadsheet format for analysis (now includes appended `MitreTechnique`, `AnssiControl`, and `Weight` columns)
+- **JSON Export**: Machine-readable findings (the new metadata fields serialize automatically)
+- **Score sidecar (JSON)**: `AD_Security_Score_<timestamp>.json` containing the global risk score, per-category sub-scores, maturity level, and MITRE roll-up
+
+## Scoring & Maturity
+
+As of v1.2.0 every audit run produces an executive roll-up on top of the raw findings, computed by `Get-ADRiskScore`:
+
+- **Risk score (0-100, higher = worse)** — each finding carries a `Weight`; a category's sub-score is the sum of its findings' weights (capped at 100), and the **global score is the worst category's sub-score** (PingCastle-style "you are as exposed as your weakest area").
+- **Per-category sub-scores** — a 0-100 score per audit category (Kerberos Security, Certificate Services, Replication Security, etc.), rendered as bars in the HTML report.
+- **ANSSI-style maturity level (1-5, higher = better)** — derived from the ANSSI control level mapped to each finding. A single Level 1 finding caps maturity at Level 1; maturity rises as the most critical hygiene gaps are closed.
+- **MITRE ATT&CK tagging** — every finding is tagged with the technique it maps to (e.g. `T1558.001` Golden Ticket, `T1003.006` DCSync, `T1649` AD CS abuse), and the report shows a technique-frequency summary.
+
+All tagging flows from a **single source-of-truth mapping table** in `src/Scoring.ps1` (`Issue → MITRE technique → ANSSI control → weight`). To extend coverage for a new check, add one entry there keyed by the finding's exact `Issue` string; `Set-ADFindingMetadata` and `Get-ADRiskScore` pick it up automatically. The output schema is **additive-only**: new finding fields and CSV columns are appended, never reordered or removed.
+
+> Note: MITRE technique IDs are authoritative; the ANSSI control identifiers follow ANSSI/PingCastle maturity conventions and should be reviewed against the current official ANSSI Active Directory control catalogue before use in formal compliance reporting.
 
 ### Visual dashboard
 
@@ -110,8 +125,9 @@ The audit generates findings across multiple severity levels:
 
 ### HTML Report Structure
 - **Executive Summary**: Overview of total findings by severity
+- **Risk Score & Maturity**: Global risk-score gauge, ANSSI 1-5 maturity ladder, per-category risk bars, and a MITRE ATT&CK technique summary
 - **Critical Issues**: Immediate action required
-- **Detailed Findings**: Complete list with remediation guidance
+- **Detailed Findings**: Complete list with remediation guidance (each finding shows its MITRE technique and ANSSI control)
 - **Affected Objects**: Lists of users, groups, computers, and objects requiring attention
 
 ### Remediation Guidance
@@ -251,7 +267,13 @@ Always:
 
 ## Version History
 
-### v1.1.0 (Current)
+### v1.2.0 (Current)
+- Added risk score (0-100), per-category sub-scores, and an ANSSI-style 1-5 maturity level via `Get-ADRiskScore`
+- Added MITRE ATT&CK technique and ANSSI control tagging on every finding through a central mapping table (`src/Scoring.ps1`) and `Set-ADFindingMetadata`
+- Added additive `MitreTechnique`, `AnssiControl`, and `Weight` fields to `ADSecurityFinding` (output schema is now additive-only / contract-stable)
+- Added a risk-score gauge, maturity panel, per-category bars, and MITRE summary to the HTML report; appended new CSV columns and a score sidecar JSON
+
+### v1.1.0
 - **Security Fix**: Fixed CSV injection vulnerability in report exports
 - Added Domain Controller failover support for improved reliability
 - Added `Invoke-ADQueryWithRetry` helper for network resilience with exponential backoff

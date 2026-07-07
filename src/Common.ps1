@@ -77,9 +77,21 @@ class ADSecurityFinding {
     [hashtable]$Details
     [datetime]$DetectedDate
 
+    # --- Additive metadata fields (introduced in v1.2.0) ---
+    # These are appended to the finding/output contract and are OPTIONAL.
+    # They are populated centrally from the mapping table in src/Scoring.ps1
+    # via Set-ADFindingMetadata. Existing consumers that ignore them are
+    # unaffected. Per the contract: finding fields are additive only.
+    [string]$MitreTechnique   # MITRE ATT&CK technique id, e.g. 'T1558.001'
+    [string]$AnssiControl     # ANSSI-style control id, e.g. 'vuln1_krbtgt_age'
+    [int]$Weight              # Risk-score contribution (default 0)
+
     ADSecurityFinding() {
         $this.DetectedDate = Get-Date
         $this.Details = @{}
+        $this.MitreTechnique = ''
+        $this.AnssiControl = ''
+        $this.Weight = 0
     }
 }
 
