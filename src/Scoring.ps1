@@ -213,6 +213,13 @@ $Script:ADFindingMetadataMap = @{
     'RC4 Kerberos Encryption Still Permitted'             = @{ Mitre = 'T1558.003'; Anssi = 'vuln2_rc4_kerberos_permitted'; Weight = 20 }
     'Kerberos Armoring (FAST) Not Enabled'                = @{ Mitre = 'T1558';     Anssi = 'vuln2_kerberos_armoring_not_enabled'; Weight = 20 }
     'Cross-Trust TGT Delegation Enabled'                  = @{ Mitre = 'T1558';     Anssi = 'vuln1_cross_trust_tgt_delegation'; Weight = 40 }
+
+    # --- Stale-Object & Hygiene Depth (PASSWD_NOTREQD, primaryGroupID, duplicate SPNs, DC registration) ---
+    'Accounts with PASSWD_NOTREQD Set'                    = @{ Mitre = 'T1110';     Anssi = 'vuln2_passwd_notreqd';         Weight = 20 }
+    'Non-Default primaryGroupID (Membership Hiding)'      = @{ Mitre = 'T1098';     Anssi = 'vuln2_primary_group_id';       Weight = 20 }
+    'Duplicate Service Principal Names'                   = @{ Mitre = 'T1098';     Anssi = 'vuln3_duplicate_spn';          Weight = 10 }
+    'DC Subnet/Site Registration Gap'                     = @{ Mitre = 'T1590.002'; Anssi = 'vuln4_dc_subnet_missing';      Weight = 4  }
+    'Insufficient Domain Controller Count'                = @{ Mitre = 'T1485';     Anssi = 'vuln3_insufficient_dc_count';  Weight = 10 }
 }
 
 function Get-ADFindingMetadataMap {

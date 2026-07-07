@@ -9,7 +9,7 @@
 
 .NOTES
     Author: AlchemicalChef
-    Version: 1.9.0
+    Version: 1.11.0
     Requires: Active Directory PowerShell Module, Windows Server 2016+
 
 .EXAMPLE
@@ -58,6 +58,7 @@ $moduleScripts = @(
     'src/DnsSecurityAudits.ps1',
     'src/LegacyAuthAudits.ps1',
     'src/KerberosHardeningAudits.ps1',
+    'src/StaleObjectDepthAudits.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
 )
@@ -96,6 +97,7 @@ Export-ModuleMember -Function @(
     'Test-ADDnsSecurity',
     'Test-ADLegacyAuthSurface',
     'Test-ADKerberosHardening',
+    'Test-ADStaleObjectDepth',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',

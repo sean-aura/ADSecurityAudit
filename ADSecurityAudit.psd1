@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.10.0'
+    ModuleVersion = '1.11.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -32,6 +32,7 @@
         'Test-ADDnsSecurity',
         'Test-ADLegacyAuthSurface',
         'Test-ADKerberosHardening',
+        'Test-ADStaleObjectDepth',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -51,6 +52,12 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.11.0 - Stale-Object & Hygiene Depth (PASSWD_NOTREQD, primaryGroupID, Duplicate SPNs, DC Registration)
+- Added Test-ADStaleObjectDepth: audits accounts with PASSWD_NOTREQD set (userAccountControl 0x0020), non-default primaryGroupID on user and computer objects (membership-hiding, distinguishing the legitimate Domain Controllers RID 516 for genuine DCs from a suspicious 516/other RID elsewhere), duplicate Service Principal Names across users and computers (reporting every holder), Domain Controllers not covered by any AD Sites & Services subnet object, and insufficient Domain Controller count (fewer than 2).
+- Detection only: reads userAccountControl and primaryGroupID bitmasks/values, builds a case-insensitive in-memory SPN index from already-queried user/computer objects, and reads DC inventory (Get-ADDomainController) and subnet objects (Get-ADReplicationSubnet). Never sets, clears, or otherwise modifies any account attribute, SPN, or Sites & Services object, and performs no exploitation, coercion, relay, or PoC traffic.
+- Snapshot-aware for the PASSWD_NOTREQD, primaryGroupID, and duplicate-SPN checks (Snapshot.Users / Snapshot.Computers, extended this release to also collect PrimaryGroupID for users and ServicePrincipalNames/SamAccountName for computers) and the DC-count check (Snapshot.DomainControllers); the DC subnet/site registration check always performs one live, read-only Get-ADReplicationSubnet call (subnet objects are not part of the current snapshot schema) even when -Snapshot supplies the DC list, consistent with the other live-only sub-checks elsewhere in the module.
+- Registered in Invoke-ADRuleSet and Start-ADSecurityAudit's live test set; tagged in the central Scoring.ps1 mapping table (PingCastle parity: S-PwdNotRequired, S-PrimaryGroup, S-C-PrimaryGroup, S-Duplicate, S-DC-SubnetMissing, A-NotEnoughDC, S-DCRegistration).
+
 v1.10.0 - Kerberos Hardening Depth (AES Enforcement, FAST/Armoring, Cross-Trust TGT Delegation)
 - Added Test-ADKerberosHardening: audits RC4 Kerberos encryption still being permitted (Tier-0 privileged accounts and krbtgt via msDS-SupportedEncryptionTypes, trusts missing TRUST_USES_AES_KEYS, and the domain-wide 'Configure encryption types allowed for Kerberos' GPO/registry policy), Kerberos Armoring (FAST) not enabled (KDC and client EnableCbacAndArmor policy), and cross-trust TGT delegation (trustAttributes CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION).
 - Detection only: reads msDS-SupportedEncryptionTypes bitmasks, GPO-linked registry policy (falling back to a direct per-DC registry read only when no linked GPO defines a setting), and trustAttributes via Get-ADTrust. Never sets, clears, or otherwise modifies any account attribute, policy, or registry value, never forges or requests a Kerberos ticket, and performs no exploitation, coercion, relay, or PoC traffic.

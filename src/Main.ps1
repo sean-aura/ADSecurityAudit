@@ -181,6 +181,7 @@ function Start-ADSecurityAudit {
             'DnsSecurity' = { Test-ADDnsSecurity }
             'LegacyAuthSurface' = { Test-ADLegacyAuthSurface }
             'KerberosHardening' = { Test-ADKerberosHardening }
+            'StaleObjectDepth' = { Test-ADStaleObjectDepth }
         }
         
         # Determine which tests to run

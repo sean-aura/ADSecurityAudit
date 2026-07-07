@@ -55,6 +55,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'DnsSecurity'              = 'Test-ADDnsSecurity'
     'LegacyAuthSurface'        = 'Test-ADLegacyAuthSurface'
     'KerberosHardening'        = 'Test-ADKerberosHardening'
+    'StaleObjectDepth'         = 'Test-ADStaleObjectDepth'
 }
 
 function ConvertTo-ADHashtable {
@@ -270,7 +271,7 @@ function Get-ADSnapshot {
                 ServicePrincipalNames, MemberOf, Enabled, DistinguishedName, `
                 UserPrincipalName, adminCount, SamAccountName, SID, Description, `
                 'msDS-SupportedEncryptionTypes', userAccountControl, WhenCreated, `
-                'msDS-AllowedToDelegateTo', SIDHistory
+                'msDS-AllowedToDelegateTo', SIDHistory, PrimaryGroupID
         })
         Write-Verbose "Get-ADSnapshot: collected $($snapshot.Users.Count) users."
     }
@@ -287,7 +288,7 @@ function Get-ADSnapshot {
                 DistinguishedName, TrustedForDelegation, 'msDS-AllowedToDelegateTo', `
                 'msDS-AllowedToActOnBehalfOfOtherIdentity', PrimaryGroupID, SID, `
                 'ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime', `
-                userAccountControl, WhenCreated
+                userAccountControl, WhenCreated, SamAccountName, ServicePrincipalNames
         })
         Write-Verbose "Get-ADSnapshot: collected $($snapshot.Computers.Count) computers."
     }
