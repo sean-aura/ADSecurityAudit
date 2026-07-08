@@ -185,6 +185,7 @@ function Test-ADDomainAdminEquivalence {
                 $finding.SeverityLevel = 2
                 $finding.AffectedObject = $user.SamAccountName
                 $finding.Description = "User has 'adminCount=1' but is not a member of any protected group. This may indicate a leftover administrative account or a persistence backdoor where ACLs are frozen by SDProp."
+                $finding.Impact = "The account's ACL inheritance remains disabled and its permissions frozen even though it's no longer in a protected group, which can mask a persistence mechanism or leave stale, overly-permissive rights in place unnoticed."
                 $finding.Remediation = "Clear the 'adminCount' attribute (set to 0) and enable permission inheritance on the object. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
                 $finding.Details = @{
                     UserDN = $user.DistinguishedName
@@ -212,6 +213,7 @@ function Test-ADDomainAdminEquivalence {
             $finding.SeverityLevel = 3
             $finding.AffectedObject = $obj.Name
             $finding.Description = "Object has 'msDS-KeyCredentialLink' populated. Unless Windows Hello for Business is deployed, this indicates a potential 'Shadow Credentials' attack (Whisker/Certipy) allowing account takeover."
+            $finding.Impact = "An attacker with this key credential can authenticate as the object via PKINIT without knowing (or changing) its password, giving silent, persistent account takeover that survives a password reset."
             $finding.Remediation = "Investigate the 'msDS-KeyCredentialLink' attribute. If not legitimate WHfB, clear the attribute immediately. Reference: https://posts.specterops.io/shadow-credentials-abusing-key-credential-link-translation-to-en-9d8f9fb12be8"
             $finding.Details = @{
                 ObjectDN    = $obj.DistinguishedName
@@ -342,6 +344,7 @@ function Test-ADDomainAdminEquivalence {
                     $finding.SeverityLevel = 4
                     $finding.AffectedObject = $user.SamAccountName
                     $finding.Description = "User contains a SID from the CURRENT domain in its SID History ($sidStr). This is a definitive sign of a Golden Ticket or SID History injection attack."
+                    $finding.Impact = "The account carries privileges from the injected SID in addition to its normal group memberships, effectively granting hidden, unauthorized access that standard group-membership reviews will not reveal."
                     $finding.Remediation = "Immediate Incident Response required. Reset the account and investigate origin. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
                     $finding.Details = @{
                         UserDN       = $user.DistinguishedName
@@ -359,6 +362,7 @@ function Test-ADDomainAdminEquivalence {
                     $finding.SeverityLevel = 4
                     $finding.AffectedObject = $user.SamAccountName
                     $finding.Description = "User has a highly privileged SID ($sidStr) in their SID History. They possess Domain Admin rights regardless of group membership."
+                    $finding.Impact = "The account has effective Domain Admin (or equivalent) rights that won't show up in any group-membership audit, since the privilege comes from SID History rather than an actual group the account belongs to."
                     $finding.Remediation = "Clear the sIDHistory attribute immediately unless this is a verified migration account. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
                     $finding.Details = @{
                         UserDN       = $user.DistinguishedName
@@ -389,6 +393,7 @@ function Test-ADDomainAdminEquivalence {
             $finding.SeverityLevel = 1
             $finding.AffectedObject = $user.SamAccountName
             $finding.Description = "User has a legacy logon script defined: '$path'. Attackers can modify this file to achieve code execution upon user logon."
+            $finding.Impact = "Anyone able to write to the referenced script file gains code execution as every user the script runs for at their next logon, a low-effort persistence and lateral-movement foothold."
             $finding.Remediation = "Migrate to Group Policy Preferences and clear the 'scriptPath' attribute. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/logon-script-issues"
             $finding.Details = @{
                 UserDN     = $user.DistinguishedName
@@ -456,6 +461,7 @@ function Test-ADDomainAdminEquivalence {
                     $finding.SeverityLevel = 4
                     $finding.AffectedObject = 'AdminSDHolder'
                     $finding.Description = "Principal '$principal' has dangerous rights ($($ace.ActiveDirectoryRights)) on AdminSDHolder. This grants persistent Domain Admin rights via SDProp."
+                    $finding.Impact = "Because SDProp periodically re-applies AdminSDHolder's ACL to every protected (Tier-0) account and group, this principal effectively controls the DACL of every Domain Admin, Enterprise Admin, and other protected object in the domain - a single ACE here compromises the entire tier."
                     $finding.Remediation = "Remove the ACE immediately and check all protected groups for 'adminCount=1' users. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
                     $finding.Details = @{
                         Principal = $principal

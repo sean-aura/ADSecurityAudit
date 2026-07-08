@@ -1,7 +1,7 @@
 #region Certificate Services Extended Audits (ESC4, ESC8, ROCA, weak PKI crypto)
 #
 # Extends src/CertificateServicesAudits.ps1 (ESC1/ESC2/ESC3/ESC7) with the
-# remaining PingCastle-parity AD CS checks:
+# remaining PingCastle-comparable AD CS checks:
 #
 #   - ESC4  : dangerous ACLs on certificate templates (Write/WriteDacl/
 #             WriteOwner/GenericAll/GenericWrite granted to low-privileged
@@ -19,7 +19,7 @@
 #     RSA moduli across the CA certificates, NTAuth store, and AIA/Root
 #     store published in the Configuration partition.
 #
-# PingCastle parity: A-CertEnrollHttp, A-CertTempNoSecurity,
+# PingCastle-comparable check(s): A-CertEnrollHttp, A-CertTempNoSecurity,
 # A-CertTempAnyPurpose, A-CertTempAnyone, A-CertTempCustomSubject,
 # A-CertROCA, A-CertWeakRsaComponent, A-MD5RootCert, A-SHA1RootCert.
 #
@@ -203,7 +203,31 @@ function Test-ADCSWeakCertificate {
     $weakModulus = $false
 
     try {
-        $rsa = $cert.GetRSAPublicKey()
+        $rsa = $null
+        try {
+            # .NET 4.6+ extension method; not resolvable on hosts with an
+            # older .NET Framework, where PowerShell reports "does not
+            # contain a method named 'GetRSAPublicKey'" even though the
+            # certificate itself is fine.
+            $rsa = $cert.GetRSAPublicKey()
+        }
+        catch {
+            $rsa = $null
+        }
+        if (-not $rsa) {
+            # Fallback for older .NET Framework: the legacy (deprecated but
+            # universally available since .NET 2.0) PublicKey.Key API still
+            # returns an RSACryptoServiceProvider for RSA certificates.
+            try {
+                $legacyKey = $cert.PublicKey.Key
+                if ($legacyKey -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
+                    $rsa = $legacyKey
+                }
+            }
+            catch {
+                Write-Verbose "Test-ADCSWeakCertificate: legacy PublicKey.Key fallback also failed for '$Source': $_"
+            }
+        }
         if ($rsa) {
             $keySize = $rsa.KeySize
             $weakModulus = $keySize -lt 2048

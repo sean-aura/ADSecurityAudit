@@ -1,11 +1,11 @@
 #region Stale-Object & Hygiene Depth Audit (PASSWD_NOTREQD, primaryGroupID, duplicate SPNs, DC registration)
 #
 # Audits the long-tail account/object hygiene gaps that individually look
-# minor but collectively make up a large share of PingCastle-style findings:
+# minor but collectively make up a large share of PingCastle-like findings:
 # accounts flagged PASSWD_NOTREQD, primaryGroupID tampering used to hide
 # privileged membership, duplicate Service Principal Names, Domain
 # Controllers missing subnet/site registration, and an environment with
-# insufficient Domain Controller redundancy. PingCastle parity:
+# insufficient Domain Controller redundancy. PingCastle-comparable check(s):
 # S-PwdNotRequired, S-PrimaryGroup, S-C-PrimaryGroup, S-Duplicate,
 # S-DC-SubnetMissing, A-NotEnoughDC, S-DCRegistration.
 #

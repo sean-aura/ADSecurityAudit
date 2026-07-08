@@ -4,7 +4,7 @@
 # every affected computer/user: leftover Group Policy Preferences (GPP)
 # `cpassword` values (MS14-025), plaintext-looking credentials referenced in
 # logon/startup scripts, and insecure settings deployed via GPO (firewall
-# disabled, weak folder options, insecure RDP). PingCastle parity:
+# disabled, weak folder options, insecure RDP). PingCastle-comparable check(s):
 # P-DelegationGPOData, P-DelegationFileDeployed, P-DelegationLoginScript,
 # S-FirewallScript, S-FolderOptions, S-TerminalServicesGPO,
 # A-AnonymousAuthorizedGPO.
@@ -215,8 +215,8 @@ function Test-ADGpoDeployedSecrets {
         # ---------------------------------------------------------------
         try {
             $scriptRoots = @(
-                Join-Path $gpoFolder 'Machine\Scripts',
-                Join-Path $gpoFolder 'User\Scripts'
+                (Join-Path $gpoFolder 'Machine\Scripts'),
+                (Join-Path $gpoFolder 'User\Scripts')
             ) | Where-Object { Test-Path -LiteralPath $_ }
 
             foreach ($scriptRoot in $scriptRoots) {

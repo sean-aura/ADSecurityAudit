@@ -3,7 +3,7 @@
 # Audits domain-wide settings with a large blast radius that are invisible
 # to most tools: the dSHeuristics attribute, membership of the built-in
 # "Pre-Windows 2000 Compatible Access" group, and whether anonymous LDAP /
-# RootDSE binding is permitted. PingCastle parity: A-DsHeuristicsAnonymous,
+# RootDSE binding is permitted. PingCastle-comparable check(s): A-DsHeuristicsAnonymous,
 # A-DsHeuristicsAllowAnonNSPI, A-DsHeuristicsLDAPSecurity,
 # P-DsHeuristicsDoListObject, P-DsHeuristicsAdminSDExMask,
 # A-PreWin2000Anonymous, A-PreWin2000AuthenticatedUsers,
