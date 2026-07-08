@@ -3,8 +3,10 @@
 # Flags Domain Controller exposure to the highest-impact AD CVEs strictly
 # from OS build/version, installed CU/hotfix level, and service/config
 # state - ZeroLogon (CVE-2020-1472), MS17-010/EternalBlue, MS14-068,
-# PrintNightmare (CVE-2021-34527), and BadSuccessor/dMSA escalation
-# exposure on Windows Server 2025-level Domain Controllers.
+# PrintNightmare (CVE-2021-34527), CVE-2026-41089 (unauthenticated Netlogon
+# RCE), and BadSuccessor/dMSA escalation exposure on Windows Server
+# 2025-level Domain Controllers, including (as of v1.18.0) a per-DC
+# CVE-2025-53779 KDC-side patch-level (UBR) classification.
 # PingCastle-comparable check(s): S-Vuln-MS14-068, S-Vuln-MS17_010, A-Krbtgt, A-DC-Spooler,
 # A-BadSuccessor.
 #
@@ -66,6 +68,29 @@ $Script:KnownVulnFixThresholds = @{
         FixNote     = 'July 6, 2021 out-of-band update - Print Spooler remote code execution / local privilege escalation fix. Only relevant while the Spooler service is running.'
         Description = 'An authenticated user can remotely install a malicious printer driver via the Print Spooler service (RpcAddPrinterDriver) and achieve SYSTEM-level code execution on the DC.'
     }
+    # Verified 2026-07-09 against multiple independent sources citing MSRC
+    # directly: SecurityWeek, Tenable, Zero Day Initiative, Help Net
+    # Security, and CERT-EU (https://cert.europa.eu/publications/security-advisories/2026-007/).
+    # Fix date (May 12, 2026), CVSS 9.8, and unauthenticated pre-auth RCE via
+    # a Netlogon stack-based buffer overflow are consistent across all of
+    # them. CERT-EU's advisory (citing MSRC) additionally gives verified
+    # per-OS fixed-build boundaries rather than KB numbers, which several
+    # lower-quality aggregator sites gave inconsistently and were NOT relied
+    # on here: Server 2016 < 10.0.14393.9140, Server 2019 < 10.0.17763.8755,
+    # Server 2022 < 10.0.20348.5074, Server 2022 23H2 < 10.0.25398.2330,
+    # Server 2025 < 10.0.26100.32772. This function's threshold below
+    # intentionally stays FixDate-only (not per-OS build), consistent with
+    # how the other three legacy CVE checks in this table work; the CERT-EU
+    # build numbers are recorded here for reference / a future refinement.
+    # Active in-the-wild exploitation was reported by Belgium's CCB
+    # starting May 29, 2026, per the same sources.
+    Netlogon2026 = @{
+        Issue       = 'DC Missing CVE-2026-41089 Patch (Netlogon RCE)'
+        Cve         = 'CVE-2026-41089'
+        FixDate     = [datetime]'2026-05-12'
+        FixNote     = 'May 12, 2026 Patch Tuesday cumulative updates - Netlogon Remote Protocol (MS-NRPC) packet-handling stack buffer overflow fix. Per-OS fixed-build boundaries (CERT-EU, citing MSRC): Server 2016 >= 10.0.14393.9140, Server 2019 >= 10.0.17763.8755, Server 2022 >= 10.0.20348.5074, Server 2022 23H2 >= 10.0.25398.2330, Server 2025 >= 10.0.26100.32772. Confirm the exact KB number for your specific OS build via Windows Update / the Microsoft Update Catalog, since third-party aggregator KB numbers for this CVE have been inconsistent.'
+        Description = 'An unauthenticated, network-only attacker can trigger a stack-based buffer overflow in the Netlogon RPC interface (MS-NRPC) and achieve SYSTEM-level remote code execution on the Domain Controller, with no credentials or user interaction required (CVSS 9.8). Reported under active exploitation in the wild starting May 29, 2026 (Belgium CCB advisory).'
+    }
 }
 
 # Windows Server 2025 shipped build number. BadSuccessor (delegated Managed
@@ -74,21 +99,79 @@ $Script:KnownVulnFixThresholds = @{
 # Server 2025 feature - guard the check to that build so older DCs never
 # generate a false positive.
 #
-# Re-verified 2026-07-09: this remains a base-build (major-version) guard
-# only, not a patch-level one. Microsoft shipped a partial fix for the
-# original one-sided-link escalation (CVE-2025-53779) in the August 12,
-# 2025 cumulative update, KB5063878, OS build 26100.4946
-# (https://support.microsoft.com/en-us/topic/august-12-2025-kb5063878-update-for-windows-server-2025-os-build-26100-4946-69b2de20-e07d-404a-a19f-fd8c4ae27e0f).
-# Distinguishing patched (build >= 26100.4946, via the UBR registry value)
-# from unpatched Server 2025 DCs is a new detection surface this function
-# does not currently read - not just a threshold edit - so it has been
-# left as a feature-request candidate rather than folded into this guard;
-# see the "BadSuccessor build-revision (UBR) patch detection" feature
-# request produced alongside this refresh. The base-build guard below is
-# still correct as a "does this DC even have dMSA" gate irrespective of
-# patch level, and no backport of dMSA itself to earlier OS builds has
-# been observed, so 26100 as a floor remains accurate.
+# As of v1.18.0 this base-build guard is paired with a per-DC UBR
+# (Update Build Revision) read - see $Script:KnownVulnBadSuccessorPatchedUBR
+# and Get-ADKnownVulnUBR below - to distinguish DCs patched for
+# CVE-2025-53779 (build 26100.4946+) from unpatched ones. The base-build
+# guard itself is unchanged: it still just answers "does this DC even have
+# dMSA," irrespective of patch level.
 $Script:KnownVulnServer2025Build = 26100
+
+# UBR (Update Build Revision - the third component of a Windows build
+# number, e.g. the 4946 in 26100.4946) at or above which a Server
+# 2025-level DC has Microsoft's August 12, 2025 cumulative update
+# (KB5063878, OS build 26100.4946) installed, which added KDC-side
+# validation requiring a mutual (two-sided) dMSA/target link before the
+# KDC honors it - closing the original one-sided-link escalation path
+# described in CVE-2025-53779.
+# Verified 2026-07-09 directly against Microsoft's own KB5063878 support
+# article (support.microsoft.com/en-us/topic/august-12-2025-kb5063878-...
+# -e4b87262-75c8-4fef-9df7-4a18099ee294): "August 12, 2025 - KB5063878
+# (OS Build 26100.4946)" confirms the KB-to-build mapping used here.
+#
+# NOTE: per independent post-patch research (Akamai, "BadSuccessor Is
+# Dead, Long Live BadSuccessor(?)", confirmed 2026-07-09), this patch does
+# not fully close the underlying technique - a mutually-paired dMSA/target
+# relationship still allows credential/privilege abuse if an attacker
+# controls both sides. A DC classified "Patched" below is therefore not
+# "safe" the way a fixed ZeroLogon/MS17-010/MS14-068/PrintNightmare DC is;
+# the finding continues to fire for patched DCs with adjusted text rather
+# than disappearing.
+$Script:KnownVulnBadSuccessorPatchedUBR = 4946
+
+function Get-ADKnownVulnUBR {
+    <#
+    .SYNOPSIS
+        Reads the Windows Update Build Revision (UBR) from a remote
+        computer's registry.
+    .DESCRIPTION
+        Read-only: opens the remote HKLM hive via .NET's
+        [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey (the standard
+        remote-registry API - functionally equivalent to `reg.exe query
+        \\computer\HKLM\...`) and reads the single existing
+        'UBR' value under 'SOFTWARE\Microsoft\Windows NT\CurrentVersion'.
+        No writes, no code execution, no service interaction of any kind.
+    .PARAMETER ComputerName
+        The remote Domain Controller to read the UBR from.
+    .OUTPUTS
+        [int] the UBR value.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ComputerName
+    )
+
+    $baseKey = $null
+    $subKey  = $null
+    try {
+        $baseKey = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine, $ComputerName)
+        $subKey = $baseKey.OpenSubKey('SOFTWARE\Microsoft\Windows NT\CurrentVersion')
+        if (-not $subKey) {
+            throw "CurrentVersion registry key not found on '$ComputerName'."
+        }
+        $ubr = $subKey.GetValue('UBR', $null)
+        if ($null -eq $ubr) {
+            throw "UBR value not present under CurrentVersion on '$ComputerName'."
+        }
+        return [int]$ubr
+    }
+    finally {
+        if ($subKey)  { $subKey.Dispose() }
+        if ($baseKey) { $baseKey.Dispose() }
+    }
+}
 
 function Test-ADKnownDCVulnerabilities {
     <#
@@ -112,18 +195,27 @@ function Test-ADKnownDCVulnerabilities {
           - DC Vulnerable to MS14-068 (Kerberos PAC forgery)
           - PrintNightmare Exposure on DC (CVE-2021-34527) - only when the
             Spooler service is also running.
+          - DC Missing CVE-2026-41089 Patch (Netlogon RCE) - unauthenticated,
+            critical (CVSS 9.8) Netlogon RPC remote code execution against
+            any DC, evaluated with the same patch-date evidence as the
+            other build/patch-only checks above.
           - BadSuccessor / dMSA Escalation Exposure - only on Domain
             Controllers running Windows Server 2025 (build >=
             $Script:KnownVulnServer2025Build), since dMSA is a Server 2025
             feature. Microsoft shipped a partial KDC-side fix for the
             original one-sided-link escalation as CVE-2025-53779 (August
-            2025, build 26100.4946+), but this function only checks the
-            base OS build, not that patch level, and independent research
-            has shown the underlying dMSA-linking primitive still enables
-            related credential/privilege abuse post-patch - so this remains
-            reported as an environment-level exposure requiring
-            delegation/ACL review rather than a simple missing-patch
-            finding.
+            2025, build 26100.4946+). As of v1.18.0, each Server
+            2025-level DC additionally has its UBR (Update Build Revision)
+            read via remote registry to classify it as patched (UBR >=
+            $Script:KnownVulnBadSuccessorPatchedUBR) or unpatched for
+            CVE-2025-53779; a DC whose UBR cannot be read is reported with
+            an unknown patch status rather than silently assumed patched.
+            Independent research has shown the underlying dMSA-linking
+            primitive still enables related credential/privilege abuse
+            even on patched DCs - so the finding continues to fire (with
+            adjusted text and, when every affected DC is confirmed
+            patched, a reduced severity) rather than disappearing once
+            patched.
 
         Each DC is evaluated independently and degrades gracefully if it
         cannot be reached (Verbose warning only; no finding is raised for
@@ -182,7 +274,11 @@ function Test-ADKnownDCVulnerabilities {
     $ms17010DCs        = [System.Collections.ArrayList]::new()
     $ms14068DCs        = [System.Collections.ArrayList]::new()
     $printNightmareDCs = [System.Collections.ArrayList]::new()
+    $netlogon2026DCs   = [System.Collections.ArrayList]::new()
     $server2025DCs     = [System.Collections.ArrayList]::new()
+    $badSuccessorPatchedDCs   = [System.Collections.ArrayList]::new()
+    $badSuccessorUnpatchedDCs = [System.Collections.ArrayList]::new()
+    $badSuccessorUnknownDCs   = [System.Collections.ArrayList]::new()
 
     foreach ($dc in $domainControllers) {
         $dcName = if ($dc.HostName) { $dc.HostName } elseif ($dc.Name) { $dc.Name } else { "$dc" }
@@ -197,6 +293,8 @@ function Test-ADKnownDCVulnerabilities {
             LatestHotfixDate = $null
             EffectivePatchDate = $null
             SpoolerStatus    = $null
+            UBR              = $null
+            BadSuccessorPatchStatus = $null
             Error            = $null
         }
 
@@ -271,6 +369,37 @@ function Test-ADKnownDCVulnerabilities {
             if (-not $dcState.Error) { $dcState.Error = "$_" }
         }
 
+        # --- UBR (Update Build Revision) - BadSuccessor / CVE-2025-53779
+        #     patch-level classification, Server 2025-level DCs only ---
+        if ($dcState.OSBuildNumber -ge $Script:KnownVulnServer2025Build) {
+            try {
+                $ubr = Invoke-ADQueryWithRetry -OperationName "Read UBR registry value on $dcName" -Query {
+                    Get-ADKnownVulnUBR -ComputerName $dcName
+                }
+                if ($null -ne $ubr) {
+                    $dcState.UBR = [int]$ubr
+                    if ($dcState.UBR -ge $Script:KnownVulnBadSuccessorPatchedUBR) {
+                        $dcState.BadSuccessorPatchStatus = 'Patched'
+                        [void]$badSuccessorPatchedDCs.Add($dcName)
+                    }
+                    else {
+                        $dcState.BadSuccessorPatchStatus = 'Unpatched'
+                        [void]$badSuccessorUnpatchedDCs.Add($dcName)
+                    }
+                }
+                else {
+                    $dcState.BadSuccessorPatchStatus = 'Unknown'
+                    [void]$badSuccessorUnknownDCs.Add($dcName)
+                }
+            }
+            catch {
+                Write-Verbose "Test-ADKnownDCVulnerabilities: could not read UBR on '$dcName' (e.g. remote registry access denied); BadSuccessor patch level reported as unknown, not assumed patched: $_"
+                $dcState.BadSuccessorPatchStatus = 'Unknown'
+                [void]$badSuccessorUnknownDCs.Add($dcName)
+                if (-not $dcState.Error) { $dcState.Error = "$_" }
+            }
+        }
+
         if (-not $dcState.Reachable) {
             Write-Verbose "Test-ADKnownDCVulnerabilities: DC '$dcName' unreachable; skipping (no finding for this DC)."
             [void]$perDcState.Add([PSCustomObject]$dcState)
@@ -290,6 +419,9 @@ function Test-ADKnownDCVulnerabilities {
             }
             if ($dcState.SpoolerStatus -eq 'Running' -and $dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.PrintNightmare.FixDate) {
                 [void]$printNightmareDCs.Add($dcName)
+            }
+            if ($dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.Netlogon2026.FixDate) {
+                [void]$netlogon2026DCs.Add($dcName)
             }
         }
         else {
@@ -412,22 +544,68 @@ function Test-ADKnownDCVulnerabilities {
     }
 
     # -------------------------------------------------------------------
+    # Finding: DC Missing CVE-2026-41089 Patch (Netlogon RCE)
+    # -------------------------------------------------------------------
+    if ($netlogon2026DCs.Count -gt 0) {
+        $info = $Script:KnownVulnFixThresholds.Netlogon2026
+        $finding = [ADSecurityFinding]::new()
+        $finding.Category = 'Known DC Vulnerabilities'
+        $finding.Issue = $info.Issue
+        $finding.Severity = 'Critical'
+        $finding.SeverityLevel = 4
+        $finding.AffectedObject = ($netlogon2026DCs -join ', ')
+        $finding.Description = "$($netlogon2026DCs.Count) Domain Controller(s) show no patch/build evidence on or after the $($info.Cve) fix date of $($info.FixDate.ToString('yyyy-MM-dd')): $($netlogon2026DCs -join ', ')."
+        $finding.Impact = $info.Description
+        $finding.Remediation = "Install the $($info.FixNote) Treat as emergency-patch priority given active in-the-wild exploitation reported since late May / early June 2026 - verify with `Get-HotFix -ComputerName <DC>` and confirm against the current MSRC Update Guide entry for $($info.Cve) before considering a DC remediated."
+        $finding.Details = @{
+            Cve                       = $info.Cve
+            FixDate                   = $info.FixDate.ToString('yyyy-MM-dd')
+            FixNote                   = $info.FixNote
+            AffectedDomainControllers = @($netlogon2026DCs)
+            PerDomainControllerState  = @($perDcState)
+        }
+        $findings += $finding
+    }
+    else {
+        Write-Verbose "Test-ADKnownDCVulnerabilities: no DC found missing the CVE-2026-41089 (Netlogon RCE) patch."
+    }
+
+    # -------------------------------------------------------------------
     # Finding: BadSuccessor / dMSA Escalation Exposure
     # -------------------------------------------------------------------
     if ($server2025DCs.Count -gt 0) {
+        $hasUnpatchedOrUnknown = ($badSuccessorUnpatchedDCs.Count -gt 0) -or ($badSuccessorUnknownDCs.Count -gt 0)
+
         $finding = [ADSecurityFinding]::new()
         $finding.Category = 'Known DC Vulnerabilities'
         $finding.Issue = 'BadSuccessor / dMSA Escalation Exposure'
-        $finding.Severity = 'High'
-        $finding.SeverityLevel = 3
+        if ($hasUnpatchedOrUnknown) {
+            $finding.Severity = 'High'
+            $finding.SeverityLevel = 3
+        }
+        else {
+            # Every Server 2025-level DC is confirmed patched (UBR >=
+            # threshold) for CVE-2025-53779 - the original one-sided-link
+            # escalation path is closed. Reduced (not suppressed) severity:
+            # independent research shows a mutually-paired dMSA/target
+            # relationship still allows credential/privilege abuse when an
+            # attacker controls both sides, so this remains a
+            # delegation/ACL exposure to review, not a clean bill of health.
+            $finding.Severity = 'Medium'
+            $finding.SeverityLevel = 2
+        }
         $finding.AffectedObject = ($server2025DCs -join ', ')
-        $finding.Description = "$($server2025DCs.Count) Domain Controller(s) are running Windows Server 2025 (build >= $($Script:KnownVulnServer2025Build)), which introduces delegated Managed Service Accounts (dMSA): $($server2025DCs -join ', ')."
-        $finding.Impact = "The dMSA feature ('BadSuccessor') originally let any principal with CreateChild/msDS-DelegatedManagedServiceAccount rights over an OU create a dMSA and link it one-sidedly to an existing account to inherit that account's effective privileges and Kerberos keys - abusable against any account, including Tier-0. Microsoft's August 2025 fix (CVE-2025-53779, build 26100.4946+) made the KDC require a mutual (two-sided) link before honoring the relationship, closing that direct path, but does not restrict who can create a dMSA or write its link attributes - independent research has shown a controlled dMSA can still be paired with a target the attacker also controls to extract that target's credentials. This remains a configuration/delegation exposure, not a fully-patched one."
-        $finding.Remediation = "Ensure all Server 2025 DCs are updated to at least the August 2025 cumulative update (KB5063878, build 26100.4946) or later, which addresses CVE-2025-53779. Independently of patch level, audit and restrict who holds CreateChild/msDS-DelegatedManagedServiceAccount and generic-write rights on OUs and on dMSA objects themselves, especially anywhere at or above Tier-0; monitor for unexpected dMSA creation and changes to the migration-link attributes; consult current Microsoft/vendor guidance before treating any specific configuration as fully mitigated."
+        $finding.Description = "$($server2025DCs.Count) Domain Controller(s) are running Windows Server 2025 (build >= $($Script:KnownVulnServer2025Build)), which introduces delegated Managed Service Accounts (dMSA): $($server2025DCs -join ', '). Patch-level (UBR) breakdown for CVE-2025-53779: $($badSuccessorPatchedDCs.Count) patched (UBR >= $($Script:KnownVulnBadSuccessorPatchedUBR))$(if ($badSuccessorPatchedDCs.Count -gt 0) { ": $($badSuccessorPatchedDCs -join ', ')" }); $($badSuccessorUnpatchedDCs.Count) unpatched$(if ($badSuccessorUnpatchedDCs.Count -gt 0) { ": $($badSuccessorUnpatchedDCs -join ', ')" }); $($badSuccessorUnknownDCs.Count) unknown patch level (UBR unreadable)$(if ($badSuccessorUnknownDCs.Count -gt 0) { ": $($badSuccessorUnknownDCs -join ', ')"})."
+        $finding.Impact = "The dMSA feature ('BadSuccessor') originally let any principal with CreateChild/msDS-DelegatedManagedServiceAccount rights over an OU create a dMSA and link it one-sidedly to an existing account to inherit that account's effective privileges and Kerberos keys - abusable against any account, including Tier-0. Microsoft's August 2025 fix (CVE-2025-53779, build 26100.4946+) made the KDC require a mutual (two-sided) link before honoring the relationship, closing that direct path on DCs confirmed patched above, but does not restrict who can create a dMSA or write its link attributes - independent research has shown a controlled dMSA can still be paired with a target the attacker also controls to extract that target's credentials, even on a fully patched DC. Any DC reported above as unpatched or unknown patch level remains exposed to the original one-sided-link escalation as well."
+        $finding.Remediation = "Ensure all Server 2025 DCs are updated to at least the August 2025 cumulative update (KB5063878, build 26100.4946) or later, which addresses CVE-2025-53779 - prioritize any DC listed above as unpatched or unknown patch level (an unreadable UBR should be treated as unpatched until confirmed otherwise, e.g. remote registry access was denied). Independently of patch level, audit and restrict who holds CreateChild/msDS-DelegatedManagedServiceAccount and generic-write rights on OUs and on dMSA objects themselves, especially anywhere at or above Tier-0; monitor for unexpected dMSA creation and changes to the migration-link attributes; consult current Microsoft/vendor guidance before treating any specific configuration as fully mitigated."
         $finding.Details = @{
-            AffectedDomainControllers = @($server2025DCs)
-            Server2025BuildThreshold  = $Script:KnownVulnServer2025Build
-            PerDomainControllerState  = @($perDcState)
+            AffectedDomainControllers          = @($server2025DCs)
+            Server2025BuildThreshold           = $Script:KnownVulnServer2025Build
+            BadSuccessorPatchedUBRThreshold    = $Script:KnownVulnBadSuccessorPatchedUBR
+            PatchedDomainControllers           = @($badSuccessorPatchedDCs)
+            UnpatchedDomainControllers         = @($badSuccessorUnpatchedDCs)
+            UnknownPatchStatusDomainControllers = @($badSuccessorUnknownDCs)
+            PerDomainControllerState           = @($perDcState)
         }
         $findings += $finding
     }
