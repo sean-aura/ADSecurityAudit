@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.18.1'
+    ModuleVersion = '1.18.2'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -61,6 +61,9 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.18.2 - Fix -FromSnapshot Duplicate-Key Error
+- Fixed Start-ADSecurityAudit -FromSnapshot failing with a "duplicated keys 'ObjectGuid' and 'ObjectGUID'" error: Domain, DomainControllers, Users, and Computers are now flattened to plain PSCustomObjects with an explicit property list (same pattern as Groups/GPOs/ADCS/Trusts) instead of being stored as raw AD cmdlet output, which could carry the same attribute under two differently-cased property names.
+
 v1.18.1 - Fix Get-ADSnapshot Hang, Add Progress Bar, Auto-Create Output Folders
 - Fixed the AD CS collection step in Get-ADSnapshot requesting -Properties * on every certificate template/CA object (including full nTSecurityDescriptor ACLs and other unused binary attributes), which made ConvertTo-Json -Depth 12 during -ToJson serialization look like an indefinite hang on any domain with more than a handful of templates. Now requests only the specific properties Test-ADCSExtended reads, and flattens to plain PSCustomObjects (same pattern as Groups/GPOs). Applied the same fix to domain-trust collection.
 - Added a stage-based Write-Progress bar to Get-ADSnapshot (12 collection stages) and to Invoke-ADRuleSet's offline test loop, matching the progress bar already present in Start-ADSecurityAudit's live-mode loop.

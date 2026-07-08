@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.2]
+### Fixed
+- **`Start-ADSecurityAudit -FromSnapshot` failing with "dictionary ...
+  contains the duplicated keys 'ObjectGuid' and 'ObjectGUID'"**: `Domain`,
+  `DomainControllers`, `Users`, and `Computers` were still being stored in
+  the snapshot as raw `Get-ADDomain`/`Get-ADDomainController`/
+  `Get-ADUser`/`Get-ADComputer` objects. The ActiveDirectory module's
+  property bag can expose the same attribute under two differently-cased
+  names (the typed property alongside a case-variant extended property);
+  both serialise to distinct, valid JSON keys, but `ConvertFrom-Json`'s
+  case-insensitive key comparer throws when reading that JSON back in on
+  the `-FromSnapshot` side. All four collections are now flattened to
+  plain `PSCustomObject`s with an explicit, single-cased property list -
+  the same pattern already used for Groups/GPOs/ADCS/Trusts - which
+  removes the whole class of issue rather than just this one attribute
+  pair. `Computers` no longer collects
+  `msDS-AllowedToActOnBehalfOfOtherIdentity` (RBCD): it's a binary
+  security-descriptor attribute in the same risk class as
+  `nTSecurityDescriptor`, and no `-Snapshot`-aware check currently reads it
+  (the existing RBCD check in `DelegationAudits.ps1` is live-only).
+
 ## [1.18.1]
 ### Fixed
 - **`Get-ADSnapshot` "hang" on `-ToJson`**: the AD CS collection step was

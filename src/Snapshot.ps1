@@ -233,8 +233,16 @@ function Get-ADSnapshot {
     Step-ADSnapshotProgress -Stage 'Domain & Domain Controllers'
     try {
         Write-Verbose "Get-ADSnapshot: collecting domain info..."
-        $snapshot.Domain = Invoke-ADQueryWithRetry -OperationName 'Get-ADDomain (snapshot)' -Query {
+        $rawDomain = Invoke-ADQueryWithRetry -OperationName 'Get-ADDomain (snapshot)' -Query {
             Get-ADDomain -ErrorAction Stop
+        }
+        # Same flattening fix as Users/Computers/DomainControllers above.
+        $snapshot.Domain = [PSCustomObject]@{
+            DistinguishedName = $rawDomain.DistinguishedName
+            DNSRoot           = $rawDomain.DNSRoot
+            NetBIOSName       = $rawDomain.NetBIOSName
+            Forest            = $rawDomain.Forest
+            DomainSID         = "$($rawDomain.DomainSID)"
         }
         Write-Verbose "Get-ADSnapshot: collected domain '$($snapshot.Domain.DNSRoot)'."
     }
@@ -244,8 +252,23 @@ function Get-ADSnapshot {
 
     try {
         Write-Verbose "Get-ADSnapshot: collecting domain controllers..."
-        $snapshot.DomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController (snapshot)' -Query {
+        $rawDCs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController (snapshot)' -Query {
             Get-ADDomainController -Filter * -ErrorAction Stop
+        })
+        # Same flattening fix as Users/Computers above - ADDomainController
+        # objects carry the same class of case-variant property risk.
+        $snapshot.DomainControllers = @($rawDCs | ForEach-Object {
+            [PSCustomObject]@{
+                Name              = $_.Name
+                HostName          = $_.HostName
+                ComputerObjectDN  = $_.ComputerObjectDN
+                IPv4Address       = $_.IPv4Address
+                IsReadOnly        = $_.IsReadOnly
+                IsGlobalCatalog   = $_.IsGlobalCatalog
+                Enabled           = $_.Enabled
+                Site              = $_.Site
+                OperatingSystem   = $_.OperatingSystem
+            }
         })
         Write-Verbose "Get-ADSnapshot: collected $($snapshot.DomainControllers.Count) domain controller(s)."
     }
@@ -312,10 +335,22 @@ function Get-ADSnapshot {
     }
 
     # --- Users (paged) ---
+    #
+    # NOTE (duplicate-key fix, see CHANGELOG): raw Get-ADUser objects were
+    # previously stored directly in the snapshot. The ActiveDirectory
+    # module's property bag can surface the same attribute under two
+    # differently-cased names (e.g. the typed 'ObjectGUID' property
+    # alongside a case-variant extended property) - both serialise fine to
+    # JSON text, but ConvertFrom-Json's case-insensitive key comparer then
+    # throws "dictionary ... contains the duplicated keys 'ObjectGuid' and
+    # 'ObjectGUID'" when reading it back via -FromSnapshot. Flattening to a
+    # plain PSCustomObject with an explicit, single-cased property list
+    # (same pattern as Groups/GPOs/ADCS/Trusts above) avoids the whole
+    # class of issue, not just this one attribute pair.
     Step-ADSnapshotProgress -Stage 'Users'
     try {
         Write-Verbose "Get-ADSnapshot: collecting users..."
-        $snapshot.Users = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser (snapshot)' -Query {
+        $rawUsers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser (snapshot)' -Query {
             Get-ADUser -Filter '*' -ResultPageSize 500 -ErrorAction Stop -Properties `
                 DoesNotRequirePreAuth, UseDESKeyOnly, AllowReversiblePasswordEncryption, `
                 PasswordNeverExpires, TrustedForDelegation, LastLogonDate, PasswordLastSet, `
@@ -324,6 +359,33 @@ function Get-ADSnapshot {
                 'msDS-SupportedEncryptionTypes', userAccountControl, WhenCreated, `
                 'msDS-AllowedToDelegateTo', SIDHistory, PrimaryGroupID
         })
+        $snapshot.Users = @($rawUsers | ForEach-Object {
+            [PSCustomObject]@{
+                Name                                 = $_.Name
+                SamAccountName                        = $_.SamAccountName
+                DistinguishedName                     = $_.DistinguishedName
+                UserPrincipalName                     = $_.UserPrincipalName
+                SID                                   = "$($_.SID)"
+                Description                           = $_.Description
+                Enabled                                = $_.Enabled
+                DoesNotRequirePreAuth                 = $_.DoesNotRequirePreAuth
+                UseDESKeyOnly                          = $_.UseDESKeyOnly
+                AllowReversiblePasswordEncryption     = $_.AllowReversiblePasswordEncryption
+                PasswordNeverExpires                   = $_.PasswordNeverExpires
+                TrustedForDelegation                   = $_.TrustedForDelegation
+                LastLogonDate                          = $_.LastLogonDate
+                PasswordLastSet                        = $_.PasswordLastSet
+                ServicePrincipalNames                  = @($_.ServicePrincipalNames)
+                MemberOf                                = @($_.MemberOf)
+                adminCount                              = $_.adminCount
+                'msDS-SupportedEncryptionTypes'        = $_.'msDS-SupportedEncryptionTypes'
+                userAccountControl                     = $_.userAccountControl
+                WhenCreated                             = $_.WhenCreated
+                'msDS-AllowedToDelegateTo'              = @($_.'msDS-AllowedToDelegateTo')
+                SIDHistory                              = @($_.SIDHistory | ForEach-Object { "$_" })
+                PrimaryGroupID                          = $_.PrimaryGroupID
+            }
+        })
         Write-Verbose "Get-ADSnapshot: collected $($snapshot.Users.Count) users."
     }
     catch {
@@ -331,16 +393,43 @@ function Get-ADSnapshot {
     }
 
     # --- Computers (paged) ---
+    # Same flattening fix as Users above. Note: msDS-AllowedToActOnBehalfOfOtherIdentity
+    # (RBCD) is intentionally no longer collected here - it's a binary
+    # security-descriptor attribute (same risk class as nTSecurityDescriptor,
+    # see the AD CS note above) and no -Snapshot-aware check currently reads
+    # it from Computers (src/DelegationAudits.ps1's RBCD check is live-only).
+    # Re-add it, flattened to an SDDL string, if a snapshot-aware RBCD check
+    # is added later.
     Step-ADSnapshotProgress -Stage 'Computers'
     try {
         Write-Verbose "Get-ADSnapshot: collecting computers..."
-        $snapshot.Computers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer (snapshot)' -Query {
+        $rawComputers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer (snapshot)' -Query {
             Get-ADComputer -Filter '*' -ResultPageSize 500 -ErrorAction Stop -Properties `
                 OperatingSystem, OperatingSystemVersion, LastLogonDate, Enabled, `
                 DistinguishedName, TrustedForDelegation, 'msDS-AllowedToDelegateTo', `
-                'msDS-AllowedToActOnBehalfOfOtherIdentity', PrimaryGroupID, SID, `
-                'ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime', `
-                userAccountControl, WhenCreated, SamAccountName, ServicePrincipalNames
+                PrimaryGroupID, SID, 'ms-Mcs-AdmPwdExpirationTime', `
+                'msLAPS-PasswordExpirationTime', userAccountControl, WhenCreated, `
+                SamAccountName, ServicePrincipalNames
+        })
+        $snapshot.Computers = @($rawComputers | ForEach-Object {
+            [PSCustomObject]@{
+                Name                                = $_.Name
+                SamAccountName                       = $_.SamAccountName
+                DistinguishedName                    = $_.DistinguishedName
+                SID                                  = "$($_.SID)"
+                Enabled                               = $_.Enabled
+                OperatingSystem                       = $_.OperatingSystem
+                OperatingSystemVersion                = $_.OperatingSystemVersion
+                LastLogonDate                          = $_.LastLogonDate
+                TrustedForDelegation                   = $_.TrustedForDelegation
+                'msDS-AllowedToDelegateTo'              = @($_.'msDS-AllowedToDelegateTo')
+                PrimaryGroupID                          = $_.PrimaryGroupID
+                'ms-Mcs-AdmPwdExpirationTime'          = $_.'ms-Mcs-AdmPwdExpirationTime'
+                'msLAPS-PasswordExpirationTime'        = $_.'msLAPS-PasswordExpirationTime'
+                userAccountControl                     = $_.userAccountControl
+                WhenCreated                             = $_.WhenCreated
+                ServicePrincipalNames                  = @($_.ServicePrincipalNames)
+            }
         })
         Write-Verbose "Get-ADSnapshot: collected $($snapshot.Computers.Count) computers."
     }
