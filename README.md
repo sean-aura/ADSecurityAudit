@@ -498,3 +498,4 @@ Built upon industry-standard Active Directory security assessment methodologies 
 - [PingCastle](https://github.com/netwrix/pingcastle) (Netwrix) - many of this project's checks are independently-implemented comparisons to detection concepts PingCastle popularized; see the Independence note at the top of this README
 
 Thanks also to Claude (Anthropic) for AI-assisted source analysis, feature-gap research, and implementation/bug-fix work across this project's v1.2.0-v1.17.1 backlog.
+
