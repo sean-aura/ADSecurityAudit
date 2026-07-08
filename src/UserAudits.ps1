@@ -340,10 +340,26 @@ function Test-ADUserSecurity {
 }
 
 function Test-PrivilegedUser {
+    <#
+    .SYNOPSIS
+        Returns whether a user object belongs to one of the protected
+        groups, based on its MemberOf list.
+    .DESCRIPTION
+        Deliberately untyped ($User has no type constraint): this is called
+        with a live Microsoft.ActiveDirectory.Management.ADUser object in
+        live mode, and with a flattened PSCustomObject (from
+        Get-ADSnapshot's Users collection) in -FromSnapshot mode. A typed
+        [Microsoft.ActiveDirectory.Management.ADUser]$User parameter would
+        make PowerShell try to coerce the PSCustomObject into a real ADUser
+        instance on every -FromSnapshot call, which fails ("the adapter
+        cannot set the value of property 'Name'") since that type isn't
+        constructible that way. Only .MemberOf is read, so no type
+        constraint is needed - this works for either shape.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [Microsoft.ActiveDirectory.Management.ADUser]$User
+        $User
     )
     
     foreach ($group in $Script:ProtectedGroups) {

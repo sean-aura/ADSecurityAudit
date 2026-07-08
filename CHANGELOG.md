@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.3]
+### Fixed
+- **`Test-ADUserSecurity` failing under `-FromSnapshot` with "Cannot process
+  argument transformation on parameter 'User' ... the adapter cannot set
+  the value of property 'Name'"**: a regression from the 1.18.2 flattening
+  fix. `Test-PrivilegedUser`'s `$User` parameter was strongly typed as
+  `[Microsoft.ActiveDirectory.Management.ADUser]`, which was harmless while
+  `Snapshot.Users` held raw `ADUser` objects (the type already matched),
+  but once those were flattened to `PSCustomObject`s in 1.18.2, every
+  `-FromSnapshot` call had to coerce a `PSCustomObject` into a real
+  `ADUser` instance - which fails, since that type isn't constructible via
+  property copying. `Test-PrivilegedUser` only ever reads `.MemberOf`, so
+  the parameter is now untyped and works with either shape.
+
 ## [1.18.2]
 ### Fixed
 - **`Start-ADSecurityAudit -FromSnapshot` failing with "dictionary ...

@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.18.2'
+    ModuleVersion = '1.18.3'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -61,6 +61,9 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.18.3 - Fix Test-ADUserSecurity Regression Under -FromSnapshot
+- Fixed Test-ADUserSecurity failing under -FromSnapshot with "Cannot process argument transformation on parameter 'User' ... the adapter cannot set the value of property 'Name'": a regression from 1.18.2. Test-PrivilegedUser's $User parameter was strongly typed as [Microsoft.ActiveDirectory.Management.ADUser], which broke once Snapshot.Users held flattened PSCustomObjects instead of raw ADUser objects. The parameter is now untyped since the function only reads .MemberOf.
+
 v1.18.2 - Fix -FromSnapshot Duplicate-Key Error
 - Fixed Start-ADSecurityAudit -FromSnapshot failing with a "duplicated keys 'ObjectGuid' and 'ObjectGUID'" error: Domain, DomainControllers, Users, and Computers are now flattened to plain PSCustomObjects with an explicit property list (same pattern as Groups/GPOs/ADCS/Trusts) instead of being stored as raw AD cmdlet output, which could carry the same attribute under two differently-cased property names.
 
