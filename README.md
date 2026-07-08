@@ -437,6 +437,7 @@ Always:
 
 Full details for every release live in [CHANGELOG.md](./CHANGELOG.md). Recent highlights:
 
+- **v1.16.2** - HTML report: findings that fire once per affected object (e.g. `AdminSDHolder ACL Compromise` across several principals) are now consolidated into a single collapsible entry per Category+Issue, with Impact/Remediation/MITRE/ANSSI shown once and every affected object listed underneath with its own specific detail - instead of one repeated top-level finding per object. Report-rendering change only; JSON/CSV exports are unaffected.
 - **v1.16.1** - Bug-fix release: corrected several PowerShell errors surfaced by real-world runs (see CHANGELOG for the full list), rebalanced the risk-score model to use diminishing returns instead of a hard 100-point cap, tightened default retry/backoff timing, added a progress bar to the audit run and export steps, and reworked the HTML report (collapsible findings, working category bars, clickable executive summary, fixed character encoding).
 - **v1.16.0** - Added `Get-ADControlPathGraph` / `Test-ADControlPaths`: an attack-path graph that traces indirect privilege-escalation routes (dangerous ACEs, group membership, ownership) from any non-Tier-0 principal to a Tier-0 target, plus an optional BloodHound-compatible export.
 - **v1.0.0 - v1.15.0** - Built up from core AD hygiene checks (privileged groups, AdminSDHolder, GPOs, trusts, certificate services) to a full parity backlog against known AD security assessment methodologies: risk scoring/ANSSI maturity/MITRE tagging, a collect-once snapshot mode for offline analysis, and dedicated modules for DNS security, Kerberos hardening, legacy-auth exposure, GPO-deployed secrets, known CVEs by patch level, Exchange escalation paths, and RODC posture.
@@ -458,3 +459,6 @@ Built upon industry-standard Active Directory security assessment methodologies 
 - MITRE ATT&CK Framework (Active Directory techniques)
 - Purple Knight Active Directory Security Assessment Tool
 - BloodHound graph theory for AD privilege escalation paths
+- [PingCastle](https://github.com/netwrix/pingcastle) (Netwrix) - many of this project's checks are independently-implemented comparisons to detection concepts PingCastle popularized; see the Independence note at the top of this README
+
+Thanks also to Claude (Anthropic) for AI-assisted source analysis, feature-gap research, and implementation/bug-fix work across this project's v1.2.0-v1.16.2 backlog.
