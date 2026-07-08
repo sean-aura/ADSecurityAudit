@@ -471,6 +471,7 @@ Always:
 
 Full details for every release live in [CHANGELOG.md](./CHANGELOG.md). Recent highlights:
 
+- **v1.17.1** - External intelligence refresh: re-verified all four legacy CVE fix-dates (ZeroLogon, MS17-010, MS14-068, PrintNightmare) directly against MSRC (all confirmed accurate), added a missing MITRE ATT&CK display name (`T1068`), and corrected the BadSuccessor/dMSA finding's text, which had gone stale - Microsoft shipped a partial KDC-side fix (CVE-2025-53779, build 26100.4946+) in August 2025 since that text was written. No detection logic or output-schema changes. See CHANGELOG for two feature-request candidates flagged but not implemented in this release.
 - **v1.17.0** - Added `Get-ADForestConsolidation` / `Export-ADForestConsolidationHTML`: an offline, file-based multi-domain/forest consolidation feature that reads this module's own prior per-domain JSON exports and rolls them up into a forest score, per-category heatmap, domain comparison table, and cross-domain trust-risk enrichment - a free equivalent to PingCastle's paid "Conso" report. Not a live-AD check; no additional AD access required.
 - **v1.16.2** - HTML report: findings that fire once per affected object (e.g. `AdminSDHolder ACL Compromise` across several principals) are now consolidated into a single collapsible entry per Category+Issue, with Impact/Remediation/MITRE/ANSSI shown once and every affected object listed underneath with its own specific detail - instead of one repeated top-level finding per object. Report-rendering change only; JSON/CSV exports are unaffected.
 - **v1.16.1** - Bug-fix release: corrected several PowerShell errors surfaced by real-world runs (see CHANGELOG for the full list), rebalanced the risk-score model to use diminishing returns instead of a hard 100-point cap, tightened default retry/backoff timing, added a progress bar to the audit run and export steps, and reworked the HTML report (collapsible findings, working category bars, clickable executive summary, fixed character encoding).
@@ -496,4 +497,4 @@ Built upon industry-standard Active Directory security assessment methodologies 
 - BloodHound graph theory for AD privilege escalation paths
 - [PingCastle](https://github.com/netwrix/pingcastle) (Netwrix) - many of this project's checks are independently-implemented comparisons to detection concepts PingCastle popularized; see the Independence note at the top of this README
 
-Thanks also to Claude (Anthropic) for AI-assisted source analysis, feature-gap research, and implementation/bug-fix work across this project's v1.2.0-v1.17.0 backlog.
+Thanks also to Claude (Anthropic) for AI-assisted source analysis, feature-gap research, and implementation/bug-fix work across this project's v1.2.0-v1.17.1 backlog.
