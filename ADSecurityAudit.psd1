@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.16.2'
+    ModuleVersion = '1.17.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -40,6 +40,8 @@
         'Get-ADControlPathGraph',
         'Test-ADControlPaths',
         'Export-ADControlPathGraphBloodHound',
+        'Get-ADForestConsolidation',
+        'Export-ADForestConsolidationHTML',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -59,6 +61,9 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.17.0 - Multi-Domain / Forest Consolidation
+- Added Get-ADForestConsolidation / Export-ADForestConsolidationHTML: an offline, file-based post-processing feature (not a live-AD detection module, not part of the Main.ps1 test dispatch table) that reads two or more of this module's own prior AD_Security_Audit_/AD_Security_Score_ JSON exports - one per domain - and rolls them up into a forest-wide view: a forest score/maturity using the same worst-category (MAX) semantics as Get-ADRiskScore, a per-category heatmap (worst domain per category), a worst-first domain comparison table, cross-domain trust-risk enrichment (annotates Test-ADDomainTrusts findings with the target domain's own score/maturity when that domain's report is also supplied), and "not scanned this run" flags for domains missing versus a prior consolidated run. No AD queries, credentials, or network access of any kind - pure offline aggregation of exports this module already produces. Comparable in spirit to PingCastle's paid "Conso" report, offered for free and implemented independently against this project's own JSON schema.
+
 v1.16.2 - HTML Report: Consolidated Findings
 - Findings that fire once per affected object (e.g. AdminSDHolder ACL Compromise across several principals) previously rendered as N separate top-level findings with identical Impact/Remediation text. The HTML report now groups by Category+Issue and renders one consolidated finding per group, with Impact/Remediation/MITRE/ANSSI shown once and every affected object (with its own specific description and detection time) listed underneath. Single-object findings render exactly as before. JSON/CSV exports are unchanged - this is a report-rendering change only, not an output-schema change.
 

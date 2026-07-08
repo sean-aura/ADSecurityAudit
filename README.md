@@ -41,6 +41,7 @@ The repository also includes a responsive web dashboard (in `ui/`) that visualiz
 - **Exchange-in-AD Privilege Escalation**: Flags Exchange security principals (Exchange Windows Permissions, Exchange Trusted Subsystem, Exchange Servers, Exchange Enterprise Servers, Organization Management) holding GenericAll/WriteDacl/WriteOwner on the domain head object (the PrivExchange-style path to DCSync) or on AdminSDHolder, firing on residual ACEs even after Exchange has been fully decommissioned
 - **Read-Only Domain Controller Security Posture**: Audits RODCs for Tier-0/privileged principals already cached (`msDS-RevealedUsers`) or allowed to replicate (`msDS-RevealOnDemandGroup`), password replication policy gaps (allowed list too broad or denied list missing expected privileged groups via `msDS-NeverRevealGroup`), and orphaned RODC-specific `krbtgt_*` accounts left behind after an RODC is demoted or removed
 - **Attack-Path Graph & Indirect-Privilege (Control-Path) Findings**: Builds a directed control-edge graph from dangerous ACEs, group membership, and object ownership (`Get-ADControlPathGraph`), then computes reachability from non-Tier-0 principals to the Tier-0 set - Domain Admins/Enterprise Admins/etc. (per `Get-ADTier0Principal`), Domain Controllers, AdminSDHolder, and the domain head object - via `Test-ADControlPaths`, emitting a finding per reachable path with the full hop chain recorded in `Details`. Surfaces the indirect escalation paths that flat, per-object permission checks can't express on their own; a broad principal (Everyone/Authenticated Users/Domain Users/ANONYMOUS LOGON) on any path is always Critical. Includes an optional BloodHound-compatible generic-edge JSON export (`Export-ADControlPathGraphBloodHound`) for cross-checking against a BloodHound collection of the same environment
+- **Multi-Domain / Forest Consolidation**: `Get-ADForestConsolidation` reads two or more of this module's own prior JSON exports (one per domain) entirely offline - no additional AD queries - and rolls them up into a forest score/maturity (same worst-category semantics as `Get-ADRiskScore`), a per-category heatmap, a worst-first domain comparison table, and cross-domain trust-risk enrichment (annotating `Test-ADDomainTrusts` findings with the target domain's own score when that domain was also scanned); `Export-ADForestConsolidationHTML` renders the result as a standalone report. A free equivalent to PingCastle's paid "Conso" consolidation feature
 
 ## Requirements
 
@@ -160,6 +161,39 @@ New audit modules going forward should accept an optional `[hashtable]$Snapshot`
 ### Visual dashboard
 
 Open `ui/index.html` in a browser and either upload your generated JSON report or click **Load sample report** to explore the UI. The dashboard highlights severity distributions, privileged account counts, and provides tap-to-expand detail views with remediation references for each finding.
+
+## Multi-Domain / Forest Consolidation
+
+As of v1.17.0, `Get-ADForestConsolidation` rolls up two or more of this module's own prior exports - one `AD_Security_Audit_<timestamp>.json` + `AD_Security_Score_<timestamp>.json` pair per domain, produced by an existing `Start-ADSecurityAudit` run - into a single forest-wide view. This is an **offline, file-based post-processing feature**: it performs no additional LDAP/AD queries, requires no credentials, and needs no network access to any domain controller. It is not part of the live audit test set (`Main.ps1`'s `$allTests`) - it's a standalone command you run after one-or-more domains have already been scanned, the same way `Export-ADControlPathGraphBloodHound` is its own standalone command.
+
+It produces:
+
+- **Forest score rollup** - a forest-wide score and ANSSI maturity level using the exact same worst-category (MAX) semantics as the per-domain `Get-ADRiskScore`: the forest is only as strong as its weakest domain, not an average of all of them.
+- **Per-category heatmap** - for each audit category, the worst per-domain score across the forest, so a category that's fine in one domain doesn't get diluted into an average with a domain where it's bad.
+- **Domain comparison table** - finding counts by severity, per domain, sorted worst-first.
+- **Cross-domain trust-risk enrichment** - for every `Test-ADDomainTrusts` finding naming a target domain, if a report for that target domain is also present in the input set, the finding's `Details` are annotated with the target domain's own score/maturity (e.g. "trusts Domain B, which itself scores 85/100, Maturity 1"); a finding whose target domain isn't part of the input set renders normally, unannotated.
+- **Newly-missing domains** - pass a previous consolidated JSON via `-PriorConsolidationPath` and any domain present there but absent from the current input is flagged as "not scanned this run" instead of silently disappearing from the rollup.
+
+Domain names are resolved from (in order): an explicit `-DomainName` array matching the discovered report pairs 1:1, the per-domain subfolder a report pair lives in (`<ReportPath>\<DomainName>\AD_Security_Audit_*.json`), or a synthetic `UnknownDomain-N` label with a warning - the underlying finding schema doesn't carry a `Domain` field, since a single audit run is already scoped to one domain.
+
+```powershell
+# Assumes AD_Security_Audit_*.json / AD_Security_Score_*.json exports already
+# exist for each domain, e.g. one Start-ADSecurityAudit run per domain saved
+# into its own subfolder:
+#   C:\Reports\contoso.com\AD_Security_Audit_2026-07-01.json
+#   C:\Reports\child.contoso.com\AD_Security_Audit_2026-07-01.json
+
+Get-ADForestConsolidation -ReportPath "C:\Reports" -Verbose |
+    Export-ADForestConsolidationHTML -OutputPath "C:\Reports\forest-report.html"
+
+# Also persist the consolidated JSON, and compare against a prior run to
+# catch domains that weren't re-scanned this time:
+Get-ADForestConsolidation -ReportPath "C:\Reports" `
+    -PriorConsolidationPath "C:\Reports\AD_Forest_Consolidation_2026-06-01.json" `
+    -ToJson "C:\Reports\AD_Forest_Consolidation_2026-07-01.json"
+```
+
+Comparable in spirit to PingCastle's paid "Conso" (multi-domain consolidation) report - see the Independence note above: this is implemented independently against this project's own JSON schema, not against PingCastle's report format.
 
 ## Security Findings Categories
 
@@ -437,6 +471,7 @@ Always:
 
 Full details for every release live in [CHANGELOG.md](./CHANGELOG.md). Recent highlights:
 
+- **v1.17.0** - Added `Get-ADForestConsolidation` / `Export-ADForestConsolidationHTML`: an offline, file-based multi-domain/forest consolidation feature that reads this module's own prior per-domain JSON exports and rolls them up into a forest score, per-category heatmap, domain comparison table, and cross-domain trust-risk enrichment - a free equivalent to PingCastle's paid "Conso" report. Not a live-AD check; no additional AD access required.
 - **v1.16.2** - HTML report: findings that fire once per affected object (e.g. `AdminSDHolder ACL Compromise` across several principals) are now consolidated into a single collapsible entry per Category+Issue, with Impact/Remediation/MITRE/ANSSI shown once and every affected object listed underneath with its own specific detail - instead of one repeated top-level finding per object. Report-rendering change only; JSON/CSV exports are unaffected.
 - **v1.16.1** - Bug-fix release: corrected several PowerShell errors surfaced by real-world runs (see CHANGELOG for the full list), rebalanced the risk-score model to use diminishing returns instead of a hard 100-point cap, tightened default retry/backoff timing, added a progress bar to the audit run and export steps, and reworked the HTML report (collapsible findings, working category bars, clickable executive summary, fixed character encoding).
 - **v1.16.0** - Added `Get-ADControlPathGraph` / `Test-ADControlPaths`: an attack-path graph that traces indirect privilege-escalation routes (dangerous ACEs, group membership, ownership) from any non-Tier-0 principal to a Tier-0 target, plus an optional BloodHound-compatible export.
@@ -461,4 +496,4 @@ Built upon industry-standard Active Directory security assessment methodologies 
 - BloodHound graph theory for AD privilege escalation paths
 - [PingCastle](https://github.com/netwrix/pingcastle) (Netwrix) - many of this project's checks are independently-implemented comparisons to detection concepts PingCastle popularized; see the Independence note at the top of this README
 
-Thanks also to Claude (Anthropic) for AI-assisted source analysis, feature-gap research, and implementation/bug-fix work across this project's v1.2.0-v1.16.2 backlog.
+Thanks also to Claude (Anthropic) for AI-assisted source analysis, feature-gap research, and implementation/bug-fix work across this project's v1.2.0-v1.17.0 backlog.
