@@ -19,7 +19,15 @@ function Start-ADSecurityAudit {
         [string[]]$ExcludeTests = @(),
         
         [Parameter()]
-        [switch]$IncludePrivilegedUsersReport
+        [switch]$IncludePrivilegedUsersReport,
+
+        # Added in v1.3.0 (collect-once snapshot contract, see
+        # docs/features/02-domain-snapshot.md). Path to a JSON snapshot
+        # produced by Get-ADSnapshot -ToJson. When supplied, the audit is
+        # re-run offline against that snapshot via Invoke-ADRuleSet instead
+        # of querying AD live - no live AD access is performed.
+        [Parameter()]
+        [string]$FromSnapshot
     )
     
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -49,6 +57,52 @@ function Start-ADSecurityAudit {
         Write-Host "==================================================" -ForegroundColor Cyan
         Write-Host "Start Time: $startTime`n" -ForegroundColor Gray
         
+        if ($FromSnapshot) {
+            # --- Offline re-analysis path (v1.3.0): no live AD access ---
+            Write-Host "Offline mode: re-analysing snapshot '$FromSnapshot' (no live AD access)`n" -ForegroundColor Cyan
+
+            if (-not (Test-Path $FromSnapshot)) {
+                Write-Error "Snapshot file not found: $FromSnapshot"
+                return
+            }
+
+            try {
+                $rawSnapshot = Get-Content -Path $FromSnapshot -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                $snapshot = ConvertTo-ADHashtable -InputObject $rawSnapshot
+            }
+            catch {
+                Write-Error "Failed to load snapshot from '$FromSnapshot': $_"
+                return
+            }
+
+            $domain = $snapshot.Domain
+            if (-not $domain) {
+                Write-Error "Snapshot '$FromSnapshot' does not contain domain information; cannot proceed."
+                return
+            }
+
+            Write-Host "Domain: $($domain.DNSRoot)" -ForegroundColor Green
+            Write-Host "Domain DN: $($domain.DistinguishedName)`n" -ForegroundColor Green
+            Write-Host "Snapshot collected: $($snapshot.CollectedDate)`n" -ForegroundColor Gray
+
+            # Determine which tests to run (same semantics as live mode).
+            if ($IncludeTests) {
+                $testsToRun = $Script:ADTestFunctionRegistry.Keys | Where-Object { $_ -in $IncludeTests -and $_ -notin $ExcludeTests }
+            }
+            else {
+                $testsToRun = $Script:ADTestFunctionRegistry.Keys | Where-Object { $_ -notin $ExcludeTests }
+            }
+
+            Write-Host "Running $($testsToRun.Count) test(s) via Invoke-ADRuleSet...`n" -ForegroundColor Yellow
+            $allFindings = @(Invoke-ADRuleSet -Snapshot $snapshot -IncludeTests $testsToRun `
+                -InactiveDaysThreshold $InactiveDaysThreshold -PasswordAgeThreshold $PasswordAgeThreshold)
+
+            if ($IncludePrivilegedUsersReport) {
+                Write-Warning "IncludePrivilegedUsersReport requires live AD access and is not available in -FromSnapshot mode; skipping."
+            }
+            $privilegedUsers = $null
+        }
+        else {
         # Verify AD module is available
         if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
             Write-Error "Active Directory PowerShell module is not installed. Please install RSAT tools."
@@ -114,12 +168,25 @@ function Start-ADSecurityAudit {
             'DomainSecurity' = { Test-ADDomainSecurity }
             'DangerousPermissions' = { Test-ADDangerousPermissions }
             'CertificateServices' = { Test-ADCertificateServices }
+            'ADCSExtended' = { Test-ADCSExtended }
             'KRBTGTAccount' = { Test-KRBTGTAccount -MaxPasswordAgeDays 180 }
             'DomainTrusts' = { Test-ADDomainTrusts }
             'LAPSDeployment' = { Test-LAPSDeployment }
             'AuditPolicyConfiguration' = { Test-AuditPolicyConfiguration }
             'ConstrainedDelegation' = { Test-ConstrainedDelegation }
             'DomainAdminEquivalence' = { Test-ADDomainAdminEquivalence }
+            'MachineAccountQuota' = { Test-ADMachineAccountQuota }
+            'DomainHardeningFlags' = { Test-ADDomainHardeningFlags }
+            'CoercionAndRelayExposure' = { Test-ADCoercionAndRelayExposure }
+            'DnsSecurity' = { Test-ADDnsSecurity }
+            'LegacyAuthSurface' = { Test-ADLegacyAuthSurface }
+            'KerberosHardening' = { Test-ADKerberosHardening }
+            'StaleObjectDepth' = { Test-ADStaleObjectDepth }
+            'GpoDeployedSecrets' = { Test-ADGpoDeployedSecrets }
+            'KnownDCVulnerabilities' = { Test-ADKnownDCVulnerabilities }
+            'ExchangeEscalation' = { Test-ADExchangeEscalation }
+            'RodcSecurity' = { Test-ADRodcSecurity }
+            'ControlPaths' = { Test-ADControlPaths }
         }
         
         # Determine which tests to run
@@ -194,6 +261,7 @@ function Start-ADSecurityAudit {
                 Write-Warning "Failed to enumerate privileged users: $_"
             }
         }
+        }
         
         $endTime = Get-Date
         $duration = $endTime - $startTime
@@ -209,12 +277,28 @@ function Start-ADSecurityAudit {
             Medium = ($allFindings | Where-Object { $_.Severity -eq 'Medium' }).Count
             Low = ($allFindings | Where-Object { $_.Severity -eq 'Low' }).Count
         }
+
+        # Tag every finding with MITRE / ANSSI / Weight from the central mapping
+        # table so findings are born score/MITRE-aware (v1.2.0 contract layer).
+        foreach ($finding in $allFindings) {
+            [void](Set-ADFindingMetadata -Finding $finding)
+        }
+
+        # Compute the risk score, per-category sub-scores, and ANSSI maturity.
+        $riskScore = Get-ADRiskScore -Findings $allFindings
         
         Write-Host "Total Findings: $($allFindings.Count)" -ForegroundColor White
         Write-Host "  Critical: $($summary.Critical)" -ForegroundColor Red
         Write-Host "  High: $($summary.High)" -ForegroundColor DarkRed
         Write-Host "  Medium: $($summary.Medium)" -ForegroundColor Yellow
         Write-Host "  Low: $($summary.Low)" -ForegroundColor Gray
+
+        Write-Host "`nRisk Score: $($riskScore.TotalScore)/100 (higher = worse)" -ForegroundColor White
+        Write-Host "ANSSI Maturity: $($riskScore.MaturityLabel)" -ForegroundColor White
+        if ($riskScore.CategoryScores -and $riskScore.CategoryScores.Count -gt 0) {
+            $worst = $riskScore.CategoryScores[0]
+            Write-Host "Worst Category: $($worst.Category) ($($worst.Score)/100)" -ForegroundColor Gray
+        }
         
         if ($privilegedUsers) {
             Write-Host "`nPrivileged Users: $($privilegedUsers.Count)" -ForegroundColor White
@@ -231,12 +315,14 @@ function Start-ADSecurityAudit {
             
             # Export to HTML
             $htmlPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.html"
-            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers
+            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore
             Write-Host "HTML report exported to: $htmlPath" -ForegroundColor Green
             
             # Export to CSV with formula injection protection
+            # NOTE (output contract): existing columns are never reordered or
+            # removed. New flat fields are APPENDED after DetectedDate.
             $csvPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.csv"
-            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate |
+            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight |
                 ForEach-Object {
                     [PSCustomObject]@{
                         Category = $_.Category | ConvertTo-SafeCsvValue
@@ -247,10 +333,19 @@ function Start-ADSecurityAudit {
                         Impact = $_.Impact | ConvertTo-SafeCsvValue
                         Remediation = $_.Remediation | ConvertTo-SafeCsvValue
                         DetectedDate = $_.DetectedDate
+                        MitreTechnique = $_.MitreTechnique | ConvertTo-SafeCsvValue
+                        AnssiControl = $_.AnssiControl | ConvertTo-SafeCsvValue
+                        Weight = $_.Weight
                     }
                 } |
                 Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
             Write-Host "CSV report exported to: $csvPath" -ForegroundColor Green
+
+            # Export the score / maturity / MITRE roll-up as a sidecar JSON so
+            # the summary does not pollute the per-finding CSV/JSON schema.
+            $scorePath = Join-Path $ExportPath "AD_Security_Score_$timestamp.json"
+            $riskScore | ConvertTo-Json -Depth 6 | Out-File -FilePath $scorePath -Encoding UTF8
+            Write-Host "Score summary exported to: $scorePath" -ForegroundColor Green
         }
         
         # Export privileged users report with formula injection protection

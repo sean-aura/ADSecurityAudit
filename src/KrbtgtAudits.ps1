@@ -4,18 +4,44 @@ function Test-KRBTGTAccount {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [int]$MaxPasswordAgeDays = 180
+        [int]$MaxPasswordAgeDays = 180,
+
+        # Added in v1.3.0 (collect-once snapshot contract, see
+        # docs/features/02-domain-snapshot.md). Optional and backward
+        # compatible: when omitted, this function queries AD live exactly as
+        # before.
+        [Parameter()]
+        [hashtable]$Snapshot
     )
     
     Write-Verbose "Starting KRBTGT account security audit..."
     $findings = @()
     
     try {
-        # Get KRBTGT account
-        $krbtgtAccount = Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Properties PasswordLastSet, Enabled, Description -ErrorAction Stop
+        # Get KRBTGT account - from the snapshot's Users collection when one
+        # was supplied, otherwise via a live query (unchanged behaviour).
+        if ($Snapshot -and $Snapshot.ContainsKey('Users') -and $Snapshot.Users) {
+            Write-Verbose "Test-KRBTGTAccount: using snapshot data."
+            $krbtgtAccount = $Snapshot.Users | Where-Object { $_.SamAccountName -eq 'krbtgt' } | Select-Object -First 1
+            if (-not $krbtgtAccount) {
+                throw "krbtgt account not found in snapshot Users collection."
+            }
+        }
+        else {
+            $krbtgtAccount = Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Properties PasswordLastSet, Enabled, Description -ErrorAction Stop
+        }
         
         if ($krbtgtAccount.PasswordLastSet) {
-            $passwordAge = (Get-Date) - $krbtgtAccount.PasswordLastSet
+            # PasswordLastSet may come back as a [string] after a JSON
+            # round-trip (-ToJson / -FromSnapshot); coerce explicitly so the
+            # subtraction below is always DateTime - DateTime.
+            $passwordLastSet = if ($krbtgtAccount.PasswordLastSet -is [datetime]) {
+                $krbtgtAccount.PasswordLastSet
+            }
+            else {
+                [datetime]$krbtgtAccount.PasswordLastSet
+            }
+            $passwordAge = (Get-Date) - $passwordLastSet
             
             # Critical finding if KRBTGT password is too old
             if ($passwordAge.Days -gt $MaxPasswordAgeDays) {

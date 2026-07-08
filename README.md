@@ -18,12 +18,27 @@ The repository also includes a responsive web dashboard (in `ui/`) that visualiz
 
 ### Advanced Security Features
 
-- **Certificate Services (AD CS) Vulnerabilities**: Scans for exploitable certificate templates (ESC1/ESC2/ESC3) where attackers can request certificates for privilege escalation, and audits Certificate Authority permissions
+- **Certificate Services (AD CS) Vulnerabilities**: Scans for exploitable certificate templates (ESC1/ESC2/ESC3) where attackers can request certificates for privilege escalation, and audits Certificate Authority permissions (ESC7)
 - **KRBTGT Password Age Analysis**: Monitors KRBTGT account password age to prevent Golden Ticket attacks, alerting when passwords exceed the recommended 180-day rotation threshold
 - **Domain Trust Security**: Comprehensive auditing of trust relationships including SID filtering status, selective authentication validation, trust direction analysis, and bidirectional trust detection
 - **LAPS Deployment Verification**: Validates Local Administrator Password Solution (LAPS) schema installation, checks computer coverage percentage, and identifies systems with static local admin passwords
 - **Audit Policy Configuration**: Verifies critical audit policies are enabled on domain controllers, validates SACL configurations on sensitive objects, and ensures proper security event logging
 - **Constrained Delegation Analysis**: Identifies accounts with constrained delegation, dangerous protocol transition (T2A4D), and resource-based constrained delegation (RBCD) configurations
+- **Risk Scoring, ANSSI Maturity & MITRE ATT&CK Tagging**: Rolls findings up into a 0-100 risk score with per-category sub-scores, a 1-5 ANSSI-style maturity level, and MITRE ATT&CK technique tagging, all driven by a single source-of-truth mapping table (`Get-ADRiskScore`, `Set-ADFindingMetadata`)
+- **Collect-Once Snapshot & Offline Mode**: `Get-ADSnapshot` performs a single paged collection pass reused across checks, and `Start-ADSecurityAudit -FromSnapshot` re-runs the full audit offline with no live AD access
+- **Machine Account Quota**: Audits `ms-DS-MachineAccountQuota` on the domain root and flags the unmodified default of 10 or any other non-zero value that lets authenticated users self-service-join computer accounts, a common foothold for RBCD relay and SamAccountName-spoofing privilege escalation
+- **Domain Hardening Flags**: Positionally parses the `dSHeuristics` attribute for dangerous settings (anonymous access, List Object security mode, AdminSDHolder exclusion mask weakening), flags broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group, and performs a strictly read-only anonymous LDAP/RootDSE bind probe
+- **Coercion & NTLM Relay Exposure**: Checks every Domain Controller for the configuration that enables coerce-then-relay attacks - Print Spooler (PrinterBug) or WebClient (WebDAV) running, LDAP signing not enforced, and LDAP channel binding (EPA) not required
+- **AD CS Extended (ESC4, ESC8, ROCA, Weak PKI Crypto)**: Extends AD CS coverage beyond ESC1/2/3/7 with dangerous template ACLs (ESC4), high-risk templates missing a manager-approval gate, CA web enrollment reachable over HTTP without Extended Protection for Authentication (ESC8), ROCA-vulnerable (CVE-2017-15361) RSA keys, and weak signature algorithms/RSA key sizes across the CA certificates and the NTAuth/AIA/Root store
+- **AD-Integrated DNS Security**: Audits DnsAdmins group membership (a well-known Domain-Controller code-execution path via the DNS server's `ServerLevelPluginDll` mechanism), DNS zone transfer exposure (transfers to any server or any NS-listed server rather than an explicit secondary list), insecure (nonsecure) dynamic DNS updates, and overly broad CreateChild rights on AD-integrated zone objects granted to Authenticated Users/Everyone/ANONYMOUS LOGON (ADIDNS spoofing/MITM surface)
+- **Legacy Auth & Name-Poisoning Surface**: Audits GPO/registry-enforced legacy authentication and name-resolution poisoning surface - SMBv1 enabled/not disabled by policy, SMB signing not required, LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3), LLMNR not disabled by policy, and WSUS delivered over HTTP (package-injection MITM surface) - distinguishing policy-enforced values (naming the source GPO) from unset/local ones
+- **Kerberos Hardening Depth**: Audits RC4 Kerberos encryption still being permitted (Tier-0 privileged accounts and krbtgt via `msDS-SupportedEncryptionTypes`, trusts missing the `TRUST_USES_AES_KEYS` attribute, and the domain-wide "Configure encryption types allowed for Kerberos" GPO/registry policy), Kerberos Armoring (FAST) not enabled (KDC and client `EnableCbacAndArmor` policy), and cross-trust TGT delegation (trusts with the `CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION` `trustAttributes` flag set)
+- **Stale-Object & Hygiene Depth**: Audits accounts with the PASSWD_NOTREQD flag set (`userAccountControl` 0x0020), non-default `primaryGroupID` on user and computer objects (a known membership-hiding technique, distinguishing the legitimate Domain Controllers RID for genuine DCs from a suspicious value elsewhere), duplicate Service Principal Names across users and computers (reporting every holder), Domain Controllers not covered by any AD Sites & Services subnet object, and insufficient Domain Controller count
+- **GPO-Deployed Secrets & Insecure Settings**: Scans each GPO's SYSVOL policy folder for leftover Group Policy Preferences (GPP) `cpassword` values (MS14-025, flagged by presence and file path only - never decrypted), credential-flavoured patterns embedded in deployed logon/startup scripts (reported by file and line number only), and insecure settings pushed via GPO (Windows Firewall disabled, hidden file extensions, RDP Network Level Authentication disabled or an insecure RDP security layer)
+- **Known DC Vulnerabilities by Patch/Build**: Flags Domain Controller exposure to ZeroLogon (CVE-2020-1472), MS17-010/EternalBlue, MS14-068, and PrintNightmare (CVE-2021-34527, only while the Spooler service is running) strictly from OS build/install date and installed hotfix level (`Get-HotFix`) against documented fix-date thresholds, plus BadSuccessor/dMSA escalation exposure on Windows Server 2025-level Domain Controllers - every determination is a version/patch/config read, never exploitation
+- **Exchange-in-AD Privilege Escalation**: Flags Exchange security principals (Exchange Windows Permissions, Exchange Trusted Subsystem, Exchange Servers, Exchange Enterprise Servers, Organization Management) holding GenericAll/WriteDacl/WriteOwner on the domain head object (the PrivExchange-style path to DCSync) or on AdminSDHolder, firing on residual ACEs even after Exchange has been fully decommissioned
+- **Read-Only Domain Controller Security Posture**: Audits RODCs for Tier-0/privileged principals already cached (`msDS-RevealedUsers`) or allowed to replicate (`msDS-RevealOnDemandGroup`), password replication policy gaps (allowed list too broad or denied list missing expected privileged groups via `msDS-NeverRevealGroup`), and orphaned RODC-specific `krbtgt_*` accounts left behind after an RODC is demoted or removed
+- **Attack-Path Graph & Indirect-Privilege (Control-Path) Findings**: Builds a directed control-edge graph from dangerous ACEs, group membership, and object ownership (`Get-ADControlPathGraph`), then computes reachability from non-Tier-0 principals to the Tier-0 set - Domain Admins/Enterprise Admins/etc. (per `Get-ADTier0Principal`), Domain Controllers, AdminSDHolder, and the domain head object - via `Test-ADControlPaths`, emitting a finding per reachable path with the full hop chain recorded in `Details`. Surfaces the indirect escalation paths that flat, per-object permission checks can't express on their own; a broad principal (Everyone/Authenticated Users/Domain Users/ANONYMOUS LOGON) on any path is always Critical. Includes an optional BloodHound-compatible generic-edge JSON export (`Export-ADControlPathGraphBloodHound`) for cross-checking against a BloodHound collection of the same environment
 
 ## Requirements
 
@@ -65,12 +80,51 @@ Customize the audit with additional parameters:
 
 Start-ADSecurityAudit -OutputPath "C:\ADReports" -Verbose
 
+### Offline / Snapshot-Based Audit
+Collect once, analyze later or elsewhere, with no live AD access at analysis time:
+
+Get-ADSnapshot -ToJson "C:\Snapshots\contoso.json"
+Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso.json" -ExportPath "C:\ADReports"
+
 
 ### Output Formats
-The script generates three report formats:
-- **HTML Report**: Color-coded interactive report with severity indicators
-- **CSV Export**: Detailed findings in spreadsheet format for analysis
-- **JSON Export**: Machine-readable format for integration with SIEM or automation tools
+The script generates these report formats:
+- **HTML Report**: Color-coded interactive report with severity indicators, a risk-score gauge, an ANSSI maturity panel, per-category risk bars, and a MITRE ATT&CK technique summary
+- **CSV Export**: Detailed findings in spreadsheet format for analysis (now includes appended `MitreTechnique`, `AnssiControl`, and `Weight` columns)
+- **JSON Export**: Machine-readable findings (the new metadata fields serialize automatically)
+- **Score sidecar (JSON)**: `AD_Security_Score_<timestamp>.json` containing the global risk score, per-category sub-scores, maturity level, and MITRE roll-up
+
+## Scoring & Maturity
+
+As of v1.2.0 every audit run produces an executive roll-up on top of the raw findings, computed by `Get-ADRiskScore`:
+
+- **Risk score (0-100, higher = worse)** — each finding carries a `Weight`; a category's sub-score is the sum of its findings' weights (capped at 100), and the **global score is the worst category's sub-score** (PingCastle-style "you are as exposed as your weakest area").
+- **Per-category sub-scores** — a 0-100 score per audit category (Kerberos Security, Certificate Services, Replication Security, etc.), rendered as bars in the HTML report.
+- **ANSSI-style maturity level (1-5, higher = better)** — derived from the ANSSI control level mapped to each finding. A single Level 1 finding caps maturity at Level 1; maturity rises as the most critical hygiene gaps are closed.
+- **MITRE ATT&CK tagging** — every finding is tagged with the technique it maps to (e.g. `T1558.001` Golden Ticket, `T1003.006` DCSync, `T1649` AD CS abuse), and the report shows a technique-frequency summary.
+
+All tagging flows from a **single source-of-truth mapping table** in `src/Scoring.ps1` (`Issue → MITRE technique → ANSSI control → weight`). To extend coverage for a new check, add one entry there keyed by the finding's exact `Issue` string; `Set-ADFindingMetadata` and `Get-ADRiskScore` pick it up automatically. The output schema is **additive-only**: new finding fields and CSV columns are appended, never reordered or removed.
+
+> Note: MITRE technique IDs are authoritative; the ANSSI control identifiers follow ANSSI/PingCastle maturity conventions and should be reviewed against the current official ANSSI Active Directory control catalogue before use in formal compliance reporting.
+
+## Collect-Once Snapshot & Offline Analysis
+
+As of v1.3.0, AD collection is decoupled from rule evaluation:
+
+- **`Get-ADSnapshot [-ToJson <path>]`** performs one paged, read-only collection pass over users, computers, groups, GPOs (+ permissions), ACLs on key objects (AdminSDHolder, domain root, certificate templates container), AD CS configuration, DNS zones, domain trusts, DC inventory, and the domain's `ms-DS-MachineAccountQuota` attribute, returning a single structured snapshot. Pass `-ToJson` to also persist it to disk for later offline re-analysis.
+- **`Invoke-ADRuleSet -Snapshot $snapshot`** dispatches the `Test-*` audit functions against that snapshot. Before passing `-Snapshot` to a function it checks whether that function actually declares the parameter (`(Get-Command $fn).Parameters.ContainsKey('Snapshot')`); functions that haven't been retrofitted yet are simply invoked live instead of erroring. Audit modules are being retrofitted with an optional `-Snapshot` parameter gradually (currently `Test-ADUserSecurity`, `Test-KRBTGTAccount`, `Test-ADMachineAccountQuota`, `Test-ADDomainHardeningFlags` (dSHeuristics and Pre-Windows 2000 membership only - its anonymous-bind check is a live network probe and is skipped in offline mode), `Test-ADCoercionAndRelayExposure` (its Spooler/WebClient/LDAP-registry checks are live per-DC network probes and are skipped entirely in offline mode; only the DC list is taken from the snapshot), and `Test-ADCSExtended` (template/CA enumeration and the approval-gate/CA-certificate weak-crypto checks read from `Snapshot.ADCS`; the per-template ACL read (ESC4), the CA-host web-enrollment probe (ESC8), and the NTAuth/AIA/Root store sweep are live-only and are skipped entirely in offline mode), and `Test-ADDnsSecurity` (the DnsAdmins membership check reads from `Snapshot.Groups`; the zone transfer, dynamic-update, and ADIDNS CreateChild checks read zone-level attributes/ACLs not present in the current snapshot schema and are skipped entirely in offline mode)); `Test-ADLegacyAuthSurface` declares an optional `-Snapshot` parameter for registry consistency but is entirely live-only (GPO-linked registry policy state and per-DC registry reads have no snapshot equivalent) and returns no findings when invoked with `-Snapshot`; `Test-ADKerberosHardening` (the account-level RC4 check reads from `Snapshot.Users` and the Tier-0 set, and both trust-level checks read from `Snapshot.Trusts`; the domain-wide encryption-type policy and Kerberos Armoring (FAST) checks are live-only GPO/registry reads and are skipped entirely in offline mode); `Test-ADStaleObjectDepth` (the PASSWD_NOTREQD, primaryGroupID, and duplicate-SPN checks read from `Snapshot.Users`/`Snapshot.Computers`, and the DC-count check reads from `Snapshot.DomainControllers`; the DC subnet/site registration check always performs one live, read-only `Get-ADReplicationSubnet` call, since subnet objects are not part of the current snapshot schema, even when the DC list itself comes from the snapshot); `Test-ADGpoDeployedSecrets` declares an optional `-Snapshot` parameter and will use `Snapshot.GPOs` for the GPO id/name list when supplied, but every cpassword/script/GptTmpl.inf read is live SYSVOL file-share I/O that has no snapshot equivalent, so this audit always performs live, read-only I/O regardless of `-Snapshot`; `Test-ADKnownDCVulnerabilities` declares an optional `-Snapshot` parameter for registry consistency but is entirely live-only (per-DC OS build, installed hotfix level, and Print Spooler service state have no snapshot equivalent) and returns no findings when invoked with `-Snapshot`; `Test-ADExchangeEscalation` reads entirely from `Snapshot.ACLs.DomainRoot` and `Snapshot.ACLs.AdminSDHolder` (both already collected by `Get-ADSnapshot`), so it fully supports `-FromSnapshot` with no live AD access and no snapshot schema change; and `Test-ADRodcSecurity` declares an optional `-Snapshot` parameter and reads RODC inventory and the privileged-principal set from it when supplied, falling back to live `Get-ADDomainController`/`Get-ADObject` reads otherwise; this list will grow across future releases.
+- **`Start-ADSecurityAudit -FromSnapshot <path>`** re-runs the full audit offline against a previously saved snapshot - no live AD access is performed - and produces the same JSON/HTML/CSV report and risk score as a live run.
+- **`Get-ADTier0Principal [-Snapshot $snapshot]`** returns the shared privileged/Tier-0 principal set (recursive membership of the protected groups) used across detection modules; it can be derived from a snapshot or from live AD.
+
+```powershell
+# Collect once, on the DC or a management host with AD access:
+Get-ADSnapshot -ToJson "C:\Snapshots\contoso_2026-07-07.json" -Verbose
+
+# Later, anywhere, without AD access:
+Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso_2026-07-07.json" -ExportPath "C:\ADReports"
+```
+
+New audit modules going forward should accept an optional `[hashtable]$Snapshot` parameter and read from it when supplied, falling back to live queries when it's not - keeping every module runnable both live and offline.
 
 ### Visual dashboard
 
@@ -82,6 +136,7 @@ The audit generates findings across multiple severity levels:
 
 ### Critical Findings
 - Exploitable AD CS certificate templates
+- CA web enrollment reachable over HTTP without EPA (ESC8)
 - KRBTGT password not rotated (Golden Ticket risk)
 - Unconstrained delegation on user accounts
 - DCSync permissions granted to non-admin users
@@ -94,6 +149,18 @@ The audit generates findings across multiple severity levels:
 - Missing LAPS deployment on computers
 - Disabled critical audit policies
 - Constrained delegation with protocol transition
+- Machine Account Quota left at the unrestricted default of 10
+- Dangerous dsHeuristics flags (anonymous access, List Object mode, AdminSDHolder exclusion mask weakening)
+- Broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in Pre-Windows 2000 Compatible Access
+- Certificate templates with weak ACLs granting write access to low-privileged principals (ESC4)
+- Certificate templates allowing high-risk enrollment without manager approval
+- ROCA-vulnerable (CVE-2017-15361) certificate keys
+- Non-default membership in the DnsAdmins group (DNS server plugin-DLL code-execution path)
+- AD-integrated DNS zones granting Authenticated Users/Everyone/ANONYMOUS LOGON broad CreateChild rights (ADIDNS spoofing)
+- SMBv1 enabled or not disabled by policy
+- SMB signing not required
+- LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3)
+- WSUS delivered over HTTP (package-injection MITM surface)
 
 ### Medium Findings
 - Nested groups in privileged groups
@@ -101,6 +168,12 @@ The audit generates findings across multiple severity levels:
 - Missing selective authentication on trusts
 - Low LAPS coverage percentage
 - Resource-based constrained delegation configurations
+- Non-zero (but reduced) Machine Account Quota
+- Anonymous LDAP/RootDSE binding permitted (null-session indicator)
+- Weak signature algorithms (MD2/MD4/MD5/SHA0/SHA1) or undersized RSA keys in the PKI trust store
+- AD-integrated DNS zones allowing transfer to any server or any NS-listed server
+- AD-integrated DNS zones permitting insecure (nonsecure) dynamic updates
+- LLMNR not disabled by policy
 
 ### Low Findings
 - Informational findings about domain configuration
@@ -110,8 +183,9 @@ The audit generates findings across multiple severity levels:
 
 ### HTML Report Structure
 - **Executive Summary**: Overview of total findings by severity
+- **Risk Score & Maturity**: Global risk-score gauge, ANSSI 1-5 maturity ladder, per-category risk bars, and a MITRE ATT&CK technique summary
 - **Critical Issues**: Immediate action required
-- **Detailed Findings**: Complete list with remediation guidance
+- **Detailed Findings**: Complete list with remediation guidance (each finding shows its MITRE technique and ANSSI control)
 - **Affected Objects**: Lists of users, groups, computers, and objects requiring attention
 
 ### Remediation Guidance
@@ -127,7 +201,11 @@ Each finding includes:
 - Certificate templates allowing SAN specification (ESC1)
 - Templates with overly permissive enrollment rights (ESC2)
 - Enrollment agent templates (ESC3)
-- CA permissions allowing unauthorized certificate issuance
+- CA permissions allowing unauthorized certificate issuance (ESC7)
+- Certificate templates with weak ACLs (Write/WriteDacl/WriteOwner/GenericAll/GenericWrite for low-privileged principals) (ESC4)
+- Templates allowing enrollee-supplied subject/SAN or an Any-Purpose EKU with no manager-approval gate
+- CA web enrollment reachable over HTTP without Extended Protection for Authentication (ESC8)
+- ROCA-vulnerable (CVE-2017-15361) RSA keys and weak signature algorithms/RSA key sizes across the CA certificates and the NTAuth/AIA/Root store
 
 ### Kerberos Security
 - KRBTGT password older than 180 days
@@ -145,6 +223,81 @@ Each finding includes:
 - Computers without LAPS protection
 - Static local admin passwords enabling lateral movement
 - Missing LAPS schema extensions
+
+### Machine Account Quota
+- `ms-DS-MachineAccountQuota` left at the unmodified default of 10
+- Any non-zero quota allowing unprivileged users to self-service-join computer accounts (RBCD / SamAccountName-spoofing foothold)
+
+### Domain Hardening Flags
+- Dangerous `dSHeuristics` positional flags: anonymous access, List Object security mode, or AdminSDHolder exclusion mask weakening
+- Broad principals (Authenticated Users, Everyone, ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group
+- Anonymous LDAP/RootDSE binding permitted (a null-session indicator)
+
+### Coercion & NTLM Relay Exposure
+- Print Spooler service running on a Domain Controller (PrinterBug coercion surface)
+- WebClient (WebDAV) service running on a Domain Controller (WebDAV coercion surface)
+- LDAP signing not enforced (`LDAPServerIntegrity` not set to require signing)
+- LDAP channel binding / Extended Protection for Authentication not required (`LdapEnforceChannelBinding` not set to `2`)
+
+### AD-Integrated DNS Security
+- Non-default members in the built-in `DnsAdmins` group (a direct path to Domain-Controller code execution via `ServerLevelPluginDll`)
+- AD-integrated zones configured to allow zone transfer to any server or any server listed as an NS record, instead of an explicit secondary-server list
+- AD-integrated zones permitting nonsecure (unauthenticated) dynamic DNS updates
+- AD-integrated zone objects granting Authenticated Users, Everyone, or ANONYMOUS LOGON the right to create child objects (ADIDNS spoofing/MITM surface)
+
+### Legacy Auth & Name-Poisoning Surface
+- SMBv1 permitted (enabled or not explicitly disabled by policy)
+- SMB signing not required (`RequireSecuritySignature` not enforced)
+- LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3)
+- LLMNR not disabled by policy (no confirmed GPO sets `EnableMulticast` to 0)
+- WSUS delivering updates over unencrypted HTTP (`WUServer` set to an `http://` URL - a known package-injection MITM vector)
+
+### Kerberos Hardening Depth
+- RC4-HMAC still permitted for Tier-0 privileged accounts or krbtgt (`msDS-SupportedEncryptionTypes` unset or with the RC4 bit set)
+- Trusts missing the `TRUST_USES_AES_KEYS` attribute (RC4 remains usable across that trust)
+- Domain-wide "Configure encryption types allowed for Kerberos" GPO/registry policy unset or still permitting RC4/DES
+- Kerberos Armoring (FAST) not enabled on the KDC and/or client side (`EnableCbacAndArmor` not configured)
+- Cross-trust TGT delegation enabled (`trustAttributes` `CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION` flag set), allowing a client's TGT to be forwarded across the trust boundary
+
+### Stale-Object & Hygiene Depth
+- Accounts with the PASSWD_NOTREQD flag set (`userAccountControl` 0x0020), which waives the domain password policy for that account
+- Non-default `primaryGroupID` on a user or computer object, a technique for hiding effective privileged membership from memberOf-based reviews (RID 516 - Domain Controllers - is legitimate only for objects that are genuinely registered as DCs)
+- Duplicate Service Principal Names registered on more than one account (reports every holder)
+- Domain Controllers whose IPv4 address is not covered by any AD Sites & Services subnet object
+- Fewer than two Domain Controllers in the domain (no redundancy)
+
+### GPO-Deployed Secrets & Insecure Settings
+- Group Policy Preferences (GPP) `cpassword` values left over from MS14-025 in `Groups.xml`, `Services.xml`, `ScheduledTasks.xml`, `Drives.xml`, `DataSources.xml`, or `Printers.xml` - flagged by presence and file path only, never decrypted
+- Credential-flavoured patterns (`net use /user:`, `runas /savecred`, `ConvertTo-SecureString`, etc.) embedded in logon/startup scripts deployed via GPO - reported by file and line number only, never the matched line's content
+- Insecure settings deployed via GPO: Windows Firewall disabled for a profile, file extensions hidden by policy, RDP Network Level Authentication disabled, or an insecure (native) RDP security layer
+
+### Known DC Vulnerabilities by Patch/Build
+- ZeroLogon (CVE-2020-1472) - no OS install date or installed hotfix on or after the August 11, 2020 fix
+- MS17-010/EternalBlue - no patch evidence on or after the March 14, 2017 fix
+- MS14-068 - no patch evidence on or after the November 18, 2014 out-of-band fix
+- PrintNightmare (CVE-2021-34527) - Print Spooler running AND no patch evidence on or after the July 6, 2021 fix
+- BadSuccessor / dMSA Escalation Exposure - Domain Controllers running Windows Server 2025 (build 26100+), where the delegated Managed Service Account feature requires delegation/ACL review
+- Every determination comes from OS build/version, installed hotfix level (`Get-HotFix`), and service state - never from exploitation, authentication bypass, or PoC traffic
+
+### Exchange-in-AD Privilege Escalation
+- Exchange Group Holds WriteDACL on Domain Object - Exchange Windows Permissions / Exchange Trusted Subsystem / Organization Management (or similar Exchange principal) holding GenericAll, WriteDacl, or WriteOwner on the domain head object
+- Exchange-Related AdminSDHolder ACE - the same Exchange principals holding those rights on `CN=AdminSDHolder,CN=System,<domain>`, propagated to every protected (Tier-0) account/group by SDProp
+- Fires on residual ACEs even if Exchange has been fully decommissioned from the forest - the ACE, not the presence of Exchange servers, is what's evaluated
+- Exact affected principal, right, and target object are recorded in `Details`
+
+### Read-Only Domain Controller Security Posture
+- Privileged Account Revealed to RODC - a Tier-0 principal (per `Get-ADTier0Principal`) appears in an RODC's `msDS-RevealedUsers` (secrets already cached) or its `msDS-RevealOnDemandGroup` allowed list
+- RODC Password Replication Policy Misconfigured - the allowed replication group is too broad, or the `msDS-NeverRevealGroup` denied list is missing expected privileged groups
+- Orphaned RODC krbtgt Account - a `krbtgt_*` account remains after the corresponding RODC computer object no longer exists
+- Clean exit when the domain has no RODCs; every determination is a read of RODC attributes and the krbtgt account inventory, never exploitation, coercion, relay, or PoC traffic
+
+### Attack-Path Graph & Indirect-Privilege (Control-Path) Findings
+- Indirect Control Path to Tier-0 Object - a non-privileged principal can reach a Tier-0 object (Domain Admins/Enterprise Admins/etc., Domain Controllers, AdminSDHolder, or the domain head) through a chain of group-membership, dangerous-ACE, and/or ownership hops, with the full principal→…→target hop chain recorded in `Details.HopChain`
+- Everyone/Authenticated Users on a Control Path to Tier-0 - same as above, but a broad principal (Everyone, Authenticated Users, Domain Users, or ANONYMOUS LOGON) sits somewhere on the path; always Critical regardless of hop count
+- Owner of Tier-0 Object is Non-Privileged - a Tier-0 object is owned by a principal that is not itself Tier-0, which grants that owner implicit WriteDacl-equivalent control (an owner can always rewrite the DACL) regardless of the current ACL contents
+- Reuses the existing dangerous-rights tables (`GenericAll`/`WriteDacl`/`WriteOwner`/`GenericWrite`/`AllExtendedRights`, the dangerous extended-rights and property-write GUID tables, including the DS-Replication set) and `Get-ADTier0Principal` rather than re-deriving its own definitions
+- `Get-ADControlPathGraph` builds the underlying directed edge graph (exposed separately for scripting/inspection); `Test-ADControlPaths` runs the reachability analysis and emits findings; `Export-ADControlPathGraphBloodHound` optionally writes the same graph out as BloodHound-compatible generic-edge JSON for cross-checking against a BloodHound collection of the same environment
+- Detection only - every edge comes from a read of `nTSecurityDescriptor`, group membership, or object ownership; ACL/ownership edges are scoped to the Tier-0 target set plus every group on a chain toward it, not a sweep of the entire domain. No exploitation, coercion, relay, ticket forging, or PoC traffic is ever sent to any host
 
 ### Monitoring & Logging
 - Disabled audit policies for critical events
@@ -251,7 +404,73 @@ Always:
 
 ## Version History
 
-### v1.1.0 (Current)
+### v1.16.0 (Current)
+- Added `Get-ADControlPathGraph` and `Test-ADControlPaths`: builds a directed control-edge graph from dangerous ACEs, group membership, and object ownership (reusing the existing dangerous-rights tables and `Get-ADTier0Principal`), then computes reachability from non-Tier-0 principals to the Tier-0 set (privileged principals, Domain Controllers, AdminSDHolder, and the domain head object), emitting a finding per reachable path with the full hop chain in `Details.HopChain`. A broad principal (Everyone/Authenticated Users/Domain Users/ANONYMOUS LOGON) on any path is always Critical; a Tier-0 object owned by a non-Tier-0 principal is flagged separately. Added `Export-ADControlPathGraphBloodHound` for an optional BloodHound-compatible generic-edge JSON export, and a "Control Paths to Tier-0" HTML report section rendering each hop chain. Detection only - every edge comes from a read of `nTSecurityDescriptor`, group membership, or object ownership; no exploitation, coercion, relay, ticket forging, or PoC traffic is ever sent to any host
+
+### v1.15.0
+- Added `Test-ADRodcSecurity`: audits Read-Only Domain Controller configuration - Tier-0/privileged principals revealed or allowed to an RODC, password replication policy gaps, and orphaned RODC-specific `krbtgt_*` accounts. Detection only - reads RODC attributes (`msDS-RevealedUsers`, `msDS-RevealOnDemandGroup`, `msDS-NeverRevealGroup`) and the krbtgt account inventory only, no exploitation, coercion, relay, or PoC traffic. Clean exit when there are no RODCs; snapshot-aware with a fallback to live reads
+
+### v1.14.0
+- Added `Test-ADExchangeEscalation`: flags Exchange security principals (Exchange Windows Permissions, Exchange Trusted Subsystem, Exchange Servers, Exchange Enterprise Servers, Organization Management) holding GenericAll/WriteDacl/WriteOwner on the domain head object (PrivExchange-style escalation to DCSync) or on AdminSDHolder. Fires on residual ACEs even after Exchange has been fully decommissioned. Detection only - reads `nTSecurityDescriptor.Access` only, no PrivExchange push-subscription, relay, or PoC traffic. Fully snapshot-aware via `Snapshot.ACLs.DomainRoot`/`Snapshot.ACLs.AdminSDHolder` with no schema change
+
+### v1.13.0
+- Added `Test-ADKnownDCVulnerabilities`: flags DC exposure to ZeroLogon (CVE-2020-1472), MS17-010/EternalBlue, MS14-068, and PrintNightmare (CVE-2021-34527, only while Spooler is running) strictly from OS build/install date and installed hotfix level (`Get-HotFix`) against documented fix-date thresholds, plus BadSuccessor/dMSA escalation exposure guarded to Windows Server 2025-level (build 26100+) Domain Controllers. Detection only - no exploitation, authentication bypass, ticket forging, coercion, relay, or PoC traffic is ever sent. Live-only: skipped entirely when invoked with `-Snapshot`
+
+### v1.12.0
+- Added `Test-ADGpoDeployedSecrets`: scans each GPO's SYSVOL policy folder for leftover Group Policy Preferences (GPP) `cpassword` values (MS14-025), credential-flavoured patterns embedded in deployed logon/startup scripts, and insecure settings pushed via GPO (Windows Firewall disabled, hidden file extensions, RDP Network Level Authentication disabled or an insecure RDP security layer). cpassword hits are flagged by presence and file path only (never decrypted); script-credential hits are reported by file and line number only
+
+### v1.11.0
+- Added `Test-ADStaleObjectDepth`: audits accounts with PASSWD_NOTREQD set (`userAccountControl` 0x0020), non-default `primaryGroupID` on user and computer objects (membership-hiding, distinguishing the legitimate Domain Controllers RID for genuine DCs from a suspicious value elsewhere), duplicate Service Principal Names across users and computers (reporting every holder), Domain Controllers not covered by any AD Sites & Services subnet object, and insufficient Domain Controller count (fewer than 2)
+- Detection only: reads `userAccountControl`/`primaryGroupID` values, builds an in-memory case-insensitive SPN index, and reads DC inventory (`Get-ADDomainController`) and subnet objects (`Get-ADReplicationSubnet`); never modifies any account, SPN, or Sites & Services object
+- Snapshot-aware for the PASSWD_NOTREQD, primaryGroupID, duplicate-SPN, and DC-count checks (the snapshot's `Users`/`Computers` collection now also includes `PrimaryGroupID`/`ServicePrincipalNames`/`SamAccountName` as needed); the DC subnet/site registration check always performs one live `Get-ADReplicationSubnet` call, since subnet objects aren't part of the snapshot schema
+
+### v1.10.0
+- Added `Test-ADKerberosHardening`: audits RC4 Kerberos encryption still being permitted (Tier-0 privileged accounts and krbtgt via `msDS-SupportedEncryptionTypes`, trusts missing `TRUST_USES_AES_KEYS`, and the domain-wide "Configure encryption types allowed for Kerberos" GPO/registry policy), Kerberos Armoring (FAST) not enabled (KDC and client `EnableCbacAndArmor` policy), and cross-trust TGT delegation (`trustAttributes` `CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION`)
+- Snapshot-aware for the account-level RC4 check (`Snapshot.Users` + the Tier-0 set) and both trust-level checks (`Snapshot.Trusts`); the domain-wide encryption-type policy and Kerberos Armoring (FAST) checks are live-only GPO/registry reads and are skipped entirely when run from a snapshot
+
+### v1.9.0
+- Added `Test-ADLegacyAuthSurface`: audits legacy/weak authentication and name-resolution poisoning surface enforced (or left unenforced) via GPO/registry - SMBv1 enabled/not disabled by policy, SMB signing not required, LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3), LLMNR not disabled by policy, and WSUS delivered over HTTP (package-injection MITM surface)
+- Detection only: reads GPO-linked registry policy values via `Get-GPRegistryValue` against each linked GPO (Domain Controllers OU first, then domain root), falling back to a direct per-DC registry read only when no linked GPO defines a setting. Every finding distinguishes a policy-enforced value (naming the source GPO) from one observed via live registry read with no enforcing policy found. Never modifies any policy or registry value, and performs no exploitation, coercion, relay, or PoC traffic
+- Live-only: declares an optional `-Snapshot` parameter for registration consistency, but GPO-linked registry policy state and per-DC registry reads have no snapshot equivalent, so the audit is skipped entirely (returns no findings) when run from a snapshot
+
+### v1.8.0
+- Added `Test-ADDnsSecurity`: audits DnsAdmins group membership (a well-known Domain-Controller code-execution path via the DNS server's `ServerLevelPluginDll` mechanism), DNS zone transfer exposure (transfers to any server or any NS-listed server), insecure (nonsecure) dynamic DNS updates, and overly broad CreateChild rights on AD-integrated zone objects granted to Authenticated Users/Everyone/ANONYMOUS LOGON (ADIDNS spoofing/MITM surface)
+- Detection only: reads DnsAdmins membership, zone attributes (`dNSProperty`) and ACLs (`nTSecurityDescriptor`), and optionally the read-only `Get-DnsServerZone`/`Get-DnsServerZoneTransfer` cmdlets when available, falling back to a best-effort attribute parse otherwise. Never modifies a DNS record, zone, or plugin-DLL configuration
+- Snapshot-aware for the DnsAdmins membership check (`Snapshot.Groups`); the zone transfer, dynamic-update, and ADIDNS CreateChild checks are live-only and are skipped entirely when run from a snapshot
+- Fixed: the HTML report footer's module version was hardcoded and had drifted out of sync with `ModuleVersion` since v1.7.0; it's now read from the module manifest at import time so it can't go stale again
+
+### v1.7.0
+- Added `Test-ADCSExtended`: extends AD CS coverage beyond ESC1/2/3/7 with ESC4 (certificate templates whose ACL grants Write/WriteDacl/WriteOwner/GenericAll/GenericWrite to low-privileged principals), a high-risk-without-approval check (enrollee-supplied subject/SAN or Any-Purpose EKU with no manager-approval gate), ESC8 (CA web enrollment reachable over HTTP without Extended Protection for Authentication), and a ROCA (CVE-2017-15361) / weak-signature-algorithm / weak-RSA-modulus sweep of the CA certificates and the NTAuth/AIA/Root store
+- Detection only: reads template/CA attributes, ACLs, and already-published certificate bytes; ESC8's only live-network step is a read-only remote check of the CA host's web-enrollment configuration. Never requests, forges, or relays a certificate
+- Snapshot-aware where the data allows it: template/CA enumeration and the approval-gate/CA-certificate weak-crypto checks read from `Snapshot.ADCS`; ESC4's per-template ACL read, the ESC8 CA-host probe, and the NTAuth/AIA/Root store sweep are live-only and are skipped entirely when run from a snapshot
+
+### v1.6.0
+- Added `Test-ADCoercionAndRelayExposure`: audits every Domain Controller for the configuration that enables coerce-then-relay attacks - Print Spooler running (PrinterBug), WebClient running (WebDAV coercion), NTDS `LDAPServerIntegrity` not requiring signing, and `LdapEnforceChannelBinding` not requiring Extended Protection for Authentication (EPA)
+- Detection only: reads service and NTDS registry state per DC; never sends a coercion trigger, never relays, and performs no exploitation or PoC traffic
+- Live per-DC probes are skipped entirely when run from a snapshot (`-FromSnapshot` performs no live AD/network access); the DC list itself is still read from the snapshot when supplied
+
+### v1.5.0
+- Added `Test-ADDomainHardeningFlags`: positionally parses `dSHeuristics` for dangerous settings (anonymous access, List Object security mode, AdminSDHolder exclusion mask weakening), flags broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group, and performs a strictly read-only anonymous LDAP/RootDSE bind probe
+- `Get-ADSnapshot` now also collects `DsHeuristics` and `PreWin2000Members`; the dsHeuristics and Pre-Windows 2000 checks are snapshot-aware, while the anonymous-bind probe (a live network operation) is skipped when running from a snapshot
+
+### v1.4.0
+- Added `Test-ADMachineAccountQuota`: flags `ms-DS-MachineAccountQuota` left at the unmodified default of 10 (High) or any other non-zero value (Medium), which lets any authenticated user self-service-join computer accounts - a common foothold for RBCD relay and SamAccountName-spoofing privilege escalation
+- `Get-ADSnapshot` now also collects `ms-DS-MachineAccountQuota`; the new check is snapshot-aware
+
+### v1.3.0
+- Added `Get-ADSnapshot`: a single paged, read-only collection pass (users, computers, groups, GPOs, ACLs on key objects, AD CS config, DNS zones, trusts, DC inventory) with `-ToJson` for serialisation
+- Added `Invoke-ADRuleSet -Snapshot`: dispatches `Test-*` functions against a snapshot, defensively passing `-Snapshot` only to functions that declare it so snapshot-unaware modules are called live and never error
+- Added `Start-ADSecurityAudit -FromSnapshot <path>` for offline re-analysis (no live AD access), reproducing the same JSON/HTML/CSV report and risk score
+- Added shared `Get-ADTier0Principal` privileged/Tier-0 principal helper for reuse across detection modules
+- Began retrofitting existing audit functions (`Test-ADUserSecurity`, `Test-KRBTGTAccount`) with an optional `-Snapshot` parameter; remaining modules will be retrofitted gradually
+
+### v1.2.0
+- Added risk score (0-100), per-category sub-scores, and an ANSSI-style 1-5 maturity level via `Get-ADRiskScore`
+- Added MITRE ATT&CK technique and ANSSI control tagging on every finding through a central mapping table (`src/Scoring.ps1`) and `Set-ADFindingMetadata`
+- Added additive `MitreTechnique`, `AnssiControl`, and `Weight` fields to `ADSecurityFinding` (output schema is now additive-only / contract-stable)
+- Added a risk-score gauge, maturity panel, per-category bars, and MITRE summary to the HTML report; appended new CSV columns and a score sidecar JSON
+
+### v1.1.0
 - **Security Fix**: Fixed CSV injection vulnerability in report exports
 - Added Domain Controller failover support for improved reliability
 - Added `Invoke-ADQueryWithRetry` helper for network resilience with exponential backoff
