@@ -104,20 +104,24 @@ Copy-Item -Path ".\src" -Destination "$modulePath\src" -Recurse -Force
 ### Basic Audit
 Run a complete security audit with default settings:
 
-Start-ADSecurityAudit -OutputPath "C:\ADReports"
-
+```powershell
+Start-ADSecurityAudit -ExportPath "C:\ADReports"
+```
 
 ### Advanced Options
 Customize the audit with additional parameters:
 
-Start-ADSecurityAudit -OutputPath "C:\ADReports" -Verbose
+```powershell
+Start-ADSecurityAudit -ExportPath "C:\ADReports" -Verbose
+```
 
 ### Offline / Snapshot-Based Audit
 Collect once, analyze later or elsewhere, with no live AD access at analysis time:
 
+```powershell
 Get-ADSnapshot -ToJson "C:\Snapshots\contoso.json"
 Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso.json" -ExportPath "C:\ADReports"
-
+```
 
 ### Output Formats
 The script generates these report formats:

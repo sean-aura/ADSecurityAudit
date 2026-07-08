@@ -5,6 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.1]
+### Fixed
+- **`Get-ADSnapshot` "hang" on `-ToJson`**: the AD CS collection step was
+  requesting `-Properties *` on every certificate template and certificate
+  authority object. That pulls back every attribute on the object,
+  including `nTSecurityDescriptor` (a full ACL with per-ACE
+  `IdentityReference` objects) and other large/binary attributes that
+  `Test-ADCSExtended` never reads from the snapshot. `ConvertTo-Json -Depth
+  12` then had to walk that entire object graph for every template and CA
+  with zero progress output, which is what looked like an indefinite hang
+  on any domain with more than a handful of templates - it wasn't stuck,
+  it was serialising kilobytes of unused ACL/attribute data per object.
+  `Get-ADSnapshot` now requests only the specific properties
+  `Test-ADCSExtended` reads (`displayName`, `msPKI-Certificate-Name-Flag`,
+  `msPKI-Enrollment-Flag`, `msPKI-Certificate-Application-Policy`,
+  `pKIExtendedKeyUsage` for templates; `dNSHostName`, `cACertificate` for
+  CAs) and flattens both to plain `PSCustomObject`s, the same pattern
+  already used for Groups/GPOs. Applied the same fix to domain-trust
+  collection (`Get-ADTrust -Properties *` -> `trustAttributes, Direction,
+  TrustType`), since trusts can carry similarly large binary attributes
+  (e.g. `trustAuthIncoming`/`trustAuthOutgoing`) that were never read.
+- `Get-ADSnapshot` had no progress indication at all beyond `-Verbose`
+  output, unlike `Start-ADSecurityAudit`'s live-mode loop. Added a
+  12-stage `Write-Progress` bar covering every collection area (domain/DCs,
+  machine account quota, dSHeuristics, pre-Windows 2000 compatible access,
+  users, computers, groups, GPOs, ACLs, AD CS, DNS zones, trusts).
+  `Invoke-ADRuleSet` (the dispatcher `Start-ADSecurityAudit -FromSnapshot`
+  uses) also had no progress bar even though the live-mode test loop in
+  `Main.ps1` does; it now reports "Test N of M" the same way.
+- The domain and domain-controller collection steps in `Get-ADSnapshot`
+  were the only two steps with no `Write-Verbose` output at all (start or
+  completion), unlike every other collection area - `-Verbose` gave no
+  indication anything was happening there. Added matching start/completion
+  verbose messages.
+- `-ExportPath` (`Start-ADSecurityAudit`) and `-ToJson`'s parent directory
+  (`Get-ADSnapshot`) previously failed with a hard error if the folder
+  didn't already exist. Both now create the folder automatically
+  (`New-Item -ItemType Directory -Force`) and only error if creation
+  itself fails (e.g. permissions).
+- `README.md`: the Usage section's example commands were plain text
+  instead of fenced ` ```powershell ` blocks, so they rendered as
+  unbroken, unformatted paragraphs instead of separate monospaced command
+  lines. Also corrected `-OutputPath` to the actual parameter name,
+  `-ExportPath`.
+
 ## [1.18.0]
 ### Added
 - `Test-ADKnownDCVulnerabilities`: new check for CVE-2026-41089 (unauthenticated

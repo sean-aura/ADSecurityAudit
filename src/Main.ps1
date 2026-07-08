@@ -33,8 +33,14 @@ function Start-ADSecurityAudit {
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
     
     if (-not (Test-Path $ExportPath)) {
-        Write-Error "Export path does not exist: $ExportPath"
-        return
+        try {
+            Write-Verbose "Start-ADSecurityAudit: export path '$ExportPath' does not exist; creating it..."
+            New-Item -Path $ExportPath -ItemType Directory -Force -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Write-Error "Export path does not exist and could not be created: $ExportPath. Error: $_"
+            return
+        }
     }
     
     $testFile = Join-Path $ExportPath "test_write_$(Get-Random).tmp"

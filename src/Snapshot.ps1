@@ -173,6 +173,43 @@ function Get-ADSnapshot {
 
     Write-Verbose "Starting collect-once AD snapshot..."
 
+    # Auto-create the -ToJson output directory up front, the same way
+    # Start-ADSecurityAudit now handles -ExportPath, so a bad/missing path
+    # fails fast (or just works) instead of surfacing only at the very end
+    # after the whole collection pass has already run.
+    if ($ToJson) {
+        $toJsonDir = Split-Path -Path $ToJson -Parent
+        if ($toJsonDir -and -not (Test-Path -Path $toJsonDir)) {
+            try {
+                Write-Verbose "Get-ADSnapshot: creating -ToJson output directory '$toJsonDir'..."
+                New-Item -Path $toJsonDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
+            }
+            catch {
+                Write-Error "Get-ADSnapshot: could not create -ToJson output directory '$toJsonDir': $_"
+                return
+            }
+        }
+    }
+
+    # Stage-based progress bar. Each collection area below calls Step()
+    # once as it starts, so -Verbose isn't the only way to tell the
+    # snapshot is still making progress (mirrors the per-test progress bar
+    # in Start-ADSecurityAudit).
+    $snapshotStages = @(
+        'Domain & Domain Controllers', 'Machine Account Quota', 'dSHeuristics',
+        'Pre-Windows 2000 Compatible Access', 'Users', 'Computers', 'Groups',
+        'GPOs', 'ACLs on key objects', 'AD CS configuration', 'DNS zones',
+        'Domain trusts'
+    )
+    $Script:ADSnapshotStageIndex = 0
+    function Step-ADSnapshotProgress {
+        param([Parameter(Mandatory)][string]$Stage)
+        $Script:ADSnapshotStageIndex++
+        Write-Progress -Activity "Collecting AD Snapshot" `
+            -Status "$Script:ADSnapshotStageIndex of $($snapshotStages.Count): $Stage" `
+            -PercentComplete (($Script:ADSnapshotStageIndex / $snapshotStages.Count) * 100)
+    }
+
     $snapshot = @{
         CollectedDate     = (Get-Date)
         Domain            = $null
@@ -193,19 +230,24 @@ function Get-ADSnapshot {
     }
 
     # --- Domain + DC inventory ---
+    Step-ADSnapshotProgress -Stage 'Domain & Domain Controllers'
     try {
+        Write-Verbose "Get-ADSnapshot: collecting domain info..."
         $snapshot.Domain = Invoke-ADQueryWithRetry -OperationName 'Get-ADDomain (snapshot)' -Query {
             Get-ADDomain -ErrorAction Stop
         }
+        Write-Verbose "Get-ADSnapshot: collected domain '$($snapshot.Domain.DNSRoot)'."
     }
     catch {
         Write-Warning "Get-ADSnapshot: failed to collect domain info: $_"
     }
 
     try {
+        Write-Verbose "Get-ADSnapshot: collecting domain controllers..."
         $snapshot.DomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController (snapshot)' -Query {
             Get-ADDomainController -Filter * -ErrorAction Stop
         })
+        Write-Verbose "Get-ADSnapshot: collected $($snapshot.DomainControllers.Count) domain controller(s)."
     }
     catch {
         Write-Warning "Get-ADSnapshot: failed to collect domain controllers: $_"
@@ -214,6 +256,7 @@ function Get-ADSnapshot {
     # --- Machine Account Quota (ms-DS-MachineAccountQuota on domain root) ---
     # Get-ADDomain does not expose this attribute directly, so it's read via
     # a separate Get-ADObject call against the domain root DN.
+    Step-ADSnapshotProgress -Stage 'Machine Account Quota'
     try {
         Write-Verbose "Get-ADSnapshot: collecting ms-DS-MachineAccountQuota..."
         $domainForMaq = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -ErrorAction Stop }
@@ -230,6 +273,7 @@ function Get-ADSnapshot {
     }
 
     # --- dSHeuristics (Directory Service object in the Configuration NC) ---
+    Step-ADSnapshotProgress -Stage 'dSHeuristics'
     try {
         Write-Verbose "Get-ADSnapshot: collecting dSHeuristics..."
         $configContextForDsh = ([ADSI]"LDAP://RootDSE").configurationNamingContext
@@ -248,6 +292,7 @@ function Get-ADSnapshot {
     }
 
     # --- Pre-Windows 2000 Compatible Access membership (flattened to DNs) ---
+    Step-ADSnapshotProgress -Stage 'Pre-Windows 2000 Compatible Access'
     try {
         Write-Verbose "Get-ADSnapshot: collecting Pre-Windows 2000 Compatible Access membership..."
         $preWin2000Group = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup Pre-Windows 2000 Compatible Access (snapshot)' -Query {
@@ -267,6 +312,7 @@ function Get-ADSnapshot {
     }
 
     # --- Users (paged) ---
+    Step-ADSnapshotProgress -Stage 'Users'
     try {
         Write-Verbose "Get-ADSnapshot: collecting users..."
         $snapshot.Users = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser (snapshot)' -Query {
@@ -285,6 +331,7 @@ function Get-ADSnapshot {
     }
 
     # --- Computers (paged) ---
+    Step-ADSnapshotProgress -Stage 'Computers'
     try {
         Write-Verbose "Get-ADSnapshot: collecting computers..."
         $snapshot.Computers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer (snapshot)' -Query {
@@ -302,6 +349,7 @@ function Get-ADSnapshot {
     }
 
     # --- Groups (paged; membership flattened to DNs for JSON-friendliness) ---
+    Step-ADSnapshotProgress -Stage 'Groups'
     try {
         Write-Verbose "Get-ADSnapshot: collecting groups..."
         $rawGroups = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup (snapshot)' -Query {
@@ -327,6 +375,7 @@ function Get-ADSnapshot {
 
     # --- GPOs + permissions (flattened; GroupPolicy module objects don't
     #     serialise cleanly) ---
+    Step-ADSnapshotProgress -Stage 'GPOs'
     try {
         Write-Verbose "Get-ADSnapshot: collecting GPOs..."
         Import-Module GroupPolicy -ErrorAction Stop
@@ -361,6 +410,7 @@ function Get-ADSnapshot {
     }
 
     # --- ACLs on key objects (flattened ACEs) ---
+    Step-ADSnapshotProgress -Stage 'ACLs on key objects'
     try {
         Write-Verbose "Get-ADSnapshot: collecting ACLs on key objects..."
         $domainForAcl = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -ErrorAction Stop }
@@ -392,24 +442,70 @@ function Get-ADSnapshot {
     }
 
     # --- AD CS configuration (templates + CAs); optional component ---
+    #
+    # NOTE (perf/hang fix, see CHANGELOG): this used to request
+    # -Properties * on both containers. That pulls back every attribute on
+    # every template/CA object, including nTSecurityDescriptor (a full ACL,
+    # with per-ACE IdentityReference objects) and other large/binary
+    # attributes never read by Test-ADCSExtended. ConvertTo-Json -Depth 12
+    # then has to walk that entire object graph for every template and CA,
+    # which is what made -ToJson appear to hang on any domain with more
+    # than a handful of templates - it wasn't stuck, it was serialising
+    # kilobytes of ACL/attribute data per object with no progress reported.
+    # Only the properties Test-ADCSExtended actually reads (see
+    # src/CertificateServicesExtendedAudits.ps1) are requested here; keep
+    # this list and that file in sync if new snapshot-aware ADCS checks are
+    # added.
+    Step-ADSnapshotProgress -Stage 'AD CS configuration'
     try {
         Write-Verbose "Get-ADSnapshot: collecting AD CS configuration..."
         $configContext = ([ADSI]"LDAP://RootDSE").configurationNamingContext
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
 
-        $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -Filter * -Properties * -ErrorAction Stop
+        $templateProperties = @(
+            'displayName', 'msPKI-Certificate-Name-Flag', 'msPKI-Enrollment-Flag',
+            'msPKI-Certificate-Application-Policy', 'pKIExtendedKeyUsage'
+        )
+        $caProperties = @('dNSHostName', 'cACertificate')
+
+        Write-Verbose "Get-ADSnapshot: collecting certificate templates..."
+        $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -Filter * -Properties $templateProperties -ErrorAction Stop
+        Write-Verbose "Get-ADSnapshot: collected $(@($certTemplates).Count) certificate template(s)."
+
         $certAuthorities = $null
         try {
-            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -Filter * -Properties * -ErrorAction Stop
+            Write-Verbose "Get-ADSnapshot: collecting certificate authorities..."
+            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -Filter * -Properties $caProperties -ErrorAction Stop
+            Write-Verbose "Get-ADSnapshot: collected $(@($certAuthorities).Count) certificate authority(ies)."
         }
         catch {
             Write-Verbose "Get-ADSnapshot: no Enrollment Services container found: $_"
         }
 
+        # Flatten to plain PSCustomObjects (same rationale as Groups/GPOs
+        # above): the raw Get-ADObject type carries schema/property-cache
+        # metadata that ConvertTo-Json otherwise has to traverse too.
         $snapshot.ADCS = @{
-            Installed             = $true
-            CertificateTemplates  = @($certTemplates)
-            CertificateAuthorities = @($certAuthorities)
+            Installed = $true
+            CertificateTemplates = @($certTemplates | ForEach-Object {
+                [PSCustomObject]@{
+                    Name                                    = $_.Name
+                    DistinguishedName                       = $_.DistinguishedName
+                    displayName                              = $_.displayName
+                    'msPKI-Certificate-Name-Flag'            = $_.'msPKI-Certificate-Name-Flag'
+                    'msPKI-Enrollment-Flag'                  = $_.'msPKI-Enrollment-Flag'
+                    'msPKI-Certificate-Application-Policy'   = @($_.'msPKI-Certificate-Application-Policy')
+                    pKIExtendedKeyUsage                      = @($_.pKIExtendedKeyUsage)
+                }
+            })
+            CertificateAuthorities = @($certAuthorities | ForEach-Object {
+                [PSCustomObject]@{
+                    Name               = $_.Name
+                    DistinguishedName  = $_.DistinguishedName
+                    dNSHostName        = $_.dNSHostName
+                    cACertificate      = @($_.cACertificate)
+                }
+            })
         }
     }
     catch {
@@ -418,6 +514,7 @@ function Get-ADSnapshot {
     }
 
     # --- DNS zones (optional; AD-integrated zones live in an app partition) ---
+    Step-ADSnapshotProgress -Stage 'DNS zones'
     try {
         Write-Verbose "Get-ADSnapshot: collecting DNS zones..."
         $domainForDns = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -ErrorAction Stop }
@@ -448,10 +545,25 @@ function Get-ADSnapshot {
     }
 
     # --- Domain trusts ---
+    # Same -Properties * fix as AD CS above: only Target, TrustAttributes,
+    # Direction, and TrustType are ever read from Snapshot.Trusts (see
+    # src/KerberosHardeningAudits.ps1). Trusts can carry large binary
+    # attributes (e.g. trustAuthIncoming/trustAuthOutgoing key history) that
+    # -Properties * would otherwise pull into the JSON snapshot for no
+    # reason.
+    Step-ADSnapshotProgress -Stage 'Domain trusts'
     try {
         Write-Verbose "Get-ADSnapshot: collecting domain trusts..."
-        $snapshot.Trusts = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADTrust (snapshot)' -Query {
-            Get-ADTrust -Filter * -Properties * -ErrorAction Stop
+        $rawTrusts = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADTrust (snapshot)' -Query {
+            Get-ADTrust -Filter * -Properties trustAttributes, Direction, TrustType -ErrorAction Stop
+        })
+        $snapshot.Trusts = @($rawTrusts | ForEach-Object {
+            [PSCustomObject]@{
+                Target          = $_.Target
+                trustAttributes = $_.trustAttributes
+                Direction       = "$($_.Direction)"
+                TrustType       = "$($_.TrustType)"
+            }
         })
         Write-Verbose "Get-ADSnapshot: collected $($snapshot.Trusts.Count) trusts."
     }
@@ -459,10 +571,15 @@ function Get-ADSnapshot {
         Write-Verbose "Get-ADSnapshot: no domain trusts found or Get-ADTrust unavailable: $_"
     }
 
+    Write-Progress -Activity "Collecting AD Snapshot" -Completed
+
     if ($ToJson) {
         try {
+            Write-Verbose "Get-ADSnapshot: serialising snapshot to JSON (this can take a while on domains with many users/computers)..."
+            $serializeStart = Get-Date
             $snapshot | ConvertTo-Json -Depth 12 | Out-File -FilePath $ToJson -Encoding UTF8
-            Write-Verbose "Get-ADSnapshot: wrote snapshot to '$ToJson'."
+            $serializeSeconds = ((Get-Date) - $serializeStart).TotalSeconds
+            Write-Verbose "Get-ADSnapshot: wrote snapshot to '$ToJson' in $([math]::Round($serializeSeconds, 1))s."
         }
         catch {
             Write-Warning "Get-ADSnapshot: failed to write -ToJson output to '$ToJson': $_"
@@ -530,10 +647,18 @@ function Invoke-ADRuleSet {
         $testKeys = $testKeys | Where-Object { $_ -in $IncludeTests }
     }
     $testKeys = $testKeys | Where-Object { $_ -notin $ExcludeTests }
+    $testKeys = @($testKeys)
 
     $allFindings = @()
+    $totalTestCount = $testKeys.Count
+    $currentTestIndex = 0
 
     foreach ($testKey in $testKeys) {
+        $currentTestIndex++
+        Write-Progress -Activity "Running Active Directory Security Audit (offline / snapshot)" `
+            -Status "Test $currentTestIndex of $totalTestCount`: $testKey" `
+            -PercentComplete (($currentTestIndex / [math]::Max(1, $totalTestCount)) * 100)
+
         $functionName = $Script:ADTestFunctionRegistry[$testKey]
         $fn = Get-Command -Name $functionName -ErrorAction SilentlyContinue
 
@@ -601,6 +726,8 @@ function Invoke-ADRuleSet {
             Write-Warning "Invoke-ADRuleSet: test '$testKey' ($functionName) failed: $_"
         }
     }
+
+    Write-Progress -Activity "Running Active Directory Security Audit (offline / snapshot)" -Completed
 
     return $allFindings
 }
