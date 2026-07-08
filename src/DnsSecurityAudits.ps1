@@ -5,7 +5,7 @@
 # Domain-Controller code-execution path via the DNS server's
 # ServerLevelPluginDll mechanism), zone transfer exposure, insecure dynamic
 # updates, and overly broad child-object creation rights on zone objects
-# (the "ADIDNS" spoofing/MITM surface). PingCastle parity: P-DNSAdmin,
+# (the "ADIDNS" spoofing/MITM surface). PingCastle-comparable check(s): P-DNSAdmin,
 # P-DNSDelegation, A-DnsZoneTransfert, A-DnsZoneUpdate1, A-DnsZoneUpdate2,
 # A-DnsZoneAUCreateChild.
 #
@@ -23,10 +23,12 @@
 # this function is invoked with -Snapshot.
 #
 # DETECTION ONLY: this module reads group membership, AD-integrated zone
-# object attributes/ACLs, and (optionally) read-only DNS Server PowerShell
-# cmdlets (Get-DnsServerZone / Get-DnsServerZoneTransfer). It never creates,
-# deletes, or modifies a DNS record or zone, never registers a plugin DLL,
-# and performs no exploitation, coercion, relay, or PoC traffic.
+# object attributes/ACLs, and (optionally) the read-only DNS Server
+# PowerShell cmdlet `Get-DnsServerZone` (transfer settings are read from its
+# SecureSecondaries/SecondaryServers properties - there is no separate
+# "Get-DnsServerZoneTransfer" cmdlet). It never creates, deletes, or
+# modifies a DNS record or zone, never registers a plugin DLL, and performs
+# no exploitation, coercion, relay, or PoC traffic.
 
 # Well-known/service SIDs that legitimately end up referenced from DnsAdmins
 # in some environments and should not be flagged as "non-default" human/
@@ -115,9 +117,9 @@ function Test-ADDnsSecurity {
              Everyone, or ANONYMOUS LOGON, enabling arbitrary DNS record
              registration/spoofing.
 
-        Checks 2-4 prefer the read-only `Get-DnsServerZone` /
-        `Get-DnsServerZoneTransfer` cmdlets (DnsServer RSAT module) when
-        available, and fall back to a best-effort read of the zone AD
+        Checks 2-4 prefer the read-only `Get-DnsServerZone` cmdlet (DnsServer
+        RSAT module, reading its DynamicUpdate/SecureSecondaries properties)
+        when available, and fall back to a best-effort read of the zone AD
         object's `dNSProperty` attribute when that module is not installed.
         If neither source yields a confident answer for a zone, that check
         is skipped for that zone (Verbose only) rather than guessing.
@@ -306,24 +308,28 @@ function Test-ADDnsSecurity {
                     $dnsZoneInfo = Invoke-ADQueryWithRetry -OperationName "Get-DnsServerZone '$zoneName'" -Query {
                         Get-DnsServerZone -Name $zoneName -ComputerName $dnsCmdletTargetDC -ErrorAction Stop
                     }
-                    if ($dnsZoneInfo -and $dnsZoneInfo.DynamicUpdate) {
-                        $updateSetting = "$($dnsZoneInfo.DynamicUpdate)"
+                    if ($dnsZoneInfo) {
+                        if ($dnsZoneInfo.DynamicUpdate) {
+                            $updateSetting = "$($dnsZoneInfo.DynamicUpdate)"
+                        }
+                        # Zone-transfer configuration is a property of the zone
+                        # object itself (SecureSecondaries/SecondaryServers) -
+                        # there is no separate "Get-DnsServerZoneTransfer"
+                        # cmdlet in the DnsServer module, so it's read here
+                        # rather than via a second (nonexistent) cmdlet call.
+                        if ($dnsZoneInfo.SecureSecondaries) {
+                            $transferSetting = switch ("$($dnsZoneInfo.SecureSecondaries)") {
+                                'TransferAnyServer'        { 'Any' }
+                                'TransferToZoneNameServer' { 'Named' }
+                                'TransferToSecureServers'  { 'Specific' }
+                                'NoTransfer'               { 'None' }
+                                default                    { $null }
+                            }
+                        }
                     }
                 }
                 catch {
                     Write-Verbose "Test-ADDnsSecurity: Get-DnsServerZone failed for '$zoneName': $_"
-                }
-
-                try {
-                    $dnsTransferInfo = Invoke-ADQueryWithRetry -OperationName "Get-DnsServerZoneTransfer '$zoneName'" -Query {
-                        Get-DnsServerZoneTransfer -Name $zoneName -ComputerName $dnsCmdletTargetDC -ErrorAction Stop
-                    }
-                    if ($dnsTransferInfo -and $dnsTransferInfo.Type) {
-                        $transferSetting = "$($dnsTransferInfo.Type)"
-                    }
-                }
-                catch {
-                    Write-Verbose "Test-ADDnsSecurity: Get-DnsServerZoneTransfer failed for '$zoneName': $_"
                 }
             }
             else {
@@ -421,7 +427,7 @@ function Test-ADDnsSecurity {
             $finding.AffectedObject = ($zoneNames -join ', ')
             $finding.Description = "$($broadTransferZones.Count) AD-integrated zone(s) allow zone transfers to any server or to any server listed as a name server for the zone, rather than an explicit secondary-server list: $($zoneNames -join ', ')."
             $finding.Impact = "Zone transfers expose the complete contents of a DNS zone - hostnames, IP addresses, and often internal naming conventions for servers, workstations, and services - to any host that can request an AXFR, aiding network reconnaissance ahead of further attacks."
-            $finding.Remediation = "Restrict zone transfers to an explicit list of authorized secondary server IP addresses (`Set-DnsServerZoneTransfer -Name <Zone> -SecureSecondaries TransferToSecureServers -SecondaryServers <IP1>,<IP2>`), or disable transfers entirely if no secondaries are in use."
+            $finding.Remediation = "Restrict zone transfers to an explicit list of authorized secondary server IP addresses (`Set-DnsServerPrimaryZone -Name <Zone> -SecureSecondaries TransferToSecureServers -SecondaryServers <IP1>,<IP2>`), or disable transfers entirely if no secondaries are in use."
             $finding.Details = @{
                 Zones       = @($broadTransferZones)
                 DetailByZone = $zoneDetailLookup

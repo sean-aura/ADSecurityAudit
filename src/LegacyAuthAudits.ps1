@@ -3,7 +3,7 @@
 # Detects legacy/weak authentication and name-resolution poisoning surface
 # that is enforced (or left unenforced) via GPO/registry: SMBv1, SMB signing
 # not required, LM/NTLMv1 authentication permitted, LLMNR not disabled, and
-# WSUS delivered over HTTP. PingCastle parity: S-SMB-v1,
+# WSUS delivered over HTTP. PingCastle-comparable check(s): S-SMB-v1,
 # A-SMB2SignatureNotEnabled, A-SMB2SignatureNotRequired, A-LMHashAuthorized,
 # S-OldNtlm, A-NoGPOLLMNR, S-WSUS-HTTP.
 #
@@ -415,8 +415,9 @@ function Test-ADLegacyAuthSurface {
         }
         else {
             # Fail-open: if no GPO could be confirmed to disable LLMNR,
-            # treat it as not disabled by policy (PingCastle's A-NoGPOLLMNR
-            # semantics - the finding is the absence of a disabling policy).
+            # treat it as not disabled by policy (the same fail-open
+            # semantics as PingCastle's comparable A-NoGPOLLMNR check - the
+            # finding is the absence of a disabling policy).
             $perDc = Get-ADLiveRegistryValuePerDc -DomainControllers $domainControllers -Key $target.Key -ValueName $target.ValueName
             $isEnabled = $true
             $source    = 'No enforcing (disabling) GPO found linked at the domain root or Domain Controllers OU'

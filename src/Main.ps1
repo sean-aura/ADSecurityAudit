@@ -199,8 +199,14 @@ function Start-ADSecurityAudit {
         
         # Run tests and collect findings
         $allFindings = @()
+        $totalTestCount = @($testsToRun).Count
+        $currentTestIndex = 0
         
         foreach ($testName in $testsToRun) {
+            $currentTestIndex++
+            Write-Progress -Activity "Running Active Directory Security Audit" `
+                -Status "Test $currentTestIndex of $totalTestCount`: $testName" `
+                -PercentComplete (($currentTestIndex / [math]::Max(1, $totalTestCount)) * 100)
             Write-Host "Running test: $testName..." -ForegroundColor Yellow
             
             try {
@@ -248,6 +254,8 @@ function Start-ADSecurityAudit {
                 Write-Warning "Test '$testName' failed: $_"
             }
         }
+        
+        Write-Progress -Activity "Running Active Directory Security Audit" -Completed
         
         # Enumerate privileged users if requested
         $privilegedUsers = $null
@@ -308,12 +316,15 @@ function Start-ADSecurityAudit {
         
         # Export results
         if ($allFindings.Count -gt 0) {
+            Write-Progress -Activity "Exporting Audit Reports" -Status "Writing JSON report..." -PercentComplete 10
+
             # Export to JSON
             $jsonPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.json"
             $allFindings | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding UTF8
             Write-Host "`nDetailed report exported to: $jsonPath" -ForegroundColor Green
             
             # Export to HTML
+            Write-Progress -Activity "Exporting Audit Reports" -Status "Building HTML report..." -PercentComplete 40
             $htmlPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.html"
             Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore
             Write-Host "HTML report exported to: $htmlPath" -ForegroundColor Green
@@ -321,6 +332,7 @@ function Start-ADSecurityAudit {
             # Export to CSV with formula injection protection
             # NOTE (output contract): existing columns are never reordered or
             # removed. New flat fields are APPENDED after DetectedDate.
+            Write-Progress -Activity "Exporting Audit Reports" -Status "Writing CSV report..." -PercentComplete 70
             $csvPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.csv"
             $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight |
                 ForEach-Object {
@@ -378,6 +390,8 @@ function Start-ADSecurityAudit {
 
             Write-Host "Privileged users report exported to: $privilegedUsersCsvPath" -ForegroundColor Green
         }
+        
+        Write-Progress -Activity "Exporting Audit Reports" -Completed
         
         Write-Host "`n==================================================" -ForegroundColor Cyan
         Write-Host "Audit Complete" -ForegroundColor Cyan

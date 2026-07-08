@@ -5,7 +5,7 @@
 # to be cached on a lower-trust DC, password replication policy (PRP) gaps
 # (an allowed list that is too broad or a denied list missing the standard
 # privileged groups), and orphaned RODC-specific krbtgt_* accounts left
-# behind after an RODC was demoted or removed. PingCastle parity:
+# behind after an RODC was demoted or removed. PingCastle-comparable check(s):
 # P-RODCAdminRevealed, P-RODCAllowedGroup, P-RODCDeniedGroup,
 # P-RODCNeverReveal, P-RODCRevealOnDemand, P-RODCKrbtgtOrphan.
 #

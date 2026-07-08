@@ -102,8 +102,8 @@ function Invoke-ADQueryWithRetry {
         [Parameter(Mandatory)]
         [scriptblock]$Query,
 
-        [int]$MaxAttempts = 3,
-        [int]$DelaySeconds = 2,
+        [int]$MaxAttempts = 2,
+        [int]$DelaySeconds = 1,
         [string]$OperationName = "AD Query"
     )
 
@@ -182,11 +182,12 @@ function Get-ADTier0Principal {
                 if (-not $seen.ContainsKey($memberDN)) {
                     $seen[$memberDN] = [System.Collections.ArrayList]::new()
                     [void]$tier0.Add([PSCustomObject]@{
-                        DistinguishedName = $memberDN
-                        SID               = $null
-                        SamAccountName    = $null
-                        ObjectClass       = $null
-                        PrivilegedGroups  = $seen[$memberDN]
+                        DistinguishedName      = $memberDN
+                        SID                    = $null
+                        SamAccountName         = $null
+                        ObjectClass            = $null
+                        PrivilegedGroups       = $seen[$memberDN]
+                        PrivilegedGroupsString = ''
                     })
                 }
                 [void]$seen[$memberDN].Add($group.Name)
@@ -222,11 +223,12 @@ function Get-ADTier0Principal {
             if (-not $seen.ContainsKey($key)) {
                 $seen[$key] = [System.Collections.ArrayList]::new()
                 [void]$tier0.Add([PSCustomObject]@{
-                    DistinguishedName = $member.DistinguishedName
-                    SID               = $member.SID.Value
-                    SamAccountName    = $member.SamAccountName
-                    ObjectClass       = $member.objectClass
-                    PrivilegedGroups  = $seen[$key]
+                    DistinguishedName      = $member.DistinguishedName
+                    SID                    = $member.SID.Value
+                    SamAccountName         = $member.SamAccountName
+                    ObjectClass            = $member.objectClass
+                    PrivilegedGroups       = $seen[$key]
+                    PrivilegedGroupsString = ''
                 })
             }
             [void]$seen[$key].Add($groupName)

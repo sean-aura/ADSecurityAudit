@@ -2,7 +2,7 @@
 #
 # Detects the configuration state that enables the dominant DC-compromise
 # pattern of coerce-then-relay (PrinterBug / WebDAV coercion relayed to
-# LDAP or AD CS). PingCastle parity: A-DC-Coerce, A-DC-Spooler,
+# LDAP or AD CS). PingCastle-comparable check(s): A-DC-Coerce, A-DC-Spooler,
 # A-DC-WebClient, A-DCLdapSign, A-LDAPSigningDisabled,
 # A-DCLdapsChannelBinding.
 #
@@ -114,32 +114,43 @@ function Test-ADCoercionAndRelayExposure {
         }
 
         try {
-            # --- Spooler / WebClient service state (remote service query) ---
-            $services = Invoke-ADQueryWithRetry -OperationName "Get-Service Spooler/WebClient on $dcName" -Query {
-                Get-Service -ComputerName $dcName -Name 'Spooler', 'WebClient' -ErrorAction Stop
+            # --- Spooler service state (remote service query, retried - a
+            # transient RPC failure reaching the DC is worth retrying) ---
+            $spoolerSvc = Invoke-ADQueryWithRetry -OperationName "Get-Service Spooler on $dcName" -Query {
+                Get-Service -ComputerName $dcName -Name 'Spooler' -ErrorAction Stop
             }
 
-            if ($services) {
+            if ($spoolerSvc) {
                 $dcState.Reachable = $true
+                $dcState.SpoolerStatus = "$($spoolerSvc.Status)"
+                if ($spoolerSvc.Status -eq 'Running') {
+                    [void]$spoolerRunningDCs.Add($dcName)
+                }
+            }
 
-                $spooler = $services | Where-Object { $_.Name -eq 'Spooler' } | Select-Object -First 1
-                if ($spooler) {
-                    $dcState.SpoolerStatus = "$($spooler.Status)"
-                    if ($spooler.Status -eq 'Running') {
-                        [void]$spoolerRunningDCs.Add($dcName)
-                    }
+            # --- WebClient (WebDAV) service state ---
+            # Queried separately from Spooler and WITHOUT the retry wrapper:
+            # WebClient is an optional feature that's simply not installed
+            # on many modern/Core builds, which is a deterministic outcome,
+            # not a transient failure - retrying it with exponential backoff
+            # only wastes time (and previously, requesting both service
+            # names in a single Get-Service call meant a missing WebClient
+            # failed the ENTIRE call, silently losing the Spooler result
+            # too).
+            try {
+                $webClientSvc = Get-Service -ComputerName $dcName -Name 'WebClient' -ErrorAction Stop
+                $dcState.Reachable = $true
+                $dcState.WebClientStatus = "$($webClientSvc.Status)"
+                if ($webClientSvc.Status -eq 'Running') {
+                    [void]$webClientRunningDCs.Add($dcName)
                 }
-
-                $webClient = $services | Where-Object { $_.Name -eq 'WebClient' } | Select-Object -First 1
-                if ($webClient) {
-                    $dcState.WebClientStatus = "$($webClient.Status)"
-                    if ($webClient.Status -eq 'Running') {
-                        [void]$webClientRunningDCs.Add($dcName)
-                    }
-                }
-                else {
-                    $dcState.WebClientStatus = 'NotInstalled'
-                }
+            }
+            catch {
+                # Service genuinely not installed (or host unreachable, but
+                # that will already have surfaced via the Spooler check
+                # above) - either way, not worth retrying.
+                $dcState.WebClientStatus = 'NotInstalled'
+                Write-Verbose "Test-ADCoercionAndRelayExposure: WebClient service not present on '$dcName' (or query failed): $_"
             }
         }
         catch {

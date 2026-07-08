@@ -56,20 +56,40 @@ function Export-ADSecurityReportHTML {
         .header-info div { padding: 10px; }
         .header-info strong { display: block; color: #7f8c8d; font-size: 0.9em; margin-bottom: 5px; }
         .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 30px 0; }
-        .summary-card { padding: 25px; border-radius: 8px; color: white; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .summary-card { display: block; padding: 25px; border-radius: 8px; color: white; text-align: center; text-decoration: none; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.15s ease; }
+        .summary-card:hover { transform: translateY(-2px); }
+        .summary-card-empty { cursor: default; opacity: 0.85; }
+        .summary-card-empty:hover { transform: none; }
         .summary-card .count { font-size: 3em; font-weight: bold; margin-bottom: 10px; }
         .summary-card .label { font-size: 1.1em; text-transform: uppercase; letter-spacing: 1px; }
         .critical-card { background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%); }
         .high-card { background: linear-gradient(135deg, #e67e22 0%, #d35400 100%); }
         .medium-card { background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%); }
         .low-card { background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%); }
-        .finding { margin-bottom: 25px; padding: 20px; border-radius: 5px; border-left: 5px solid; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .finding { margin-bottom: 15px; padding: 20px; border-radius: 5px; border-left: 5px solid; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .finding.critical { border-left-color: #e74c3c; background: #fef5f5; }
         .finding.high { border-left-color: #e67e22; background: #fef9f5; }
         .finding.medium { border-left-color: #f39c12; background: #fffcf5; }
         .finding.low { border-left-color: #95a5a6; background: #f9fafb; }
+        details.finding { padding: 0; }
+        details.finding[open] { padding-bottom: 5px; }
+        details.finding > summary { list-style: none; cursor: pointer; padding: 20px; }
+        details.finding > summary::-webkit-details-marker { display: none; }
+        details.finding > summary::before { content: '\25B8'; display: inline-block; margin-right: 10px; color: #7f8c8d; transition: transform 0.15s ease; }
+        details.finding[open] > summary::before { transform: rotate(90deg); }
+        .finding-body { padding: 0 20px 15px; }
+        .section-toolbar { display: flex; justify-content: flex-end; gap: 10px; margin: -8px 0 10px; }
+        .toggle-all-btn { background: #ecf0f1; border: 1px solid #d5dbdd; color: #2c3e50; padding: 5px 12px; border-radius: 4px; font-size: 0.85em; cursor: pointer; }
+        .toggle-all-btn:hover { background: #dfe4e6; }
         .finding-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
-        .finding-title { font-size: 1.3em; font-weight: 600; color: #2c3e50; }
+        .finding-title { font-size: 1.3em; font-weight: 600; color: #2c3e50; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .count-badge { display: inline-block; background: #eef1f3; color: #2c3e50; font-size: 0.6em; font-weight: 700; padding: 3px 10px; border-radius: 12px; vertical-align: middle; letter-spacing: 0.3px; }
+        .finding-instance-list { list-style: none; border-top: 1px solid #ecf0f1; margin-top: 5px; max-height: 420px; overflow-y: auto; }
+        .finding-instance { padding: 10px 0; border-bottom: 1px solid #ecf0f1; }
+        .finding-instance:last-child { border-bottom: none; }
+        .finding-instance-object { font-weight: 600; color: #2c3e50; font-family: 'Consolas', monospace; font-size: 0.9em; word-break: break-word; }
+        .finding-instance-desc { color: #666; margin-top: 4px; line-height: 1.5; }
+        .finding-instance-date { color: #95a5a6; font-size: 0.8em; margin-top: 4px; }
         .severity-badge { padding: 6px 15px; border-radius: 20px; font-weight: bold; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.5px; }
         .severity-critical { background: #e74c3c; color: white; }
         .severity-high { background: #e67e22; color: white; }
@@ -116,8 +136,8 @@ function Export-ADSecurityReportHTML {
         .mitre-table tr:nth-child(even) { background: #f8f9fa; }
         .mitre-id { font-family: 'Consolas', monospace; color: #2980b9; font-weight: 600; }
         .cat-bar-row { display: grid; grid-template-columns: 200px 1fr 50px; align-items: center; gap: 10px; margin: 6px 0; font-size: 0.9em; }
-        .cat-bar-track { background: #e6e9ec; border-radius: 10px; height: 16px; overflow: hidden; }
-        .cat-bar-fill { height: 100%; border-radius: 10px; }
+        .cat-bar-track { display: block; background: #e6e9ec; border-radius: 10px; height: 16px; overflow: hidden; }
+        .cat-bar-fill { display: block; height: 100%; border-radius: 10px; }
         .tag-mitre { font-family: 'Consolas', monospace; background: #eaf2f8; color: #2471a3; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; }
         .tag-anssi { font-family: 'Consolas', monospace; background: #f4ecf7; color: #6c3483; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; }
         @media print { body { background: white; padding: 0; } .container { box-shadow: none; } }
@@ -125,10 +145,10 @@ function Export-ADSecurityReportHTML {
 </head>
 <body>
     <div class="container">
-        <h1>🛡️ Active Directory Security Assessment Report</h1>
+        <h1>&#128737; Active Directory Security Assessment Report</h1>
         
         <div class="warning-box">
-            <p><strong>⚠️ CONFIDENTIAL SECURITY REPORT</strong></p>
+            <p><strong>&#9888; CONFIDENTIAL SECURITY REPORT</strong></p>
             <p>This report contains sensitive security information about your Active Directory environment. Handle with care and share only with authorized personnel.</p>
         </div>
         
@@ -139,24 +159,24 @@ function Export-ADSecurityReportHTML {
             <div><strong>TOTAL FINDINGS</strong><span style="font-size: 1.2em; color: #2c3e50;">$($Findings.Count)</span></div>
         </div>
         
-        <h2>📊 Executive Summary</h2>
+        <h2>&#128202; Executive Summary</h2>
         <div class="summary-cards">
-            <div class="summary-card critical-card">
+            <a class="summary-card critical-card$(if (-not $criticalFindings) { ' summary-card-empty' })" href="$(if ($criticalFindings) { '#critical-findings' } else { '#' })">
                 <div class="count">$($Summary.Critical)</div>
                 <div class="label">Critical</div>
-            </div>
-            <div class="summary-card high-card">
+            </a>
+            <a class="summary-card high-card$(if (-not $highFindings) { ' summary-card-empty' })" href="$(if ($highFindings) { '#high-findings' } else { '#' })">
                 <div class="count">$($Summary.High)</div>
                 <div class="label">High</div>
-            </div>
-            <div class="summary-card medium-card">
+            </a>
+            <a class="summary-card medium-card$(if (-not $mediumFindings) { ' summary-card-empty' })" href="$(if ($mediumFindings) { '#medium-findings' } else { '#' })">
                 <div class="count">$($Summary.Medium)</div>
                 <div class="label">Medium</div>
-            </div>
-            <div class="summary-card low-card">
+            </a>
+            <a class="summary-card low-card$(if (-not $lowFindings) { ' summary-card-empty' })" href="$(if ($lowFindings) { '#low-findings' } else { '#' })">
                 <div class="count">$($Summary.Low)</div>
                 <div class="label">Low</div>
-            </div>
+            </a>
         </div>
 "@
 
@@ -172,7 +192,7 @@ function Export-ADSecurityReportHTML {
         $maturityLevel = [int]$RiskScore.MaturityLevel
 
         $html += @"
-        <h2>🎯 Risk Score &amp; Maturity</h2>
+        <h2>&#127919; Risk Score &amp; Maturity</h2>
         <div class="scoring-grid">
             <div class="score-panel">
                 <h3>Global Risk Score</h3>
@@ -185,8 +205,8 @@ function Export-ADSecurityReportHTML {
                     </div>
                     <div class="score-meta">
                         <p><strong>$($RiskScore.FindingCount)</strong> findings scored.</p>
-                        <p>Higher is worse. The global score equals the worst risk category (PingCastle-style).</p>
-                        <p class="hint">Weighted points across all findings: $($RiskScore.WeightedPoints)</p>
+                        <p>Higher is worse. The global score equals the worst category's score - a category is only ever as strong as its weakest one - similar in spirit to PingCastle's approach.</p>
+                        <p class="hint">Each category's score approaches 100 as findings accumulate, using diminishing returns per finding (a single Critical won't max out a category by itself). Raw weighted points across all findings: $($RiskScore.WeightedPoints)</p>
                     </div>
                 </div>
             </div>
@@ -244,7 +264,7 @@ function Export-ADSecurityReportHTML {
         # MITRE ATT&CK technique summary
         if ($RiskScore.MitreSummary -and $RiskScore.MitreSummary.Count -gt 0) {
             $html += @"
-        <h3>🗺️ MITRE ATT&amp;CK Technique Summary</h3>
+        <h3>&#128506; MITRE ATT&amp;CK Technique Summary</h3>
         <div style="overflow-x: auto;">
             <table class="mitre-table">
                 <thead><tr><th>Technique</th><th>Name</th><th>Findings</th></tr></thead>
@@ -269,7 +289,7 @@ function Export-ADSecurityReportHTML {
 
     if ($PrivilegedUsers -and $PrivilegedUsers.Count -gt 0) {
         $html += @"
-        <h2>👥 Privileged Users Summary</h2>
+        <h2>&#128101; Privileged Users Summary</h2>
         <p style="margin-bottom: 15px; color: #555;">The following $($PrivilegedUsers.Count) user accounts have membership in one or more privileged groups. Review these accounts regularly to ensure appropriate access levels.</p>
         <div style="overflow-x: auto;">
             <table class="privileged-users-table">
@@ -325,7 +345,7 @@ function Export-ADSecurityReportHTML {
     $controlPathFindings = @($Findings | Where-Object { $_.Category -eq 'Attack Paths' } | Sort-Object -Property @{Expression = { $_.SeverityLevel }; Descending = $true })
     if ($controlPathFindings.Count -gt 0) {
         $html += @"
-        <h2>🕸️ Control Paths to Tier-0</h2>
+        <h2>&#128504; Control Paths to Tier-0</h2>
         <p style="color:#555; margin-bottom: 15px;">Chained group-membership, ACL, and ownership relationships that let a non-privileged principal reach a Tier-0 object (Domain Admins/DCs/AdminSDHolder/domain head). No single hop here need look critical on its own - see each finding below for full remediation guidance.</p>
 "@
         foreach ($cp in $controlPathFindings) {
@@ -338,7 +358,7 @@ function Export-ADSecurityReportHTML {
                 <span class="severity-badge severity-$sevClass">$($cp.Severity)</span>
             </div>
             <div class="finding-section">
-                <h4>🔗 Hop Chain</h4>
+                <h4>&#128279; Hop Chain</h4>
                 <p style="font-family: Consolas, monospace; font-size: 0.9em; word-break: break-word;">$hopChain</p>
             </div>
         </div>
@@ -348,31 +368,67 @@ function Export-ADSecurityReportHTML {
 
     # Add findings by severity
     if ($criticalFindings) {
-        $html += "<h2>🔴 Critical Severity Findings</h2>"
-        foreach ($finding in $criticalFindings) {
-            $html += Get-FindingHTML -Finding $finding
+        $html += @"
+    <h2 id="critical-findings">&#128308; Critical Severity Findings</h2>
+    <div class="section-toolbar">
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('critical-findings', true)">Expand All</button>
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('critical-findings', false)">Collapse All</button>
+    </div>
+    <div id="critical-findings-body">
+"@
+        $groups = @($criticalFindings | Group-Object -Property Category, Issue)
+        foreach ($group in $groups) {
+            $html += Get-FindingHTML -FindingGroup $group.Group
         }
+        $html += "    </div>"
     }
     
     if ($highFindings) {
-        $html += "<h2>🟠 High Severity Findings</h2>"
-        foreach ($finding in $highFindings) {
-            $html += Get-FindingHTML -Finding $finding
+        $html += @"
+    <h2 id="high-findings">&#128992; High Severity Findings</h2>
+    <div class="section-toolbar">
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('high-findings', true)">Expand All</button>
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('high-findings', false)">Collapse All</button>
+    </div>
+    <div id="high-findings-body">
+"@
+        $groups = @($highFindings | Group-Object -Property Category, Issue)
+        foreach ($group in $groups) {
+            $html += Get-FindingHTML -FindingGroup $group.Group
         }
+        $html += "    </div>"
     }
     
     if ($mediumFindings) {
-        $html += "<h2>🟡 Medium Severity Findings</h2>"
-        foreach ($finding in $mediumFindings) {
-            $html += Get-FindingHTML -Finding $finding
+        $html += @"
+    <h2 id="medium-findings">&#128993; Medium Severity Findings</h2>
+    <div class="section-toolbar">
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('medium-findings', true)">Expand All</button>
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('medium-findings', false)">Collapse All</button>
+    </div>
+    <div id="medium-findings-body">
+"@
+        $groups = @($mediumFindings | Group-Object -Property Category, Issue)
+        foreach ($group in $groups) {
+            $html += Get-FindingHTML -FindingGroup $group.Group
         }
+        $html += "    </div>"
     }
     
     if ($lowFindings) {
-        $html += "<h2>⚪ Low Severity Findings</h2>"
-        foreach ($finding in $lowFindings) {
-            $html += Get-FindingHTML -Finding $finding
+        $html += @"
+    <h2 id="low-findings">&#9898; Low Severity Findings</h2>
+    <div class="section-toolbar">
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('low-findings', true)">Expand All</button>
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('low-findings', false)">Collapse All</button>
+    </div>
+    <div id="low-findings-body">
+"@
+        $groups = @($lowFindings | Group-Object -Property Category, Issue)
+        foreach ($group in $groups) {
+            $html += Get-FindingHTML -FindingGroup $group.Group
         }
+        $html += "    </div>"
     }
     
     $html += @"
@@ -382,6 +438,19 @@ function Export-ADSecurityReportHTML {
             <p>Review findings, prioritize remediation by severity, and implement security best practices.</p>
         </div>
     </div>
+    <script>
+        // Expand All / Collapse All toggles a section's <details> elements.
+        // Each finding is a native <details>, collapsed by default; this
+        // just flips the `open` attribute on every one inside the section.
+        function setSectionFindings(sectionId, isOpen) {
+            var container = document.getElementById(sectionId + '-body');
+            if (!container) { return; }
+            var items = container.querySelectorAll('details.finding');
+            for (var i = 0; i < items.length; i++) {
+                items[i].open = isOpen;
+            }
+        }
+    </script>
 </body>
 </html>
 "@
@@ -392,8 +461,16 @@ function Export-ADSecurityReportHTML {
 function Get-FindingHTML {
     [CmdletBinding()]
     param(
+        # One or more findings sharing the same Category + Issue (and, since
+        # they came from the same severity bucket, the same Severity too).
+        # Grouping happens in the caller via `Group-Object -Property
+        # Category, Issue`; this function renders either the original
+        # single-item layout (Count -eq 1, unchanged from prior versions)
+        # or a consolidated layout with one shared Impact/Remediation and a
+        # list of every affected object underneath (Count -gt 1), instead
+        # of duplicating the same finding once per affected object.
         [Parameter(Mandatory)]
-        [ADSecurityFinding]$Finding
+        [array]$FindingGroup
     )
     
     function HtmlEncode($text) {
@@ -403,51 +480,129 @@ function Get-FindingHTML {
         return $text
     }
     
-    $severityClass = $Finding.Severity.ToLower()
-    $description = HtmlEncode $Finding.Description
-    $impact = HtmlEncode $Finding.Impact
-    $remediation = HtmlEncode $Finding.Remediation
-    $issue = HtmlEncode $Finding.Issue
-    $category = HtmlEncode $Finding.Category
-    $affectedObject = HtmlEncode $Finding.AffectedObject
+    $FindingGroup = @($FindingGroup)
+    $first = $FindingGroup[0]
+    $count = $FindingGroup.Count
 
-    # Optional metadata tags (v1.2.0) - only rendered when populated
-    $metaTags = ''
-    if (-not [string]::IsNullOrEmpty($Finding.MitreTechnique)) {
-        $metaTags += "<span><strong>MITRE:</strong> <span class=`"tag-mitre`">$(HtmlEncode $Finding.MitreTechnique)</span></span>"
-    }
-    if (-not [string]::IsNullOrEmpty($Finding.AnssiControl)) {
-        $metaTags += "<span><strong>ANSSI:</strong> <span class=`"tag-anssi`">$(HtmlEncode $Finding.AnssiControl)</span></span>"
-    }
-    
-    # Handle multi-line remediation
+    $severityClass = $first.Severity.ToLower()
+    $impact = HtmlEncode $first.Impact
+    $remediation = HtmlEncode $first.Remediation
+    $issue = HtmlEncode $first.Issue
+    $category = HtmlEncode $first.Category
+
+    # Defensive fallback: every field below should be populated by the audit
+    # module that raised the finding, but a blank paragraph in the report is
+    # confusing, so show an explicit placeholder instead of nothing.
+    if ([string]::IsNullOrWhiteSpace($impact))      { $impact      = 'Not specified for this finding.' }
+    if ([string]::IsNullOrWhiteSpace($remediation)) { $remediation = 'Not specified for this finding.' }
     $remediation = $remediation -replace "`r`n", '<br>' -replace "`n", '<br>'
-    
+
+    # Optional metadata tags (v1.2.0) - these come from the shared Issue ->
+    # MITRE/ANSSI mapping, so they're identical across every item in the
+    # group; render once from the first item rather than once per object.
+    $metaTags = ''
+    if (-not [string]::IsNullOrEmpty($first.MitreTechnique)) {
+        $metaTags += "<span><strong>MITRE:</strong> <span class=`"tag-mitre`">$(HtmlEncode $first.MitreTechnique)</span></span>"
+    }
+    if (-not [string]::IsNullOrEmpty($first.AnssiControl)) {
+        $metaTags += "<span><strong>ANSSI:</strong> <span class=`"tag-anssi`">$(HtmlEncode $first.AnssiControl)</span></span>"
+    }
+
+    # Rendered as a native <details>/<summary> element so every finding is
+    # collapsed by default and expandable with no JS required for the basic
+    # interaction; the per-section Expand All/Collapse All buttons toggle the
+    # `open` attribute on these elements (see setSectionFindings in the
+    # footer script).
+    if ($count -eq 1) {
+        # Single affected object: same layout used since earlier versions,
+        # including the finding's own specific Description text.
+        $description = HtmlEncode $first.Description
+        $affectedObject = HtmlEncode $first.AffectedObject
+        if ([string]::IsNullOrWhiteSpace($description))    { $description = 'Not specified for this finding.' }
+        if ([string]::IsNullOrWhiteSpace($affectedObject))  { $affectedObject = 'N/A' }
+
+        return @"
+        <details class="finding $severityClass">
+            <summary>
+                <div class="finding-header">
+                    <div class="finding-title">$issue</div>
+                    <span class="severity-badge severity-$severityClass">$($first.Severity)</span>
+                </div>
+            </summary>
+            <div class="finding-body">
+                <div class="finding-meta">
+                    <span><strong>Category:</strong> $category</span>
+                    <span><strong>Affected Object:</strong> $affectedObject</span>
+                    <span><strong>Detected:</strong> $($first.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</span>
+                    $metaTags
+                </div>
+                <div class="finding-section">
+                    <h4>&#128221; Description</h4>
+                    <p>$description</p>
+                </div>
+                <div class="finding-section">
+                    <h4>&#9888; Impact</h4>
+                    <p>$impact</p>
+                </div>
+                <div class="finding-section">
+                    <h4>&#9989; Remediation</h4>
+                    <p>$remediation</p>
+                </div>
+            </div>
+        </details>
+"@
+    }
+
+    # Multiple affected objects for the same Category+Issue: one
+    # consolidated block. Impact/Remediation/MITRE/ANSSI are shown once
+    # (they're the same for every item, coming from the shared Issue -> 
+    # metadata mapping); each object keeps its own specific Description
+    # (which typically bakes in the exact principal/SID/rights/etc.) and
+    # its own detection timestamp in the list below.
+    $instanceItems = foreach ($f in ($FindingGroup | Sort-Object AffectedObject)) {
+        $objDesc = HtmlEncode $f.Description
+        $objName = HtmlEncode $f.AffectedObject
+        if ([string]::IsNullOrWhiteSpace($objDesc)) { $objDesc = 'Not specified for this finding.' }
+        if ([string]::IsNullOrWhiteSpace($objName)) { $objName = 'N/A' }
+        @"
+                    <li class="finding-instance">
+                        <div class="finding-instance-object">$objName</div>
+                        <div class="finding-instance-desc">$objDesc</div>
+                        <div class="finding-instance-date">Detected: $($f.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</div>
+                    </li>
+"@
+    }
+    $instanceItemsHtml = $instanceItems -join "`n"
+
     return @"
-        <div class="finding $severityClass">
-            <div class="finding-header">
-                <div class="finding-title">$issue</div>
-                <span class="severity-badge severity-$severityClass">$($Finding.Severity)</span>
+        <details class="finding $severityClass">
+            <summary>
+                <div class="finding-header">
+                    <div class="finding-title">$issue <span class="count-badge">$count objects</span></div>
+                    <span class="severity-badge severity-$severityClass">$($first.Severity)</span>
+                </div>
+            </summary>
+            <div class="finding-body">
+                <div class="finding-meta">
+                    <span><strong>Category:</strong> $category</span>
+                    $metaTags
+                </div>
+                <div class="finding-section">
+                    <h4>&#9888; Impact</h4>
+                    <p>$impact</p>
+                </div>
+                <div class="finding-section">
+                    <h4>&#9989; Remediation</h4>
+                    <p>$remediation</p>
+                </div>
+                <div class="finding-section">
+                    <h4>&#128221; Affected Objects ($count)</h4>
+                    <ul class="finding-instance-list">
+$instanceItemsHtml
+                    </ul>
+                </div>
             </div>
-            <div class="finding-meta">
-                <span><strong>Category:</strong> $category</span>
-                <span><strong>Affected Object:</strong> $affectedObject</span>
-                <span><strong>Detected:</strong> $($Finding.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</span>
-                $metaTags
-            </div>
-            <div class="finding-section">
-                <h4>📝 Description</h4>
-                <p>$description</p>
-            </div>
-            <div class="finding-section">
-                <h4>⚠️ Impact</h4>
-                <p>$impact</p>
-            </div>
-            <div class="finding-section">
-                <h4>✅ Remediation</h4>
-                <p>$remediation</p>
-            </div>
-        </div>
+        </details>
 "@
 }
 

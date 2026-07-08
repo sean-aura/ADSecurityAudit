@@ -4,7 +4,7 @@
 # is still permitted (account-level, domain-policy-level, and trust-level),
 # whether Kerberos Armoring (FAST) is enabled (KDC and client), and whether
 # a cross-forest/cross-realm trust is configured to allow TGT delegation
-# across the trust boundary. PingCastle parity: S-AesNotEnabled, T-AlgsAES,
+# across the trust boundary. PingCastle-comparable check(s): S-AesNotEnabled, T-AlgsAES,
 # S-KerberosArmoring, S-KerberosArmoringDC, T-TGTDelegation.
 #
 # DETECTION ONLY: this module reads msDS-SupportedEncryptionTypes bitmasks

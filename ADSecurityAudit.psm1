@@ -9,7 +9,7 @@
 
 .NOTES
     Author: AlchemicalChef
-    Version: 1.16.0
+    Version: 1.16.2
     Requires: Active Directory PowerShell Module, Windows Server 2016+
 
 .EXAMPLE

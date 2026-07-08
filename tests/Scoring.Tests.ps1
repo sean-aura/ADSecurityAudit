@@ -64,7 +64,7 @@ Describe 'Set-ADFindingMetadata' {
 Describe 'Get-ADRiskScore (fixed fixture)' {
     BeforeAll { $script:Result = Get-ADRiskScore -Findings $script:Fixture }
 
-    It 'computes the global total as the worst category (PingCastle-style)' {
+    It 'computes the global total as the worst category (weakest-link, similar in spirit to PingCastle)' {
         $script:Result.TotalScore | Should -Be 40
     }
 
@@ -76,8 +76,8 @@ Describe 'Get-ADRiskScore (fixed fixture)' {
         $script:Result.WeightedPoints | Should -Be 125
     }
 
-    It 'computes correct per-category sub-scores' {
-        ($script:Result.CategoryScores | Where-Object Category -eq 'User Account').Score        | Should -Be 24
+    It 'computes correct per-category sub-scores (diminishing returns: single-finding categories are unaffected; User Account has 3 findings at weights 10/10/4, so factor = 0.9*0.9*0.96 = 0.7776, Score = round(100*(1-0.7776)) = 22)' {
+        ($script:Result.CategoryScores | Where-Object Category -eq 'User Account').Score        | Should -Be 22
         ($script:Result.CategoryScores | Where-Object Category -eq 'Kerberos Security').Score    | Should -Be 40
         ($script:Result.CategoryScores | Where-Object Category -eq 'Replication Security').Score | Should -Be 40
         ($script:Result.CategoryScores | Where-Object Category -eq 'Group Policy').Score         | Should -Be 1
@@ -103,7 +103,7 @@ Describe 'Get-ADRiskScore (edge cases)' {
     It 'tags raw (untagged) findings on the fly' {
         $f = [ADSecurityFinding]::new(); $f.Issue = 'Reversible Password Encryption'; $f.Category = 'User Account'; $f.SeverityLevel = 4
         $r = Get-ADRiskScore -Findings @($f)
-        $r.TotalScore | Should -Be 40   # weight 40, capped category
+        $r.TotalScore | Should -Be 40   # weight 40, single finding: diminishing-returns formula degenerates to the same value as a plain weight for exactly one finding
         $f.MitreTechnique | Should -Be 'T1003'
     }
 }

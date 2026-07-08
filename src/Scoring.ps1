@@ -23,9 +23,10 @@
 # metadata that was produced by read-only configuration/attribute checks.
 #
 # Mapping note: MITRE technique ids are authoritative. The ANSSI control ids
-# follow ANSSI's Active Directory point-of-control conventions and the
-# PingCastle maturity model; review against the current official ANSSI
-# control catalogue before relying on them for formal compliance reporting.
+# follow ANSSI's Active Directory point-of-control conventions and a
+# maturity structure comparable to PingCastle's; review against the current
+# official ANSSI control catalogue before relying on them for formal
+# compliance reporting.
 
 # Fallback weights by SeverityLevel (Critical=4 .. Info=0), used only when an
 # Issue is not present in the mapping table.
@@ -314,13 +315,18 @@ function Get-ADRiskScore {
         Computes a 0-100 risk score (higher = worse), per-category sub-scores,
         and a 1-5 ANSSI-style maturity level for a set of findings.
     .DESCRIPTION
-        Scoring model (PingCastle-aligned):
+        Scoring model (comparable in spirit to PingCastle's, but not identical):
           * Each finding contributes its Weight (set from the central map).
             Findings without metadata are tagged on the fly.
-          * Each category's sub-score is the sum of its findings' weights,
-            capped at 100.
+          * Each category's sub-score uses diminishing returns: the category
+            starts "clean" (factor 1.0) and every finding multiplies that
+            factor by (1 - Weight/100); Score = 100 * (1 - factor). This
+            approaches 100 smoothly as findings accumulate instead of a flat
+            weight sum hard-capped at 100, so a couple of Critical findings
+            no longer saturate a category to the maximum outright.
           * The TotalScore is the MAX of the category sub-scores - i.e. an
-            environment is rated by its worst risk area (PingCastle semantics).
+            environment is rated by its worst risk area (the same
+            weakest-link philosophy used by PingCastle for its global score).
         Maturity (ANSSI-style 1..5, higher = better):
           * Derived from the 'vuln<level>_' prefix of each AnssiControl.
           * Maturity = the lowest level present among findings (a single
@@ -362,8 +368,9 @@ function Get-ADRiskScore {
         }
     }
 
-    $categoryPoints = @{}
-    $categoryCounts = @{}
+    $categoryPoints  = @{}   # raw weighted-points sum, kept for the report's informational total
+    $categoryFactors = @{}   # diminishing-returns "clean" factor per category, starts at 1.0
+    $categoryCounts  = @{}
     $mitreCounts    = @{}
     $totalPoints    = 0
     $minLevel       = 5
@@ -379,12 +386,30 @@ function Get-ADRiskScore {
         $w   = [int]$finding.Weight
 
         if (-not $categoryPoints.ContainsKey($cat)) {
-            $categoryPoints[$cat] = 0
-            $categoryCounts[$cat] = 0
+            $categoryPoints[$cat]  = 0
+            $categoryFactors[$cat] = 1.0
+            $categoryCounts[$cat]  = 0
         }
         $categoryPoints[$cat] += $w
         $categoryCounts[$cat]++
         $totalPoints += $w
+
+        # Diminishing-returns accumulation: each finding "cleans away" a
+        # fraction of the category's remaining headroom rather than adding
+        # a flat number of points that can blow straight through the 0-100
+        # ceiling. A finding's weight (0-100+, clamped here to 0-100) is
+        # treated as the probability that this single finding alone would
+        # justify a fully-saturated (100) category score; combining n
+        # independent findings multiplies their "not-fully-bad" complements
+        # together (categoryFactor), so the category score is
+        # 100 * (1 - categoryFactor). This grows smoothly toward 100 as
+        # findings accumulate instead of hard-capping the instant a
+        # category's raw point sum crosses 100 - e.g. three Critical
+        # (weight 40) findings in one category previously saturated it to
+        # 100/100 outright; under this model they land at ~78/100, with the
+        # remaining headroom closed out by further findings.
+        $clampedWeight = [math]::Max(0, [math]::Min(100, $w))
+        $categoryFactors[$cat] = $categoryFactors[$cat] * (1 - ($clampedWeight / 100.0))
 
         # MITRE technique tally
         if (-not [string]::IsNullOrEmpty($finding.MitreTechnique)) {
@@ -409,17 +434,24 @@ function Get-ADRiskScore {
         }
     }
 
-    # Per-category sub-scores (each capped 0-100), sorted worst-first.
-    $categoryScores = foreach ($cat in $categoryPoints.Keys) {
+    # Per-category sub-scores via diminishing returns: Score = 100 * (1 - factor),
+    # where factor is the product of (1 - weight/100) across every finding in
+    # the category. Naturally bounded to (0, 100) with no explicit cap needed;
+    # RawPoints is retained for transparency/debugging but no longer drives
+    # the score directly.
+    $categoryScores = foreach ($cat in $categoryFactors.Keys) {
         [PSCustomObject]@{
-            Category = $cat
-            Score    = [math]::Min(100, $categoryPoints[$cat])
-            Findings = $categoryCounts[$cat]
+            Category   = $cat
+            Score      = [int][math]::Round(100 * (1 - $categoryFactors[$cat]))
+            Findings   = $categoryCounts[$cat]
+            RawPoints  = $categoryPoints[$cat]
         }
     }
     $categoryScores = @($categoryScores | Sort-Object -Property Score, Findings -Descending)
 
-    # PingCastle-style global score = worst category.
+    # Global score = worst category (an environment is only as strong as its
+    # weakest risk area - the same worst-category philosophy as before, just
+    # applied to the new diminishing-returns per-category score).
     $totalScore = 0
     if ($categoryScores.Count -gt 0) {
         $totalScore = ($categoryScores | Measure-Object -Property Score -Maximum).Maximum

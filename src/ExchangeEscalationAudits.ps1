@@ -6,7 +6,7 @@
 # Subsystem -> WriteDacl on the domain -> DCSync). Also flags the same
 # exposure when it is a RESIDUAL ACE left behind after Exchange has been
 # decommissioned from the forest, since the ACE itself does not get cleaned
-# up automatically. PingCastle parity: P-ExchangePrivEsc, P-ExchangeAdminSDHolder.
+# up automatically. PingCastle-comparable check(s): P-ExchangePrivEsc, P-ExchangeAdminSDHolder.
 #
 # DETECTION ONLY: every determination here is a read of nTSecurityDescriptor
 # on the domain head and CN=AdminSDHolder,CN=System,<domain>, evaluated

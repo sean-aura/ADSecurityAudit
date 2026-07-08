@@ -4,8 +4,8 @@
 # from OS build/version, installed CU/hotfix level, and service/config
 # state - ZeroLogon (CVE-2020-1472), MS17-010/EternalBlue, MS14-068,
 # PrintNightmare (CVE-2021-34527), and BadSuccessor/dMSA escalation
-# exposure on Windows Server 2025-level Domain Controllers. PingCastle
-# parity: S-Vuln-MS14-068, S-Vuln-MS17_010, A-Krbtgt, A-DC-Spooler,
+# exposure on Windows Server 2025-level Domain Controllers.
+# PingCastle-comparable check(s): S-Vuln-MS14-068, S-Vuln-MS17_010, A-Krbtgt, A-DC-Spooler,
 # A-BadSuccessor.
 #
 # DETECTION ONLY: every determination here comes from reading
