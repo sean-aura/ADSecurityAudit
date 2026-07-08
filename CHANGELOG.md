@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0]
+### Added
+- Attack-path graph (`Get-ADControlPathGraph`) and indirect-privilege findings (`Test-ADControlPaths`) reaching Tier-0 via ACL/membership/ownership chains.
+- Optional BloodHound-compatible edge export (`Export-ADControlPathGraphBloodHound`).
+- 'Control Paths to Tier-0' HTML report section.
+
 ## [1.15.0]
 ### Added
 - `Test-ADRodcSecurity`: Read-Only Domain Controller security posture (PingCastle parity).

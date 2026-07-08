@@ -9,7 +9,7 @@
 
 .NOTES
     Author: AlchemicalChef
-    Version: 1.15.0
+    Version: 1.16.0
     Requires: Active Directory PowerShell Module, Windows Server 2016+
 
 .EXAMPLE
@@ -63,6 +63,7 @@ $moduleScripts = @(
     'src/KnownVulnAudits.ps1',
     'src/ExchangeEscalationAudits.ps1',
     'src/RodcSecurityAudits.ps1',
+    'src/ControlPaths.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
 )
@@ -106,6 +107,9 @@ Export-ModuleMember -Function @(
     'Test-ADKnownDCVulnerabilities',
     'Test-ADExchangeEscalation',
     'Test-ADRodcSecurity',
+    'Get-ADControlPathGraph',
+    'Test-ADControlPaths',
+    'Export-ADControlPathGraphBloodHound',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',

@@ -243,6 +243,11 @@ $Script:ADFindingMetadataMap = @{
     'Privileged Account Revealed to RODC'                 = @{ Mitre = 'T1003';     Anssi = 'vuln1_rodc_privileged_revealed'; Weight = 40 }
     'RODC Password Replication Policy Misconfigured'      = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_rodc_prp_misconfigured';   Weight = 20 }
     'Orphaned RODC krbtgt Account'                        = @{ Mitre = 'T1078.002'; Anssi = 'vuln3_rodc_krbtgt_orphan';       Weight = 10 }
+
+    # --- Attack-Path Graph & Indirect-Privilege (Control-Path) Findings ---
+    'Indirect Control Path to Tier-0 Object'               = @{ Mitre = 'T1098'; Anssi = 'vuln2_control_path_indirect';        Weight = 20 }
+    'Everyone/Authenticated Users on a Control Path to Tier-0' = @{ Mitre = 'T1098'; Anssi = 'vuln1_control_path_broad';       Weight = 40 }
+    'Owner of Tier-0 Object is Non-Privileged'             = @{ Mitre = 'T1098'; Anssi = 'vuln2_control_path_owner';           Weight = 20 }
 }
 
 function Get-ADFindingMetadataMap {

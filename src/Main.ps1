@@ -186,6 +186,7 @@ function Start-ADSecurityAudit {
             'KnownDCVulnerabilities' = { Test-ADKnownDCVulnerabilities }
             'ExchangeEscalation' = { Test-ADExchangeEscalation }
             'RodcSecurity' = { Test-ADRodcSecurity }
+            'ControlPaths' = { Test-ADControlPaths }
         }
         
         # Determine which tests to run

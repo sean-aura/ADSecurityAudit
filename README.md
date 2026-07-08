@@ -38,6 +38,7 @@ The repository also includes a responsive web dashboard (in `ui/`) that visualiz
 - **Known DC Vulnerabilities by Patch/Build**: Flags Domain Controller exposure to ZeroLogon (CVE-2020-1472), MS17-010/EternalBlue, MS14-068, and PrintNightmare (CVE-2021-34527, only while the Spooler service is running) strictly from OS build/install date and installed hotfix level (`Get-HotFix`) against documented fix-date thresholds, plus BadSuccessor/dMSA escalation exposure on Windows Server 2025-level Domain Controllers - every determination is a version/patch/config read, never exploitation
 - **Exchange-in-AD Privilege Escalation**: Flags Exchange security principals (Exchange Windows Permissions, Exchange Trusted Subsystem, Exchange Servers, Exchange Enterprise Servers, Organization Management) holding GenericAll/WriteDacl/WriteOwner on the domain head object (the PrivExchange-style path to DCSync) or on AdminSDHolder, firing on residual ACEs even after Exchange has been fully decommissioned
 - **Read-Only Domain Controller Security Posture**: Audits RODCs for Tier-0/privileged principals already cached (`msDS-RevealedUsers`) or allowed to replicate (`msDS-RevealOnDemandGroup`), password replication policy gaps (allowed list too broad or denied list missing expected privileged groups via `msDS-NeverRevealGroup`), and orphaned RODC-specific `krbtgt_*` accounts left behind after an RODC is demoted or removed
+- **Attack-Path Graph & Indirect-Privilege (Control-Path) Findings**: Builds a directed control-edge graph from dangerous ACEs, group membership, and object ownership (`Get-ADControlPathGraph`), then computes reachability from non-Tier-0 principals to the Tier-0 set - Domain Admins/Enterprise Admins/etc. (per `Get-ADTier0Principal`), Domain Controllers, AdminSDHolder, and the domain head object - via `Test-ADControlPaths`, emitting a finding per reachable path with the full hop chain recorded in `Details`. Surfaces the indirect escalation paths that flat, per-object permission checks can't express on their own; a broad principal (Everyone/Authenticated Users/Domain Users/ANONYMOUS LOGON) on any path is always Critical. Includes an optional BloodHound-compatible generic-edge JSON export (`Export-ADControlPathGraphBloodHound`) for cross-checking against a BloodHound collection of the same environment
 
 ## Requirements
 
@@ -290,6 +291,14 @@ Each finding includes:
 - Orphaned RODC krbtgt Account - a `krbtgt_*` account remains after the corresponding RODC computer object no longer exists
 - Clean exit when the domain has no RODCs; every determination is a read of RODC attributes and the krbtgt account inventory, never exploitation, coercion, relay, or PoC traffic
 
+### Attack-Path Graph & Indirect-Privilege (Control-Path) Findings
+- Indirect Control Path to Tier-0 Object - a non-privileged principal can reach a Tier-0 object (Domain Admins/Enterprise Admins/etc., Domain Controllers, AdminSDHolder, or the domain head) through a chain of group-membership, dangerous-ACE, and/or ownership hops, with the full principal→…→target hop chain recorded in `Details.HopChain`
+- Everyone/Authenticated Users on a Control Path to Tier-0 - same as above, but a broad principal (Everyone, Authenticated Users, Domain Users, or ANONYMOUS LOGON) sits somewhere on the path; always Critical regardless of hop count
+- Owner of Tier-0 Object is Non-Privileged - a Tier-0 object is owned by a principal that is not itself Tier-0, which grants that owner implicit WriteDacl-equivalent control (an owner can always rewrite the DACL) regardless of the current ACL contents
+- Reuses the existing dangerous-rights tables (`GenericAll`/`WriteDacl`/`WriteOwner`/`GenericWrite`/`AllExtendedRights`, the dangerous extended-rights and property-write GUID tables, including the DS-Replication set) and `Get-ADTier0Principal` rather than re-deriving its own definitions
+- `Get-ADControlPathGraph` builds the underlying directed edge graph (exposed separately for scripting/inspection); `Test-ADControlPaths` runs the reachability analysis and emits findings; `Export-ADControlPathGraphBloodHound` optionally writes the same graph out as BloodHound-compatible generic-edge JSON for cross-checking against a BloodHound collection of the same environment
+- Detection only - every edge comes from a read of `nTSecurityDescriptor`, group membership, or object ownership; ACL/ownership edges are scoped to the Tier-0 target set plus every group on a chain toward it, not a sweep of the entire domain. No exploitation, coercion, relay, ticket forging, or PoC traffic is ever sent to any host
+
 ### Monitoring & Logging
 - Disabled audit policies for critical events
 - Missing SACLs on AdminSDHolder container
@@ -395,7 +404,10 @@ Always:
 
 ## Version History
 
-### v1.15.0 (Current)
+### v1.16.0 (Current)
+- Added `Get-ADControlPathGraph` and `Test-ADControlPaths`: builds a directed control-edge graph from dangerous ACEs, group membership, and object ownership (reusing the existing dangerous-rights tables and `Get-ADTier0Principal`), then computes reachability from non-Tier-0 principals to the Tier-0 set (privileged principals, Domain Controllers, AdminSDHolder, and the domain head object), emitting a finding per reachable path with the full hop chain in `Details.HopChain`. A broad principal (Everyone/Authenticated Users/Domain Users/ANONYMOUS LOGON) on any path is always Critical; a Tier-0 object owned by a non-Tier-0 principal is flagged separately. Added `Export-ADControlPathGraphBloodHound` for an optional BloodHound-compatible generic-edge JSON export, and a "Control Paths to Tier-0" HTML report section rendering each hop chain. Detection only - every edge comes from a read of `nTSecurityDescriptor`, group membership, or object ownership; no exploitation, coercion, relay, ticket forging, or PoC traffic is ever sent to any host
+
+### v1.15.0
 - Added `Test-ADRodcSecurity`: audits Read-Only Domain Controller configuration - Tier-0/privileged principals revealed or allowed to an RODC, password replication policy gaps, and orphaned RODC-specific `krbtgt_*` accounts. Detection only - reads RODC attributes (`msDS-RevealedUsers`, `msDS-RevealOnDemandGroup`, `msDS-NeverRevealGroup`) and the krbtgt account inventory only, no exploitation, coercion, relay, or PoC traffic. Clean exit when there are no RODCs; snapshot-aware with a fallback to live reads
 
 ### v1.14.0

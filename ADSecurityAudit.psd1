@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.15.0'
+    ModuleVersion = '1.16.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -37,6 +37,9 @@
         'Test-ADKnownDCVulnerabilities',
         'Test-ADExchangeEscalation',
         'Test-ADRodcSecurity',
+        'Get-ADControlPathGraph',
+        'Test-ADControlPaths',
+        'Export-ADControlPathGraphBloodHound',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -56,6 +59,15 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.16.0 - Attack-Path Graph & Indirect-Privilege (Control-Path) Findings
+- Added Get-ADControlPathGraph: builds a directed control-edge graph from dangerous ACEs (GenericAll/WriteDacl/WriteOwner/GenericWrite/AllExtendedRights, the dangerous extended-rights and property-write tables in Common.ps1, including the DS-Replication set), group membership, and object ownership, reusing the existing rights tables and the step-02 snapshot/Get-ADTier0Principal.
+- Added Test-ADControlPaths: breadth-first search from every non-Tier-0 principal that holds a dangerous ACE or ownership edge to the Tier-0 set (Get-ADTier0Principal + Domain Controllers + AdminSDHolder + the domain head object), emitting a finding per reachable path with the full principal->...->target hop chain in Details.HopChain. A broad principal (Everyone/Authenticated Users/Domain Users/ANONYMOUS LOGON) on any path is always Critical. Also flags Tier-0 objects owned by a non-Tier-0 principal (implicit WriteDacl-equivalent control via ownership).
+- Chains the module's existing per-object primitives so the few paths that actually lead to Domain Admins/Domain Controllers surface as their own findings, rather than relying on a human to connect a pile of individually-scored flat ACE findings.
+- Detection only: every edge is derived from a read of nTSecurityDescriptor, group membership, or object ownership - the same categories of read already performed elsewhere in the module. No exploitation, coercion, relay, ticket forging, or PoC traffic is ever sent to any host. ACL/ownership edges are scoped to the Tier-0 target set plus every group on a chain toward it, rather than sweeping nTSecurityDescriptor across the entire domain.
+- Added Export-ADControlPathGraphBloodHound: optional BloodHound-compatible generic-edge JSON export of the same graph, written as a separate artifact so the existing JSON/HTML/CSV findings export is unchanged.
+- Added a 'Control Paths to Tier-0' HTML report section rendering each path's hop chain.
+- Registered in Start-ADSecurityAudit's live test set and the offline rule registry; tagged in the central Scoring.ps1 mapping table (PingCastle parity: P-ControlPathIndirectEveryone, P-ControlPathIndirectMany, P-DCOwner, P-UnprotectedOU, P-DangerousExtendedRight).
+
 v1.15.0 - Read-Only Domain Controller Security Posture
 - Added Test-ADRodcSecurity: audits Read-Only Domain Controller configuration - Tier-0/privileged principals present in msDS-RevealedUsers (already cached) or the msDS-RevealOnDemandGroup allowed list (cross-referenced against Get-ADTier0Principal), password replication policy gaps (an allowed list that is too broad or a denied list missing expected privileged groups, via msDS-NeverRevealGroup), and orphaned RODC-specific krbtgt_* accounts left behind after an RODC was demoted/removed.
 - Detection only: every determination is a read of RODC computer-object attributes (msDS-RevealedUsers, msDS-RevealOnDemandGroup, msDS-NeverRevealGroup) and a krbtgt_* account inventory cross-referenced against current RODC computer objects. No exploitation, coercion, relay, ticket forging, or PoC traffic is ever sent to any host.

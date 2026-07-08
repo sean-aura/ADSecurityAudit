@@ -320,7 +320,32 @@ function Export-ADSecurityReportHTML {
         </div>
 "@
     }
-    
+
+    # --- Control paths to Tier-0 (v1.16.0) ---
+    $controlPathFindings = @($Findings | Where-Object { $_.Category -eq 'Attack Paths' } | Sort-Object -Property @{Expression = { $_.SeverityLevel }; Descending = $true })
+    if ($controlPathFindings.Count -gt 0) {
+        $html += @"
+        <h2>🕸️ Control Paths to Tier-0</h2>
+        <p style="color:#555; margin-bottom: 15px;">Chained group-membership, ACL, and ownership relationships that let a non-privileged principal reach a Tier-0 object (Domain Admins/DCs/AdminSDHolder/domain head). No single hop here need look critical on its own - see each finding below for full remediation guidance.</p>
+"@
+        foreach ($cp in $controlPathFindings) {
+            $sevClass = $cp.Severity.ToLower()
+            $hopChain = if ($cp.Details -and $cp.Details.ContainsKey('HopChain')) { HtmlEncode "$($cp.Details.HopChain)" } else { HtmlEncode $cp.AffectedObject }
+            $html += @"
+        <div class="finding $sevClass" style="border-left-width: 5px;">
+            <div class="finding-header">
+                <div class="finding-title">$(HtmlEncode $cp.Issue)</div>
+                <span class="severity-badge severity-$sevClass">$($cp.Severity)</span>
+            </div>
+            <div class="finding-section">
+                <h4>🔗 Hop Chain</h4>
+                <p style="font-family: Consolas, monospace; font-size: 0.9em; word-break: break-word;">$hopChain</p>
+            </div>
+        </div>
+"@
+        }
+    }
+
     # Add findings by severity
     if ($criticalFindings) {
         $html += "<h2>🔴 Critical Severity Findings</h2>"

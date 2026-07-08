@@ -60,6 +60,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'KnownDCVulnerabilities'   = 'Test-ADKnownDCVulnerabilities'
     'ExchangeEscalation'       = 'Test-ADExchangeEscalation'
     'RodcSecurity'             = 'Test-ADRodcSecurity'
+    'ControlPaths'             = 'Test-ADControlPaths'
 }
 
 function ConvertTo-ADHashtable {
