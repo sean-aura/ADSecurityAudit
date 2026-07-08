@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.16.1'
+    ModuleVersion = '1.16.2'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -59,6 +59,9 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.16.2 - HTML Report: Consolidated Findings
+- Findings that fire once per affected object (e.g. AdminSDHolder ACL Compromise across several principals) previously rendered as N separate top-level findings with identical Impact/Remediation text. The HTML report now groups by Category+Issue and renders one consolidated finding per group, with Impact/Remediation/MITRE/ANSSI shown once and every affected object (with its own specific description and detection time) listed underneath. Single-object findings render exactly as before. JSON/CSV exports are unchanged - this is a report-rendering change only, not an output-schema change.
+
 v1.16.1 - Bug-Fix Release
 - Fixed HTML report/console mojibake caused by a missing UTF-8 BOM (emoji literals replaced with HTML numeric character references).
 - Fixed Test-ADDnsSecurity calling the nonexistent Get-DnsServerZoneTransfer cmdlet; transfer settings now read from Get-DnsServerZone's own properties.

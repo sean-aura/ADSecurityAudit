@@ -82,7 +82,14 @@ function Export-ADSecurityReportHTML {
         .toggle-all-btn { background: #ecf0f1; border: 1px solid #d5dbdd; color: #2c3e50; padding: 5px 12px; border-radius: 4px; font-size: 0.85em; cursor: pointer; }
         .toggle-all-btn:hover { background: #dfe4e6; }
         .finding-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
-        .finding-title { font-size: 1.3em; font-weight: 600; color: #2c3e50; }
+        .finding-title { font-size: 1.3em; font-weight: 600; color: #2c3e50; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .count-badge { display: inline-block; background: #eef1f3; color: #2c3e50; font-size: 0.6em; font-weight: 700; padding: 3px 10px; border-radius: 12px; vertical-align: middle; letter-spacing: 0.3px; }
+        .finding-instance-list { list-style: none; border-top: 1px solid #ecf0f1; margin-top: 5px; max-height: 420px; overflow-y: auto; }
+        .finding-instance { padding: 10px 0; border-bottom: 1px solid #ecf0f1; }
+        .finding-instance:last-child { border-bottom: none; }
+        .finding-instance-object { font-weight: 600; color: #2c3e50; font-family: 'Consolas', monospace; font-size: 0.9em; word-break: break-word; }
+        .finding-instance-desc { color: #666; margin-top: 4px; line-height: 1.5; }
+        .finding-instance-date { color: #95a5a6; font-size: 0.8em; margin-top: 4px; }
         .severity-badge { padding: 6px 15px; border-radius: 20px; font-weight: bold; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.5px; }
         .severity-critical { background: #e74c3c; color: white; }
         .severity-high { background: #e67e22; color: white; }
@@ -369,8 +376,9 @@ function Export-ADSecurityReportHTML {
     </div>
     <div id="critical-findings-body">
 "@
-        foreach ($finding in $criticalFindings) {
-            $html += Get-FindingHTML -Finding $finding
+        $groups = @($criticalFindings | Group-Object -Property Category, Issue)
+        foreach ($group in $groups) {
+            $html += Get-FindingHTML -FindingGroup $group.Group
         }
         $html += "    </div>"
     }
@@ -384,8 +392,9 @@ function Export-ADSecurityReportHTML {
     </div>
     <div id="high-findings-body">
 "@
-        foreach ($finding in $highFindings) {
-            $html += Get-FindingHTML -Finding $finding
+        $groups = @($highFindings | Group-Object -Property Category, Issue)
+        foreach ($group in $groups) {
+            $html += Get-FindingHTML -FindingGroup $group.Group
         }
         $html += "    </div>"
     }
@@ -399,8 +408,9 @@ function Export-ADSecurityReportHTML {
     </div>
     <div id="medium-findings-body">
 "@
-        foreach ($finding in $mediumFindings) {
-            $html += Get-FindingHTML -Finding $finding
+        $groups = @($mediumFindings | Group-Object -Property Category, Issue)
+        foreach ($group in $groups) {
+            $html += Get-FindingHTML -FindingGroup $group.Group
         }
         $html += "    </div>"
     }
@@ -414,8 +424,9 @@ function Export-ADSecurityReportHTML {
     </div>
     <div id="low-findings-body">
 "@
-        foreach ($finding in $lowFindings) {
-            $html += Get-FindingHTML -Finding $finding
+        $groups = @($lowFindings | Group-Object -Property Category, Issue)
+        foreach ($group in $groups) {
+            $html += Get-FindingHTML -FindingGroup $group.Group
         }
         $html += "    </div>"
     }
@@ -450,8 +461,16 @@ function Export-ADSecurityReportHTML {
 function Get-FindingHTML {
     [CmdletBinding()]
     param(
+        # One or more findings sharing the same Category + Issue (and, since
+        # they came from the same severity bucket, the same Severity too).
+        # Grouping happens in the caller via `Group-Object -Property
+        # Category, Issue`; this function renders either the original
+        # single-item layout (Count -eq 1, unchanged from prior versions)
+        # or a consolidated layout with one shared Impact/Remediation and a
+        # list of every affected object underneath (Count -gt 1), instead
+        # of duplicating the same finding once per affected object.
         [Parameter(Mandatory)]
-        [ADSecurityFinding]$Finding
+        [array]$FindingGroup
     )
     
     function HtmlEncode($text) {
@@ -461,52 +480,60 @@ function Get-FindingHTML {
         return $text
     }
     
-    $severityClass = $Finding.Severity.ToLower()
-    $description = HtmlEncode $Finding.Description
-    $impact = HtmlEncode $Finding.Impact
-    $remediation = HtmlEncode $Finding.Remediation
-    $issue = HtmlEncode $Finding.Issue
-    $category = HtmlEncode $Finding.Category
-    $affectedObject = HtmlEncode $Finding.AffectedObject
+    $FindingGroup = @($FindingGroup)
+    $first = $FindingGroup[0]
+    $count = $FindingGroup.Count
+
+    $severityClass = $first.Severity.ToLower()
+    $impact = HtmlEncode $first.Impact
+    $remediation = HtmlEncode $first.Remediation
+    $issue = HtmlEncode $first.Issue
+    $category = HtmlEncode $first.Category
 
     # Defensive fallback: every field below should be populated by the audit
     # module that raised the finding, but a blank paragraph in the report is
     # confusing, so show an explicit placeholder instead of nothing.
-    if ([string]::IsNullOrWhiteSpace($description)) { $description = 'Not specified for this finding.' }
     if ([string]::IsNullOrWhiteSpace($impact))      { $impact      = 'Not specified for this finding.' }
     if ([string]::IsNullOrWhiteSpace($remediation)) { $remediation = 'Not specified for this finding.' }
-    if ([string]::IsNullOrWhiteSpace($affectedObject)) { $affectedObject = 'N/A' }
-
-    # Optional metadata tags (v1.2.0) - only rendered when populated
-    $metaTags = ''
-    if (-not [string]::IsNullOrEmpty($Finding.MitreTechnique)) {
-        $metaTags += "<span><strong>MITRE:</strong> <span class=`"tag-mitre`">$(HtmlEncode $Finding.MitreTechnique)</span></span>"
-    }
-    if (-not [string]::IsNullOrEmpty($Finding.AnssiControl)) {
-        $metaTags += "<span><strong>ANSSI:</strong> <span class=`"tag-anssi`">$(HtmlEncode $Finding.AnssiControl)</span></span>"
-    }
-    
-    # Handle multi-line remediation
     $remediation = $remediation -replace "`r`n", '<br>' -replace "`n", '<br>'
-    
+
+    # Optional metadata tags (v1.2.0) - these come from the shared Issue ->
+    # MITRE/ANSSI mapping, so they're identical across every item in the
+    # group; render once from the first item rather than once per object.
+    $metaTags = ''
+    if (-not [string]::IsNullOrEmpty($first.MitreTechnique)) {
+        $metaTags += "<span><strong>MITRE:</strong> <span class=`"tag-mitre`">$(HtmlEncode $first.MitreTechnique)</span></span>"
+    }
+    if (-not [string]::IsNullOrEmpty($first.AnssiControl)) {
+        $metaTags += "<span><strong>ANSSI:</strong> <span class=`"tag-anssi`">$(HtmlEncode $first.AnssiControl)</span></span>"
+    }
+
     # Rendered as a native <details>/<summary> element so every finding is
     # collapsed by default and expandable with no JS required for the basic
     # interaction; the per-section Expand All/Collapse All buttons toggle the
     # `open` attribute on these elements (see setSectionFindings in the
     # footer script).
-    return @"
+    if ($count -eq 1) {
+        # Single affected object: same layout used since earlier versions,
+        # including the finding's own specific Description text.
+        $description = HtmlEncode $first.Description
+        $affectedObject = HtmlEncode $first.AffectedObject
+        if ([string]::IsNullOrWhiteSpace($description))    { $description = 'Not specified for this finding.' }
+        if ([string]::IsNullOrWhiteSpace($affectedObject))  { $affectedObject = 'N/A' }
+
+        return @"
         <details class="finding $severityClass">
             <summary>
                 <div class="finding-header">
                     <div class="finding-title">$issue</div>
-                    <span class="severity-badge severity-$severityClass">$($Finding.Severity)</span>
+                    <span class="severity-badge severity-$severityClass">$($first.Severity)</span>
                 </div>
             </summary>
             <div class="finding-body">
                 <div class="finding-meta">
                     <span><strong>Category:</strong> $category</span>
                     <span><strong>Affected Object:</strong> $affectedObject</span>
-                    <span><strong>Detected:</strong> $($Finding.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</span>
+                    <span><strong>Detected:</strong> $($first.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</span>
                     $metaTags
                 </div>
                 <div class="finding-section">
@@ -520,6 +547,59 @@ function Get-FindingHTML {
                 <div class="finding-section">
                     <h4>&#9989; Remediation</h4>
                     <p>$remediation</p>
+                </div>
+            </div>
+        </details>
+"@
+    }
+
+    # Multiple affected objects for the same Category+Issue: one
+    # consolidated block. Impact/Remediation/MITRE/ANSSI are shown once
+    # (they're the same for every item, coming from the shared Issue -> 
+    # metadata mapping); each object keeps its own specific Description
+    # (which typically bakes in the exact principal/SID/rights/etc.) and
+    # its own detection timestamp in the list below.
+    $instanceItems = foreach ($f in ($FindingGroup | Sort-Object AffectedObject)) {
+        $objDesc = HtmlEncode $f.Description
+        $objName = HtmlEncode $f.AffectedObject
+        if ([string]::IsNullOrWhiteSpace($objDesc)) { $objDesc = 'Not specified for this finding.' }
+        if ([string]::IsNullOrWhiteSpace($objName)) { $objName = 'N/A' }
+        @"
+                    <li class="finding-instance">
+                        <div class="finding-instance-object">$objName</div>
+                        <div class="finding-instance-desc">$objDesc</div>
+                        <div class="finding-instance-date">Detected: $($f.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</div>
+                    </li>
+"@
+    }
+    $instanceItemsHtml = $instanceItems -join "`n"
+
+    return @"
+        <details class="finding $severityClass">
+            <summary>
+                <div class="finding-header">
+                    <div class="finding-title">$issue <span class="count-badge">$count objects</span></div>
+                    <span class="severity-badge severity-$severityClass">$($first.Severity)</span>
+                </div>
+            </summary>
+            <div class="finding-body">
+                <div class="finding-meta">
+                    <span><strong>Category:</strong> $category</span>
+                    $metaTags
+                </div>
+                <div class="finding-section">
+                    <h4>&#9888; Impact</h4>
+                    <p>$impact</p>
+                </div>
+                <div class="finding-section">
+                    <h4>&#9989; Remediation</h4>
+                    <p>$remediation</p>
+                </div>
+                <div class="finding-section">
+                    <h4>&#128221; Affected Objects ($count)</h4>
+                    <ul class="finding-instance-list">
+$instanceItemsHtml
+                    </ul>
                 </div>
             </div>
         </details>

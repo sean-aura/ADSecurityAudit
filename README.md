@@ -213,11 +213,11 @@ The audit generates findings across multiple severity levels:
 ## Report Interpretation
 
 ### HTML Report Structure
-- **Executive Summary**: Overview of total findings by severity
+- **Executive Summary**: Overview of total findings by severity, with clickable cards linking straight to each severity section
 - **Risk Score & Maturity**: Global risk-score gauge, ANSSI 1-5 maturity ladder, per-category risk bars, and a MITRE ATT&CK technique summary
 - **Critical Issues**: Immediate action required
-- **Detailed Findings**: Complete list with remediation guidance (each finding shows its MITRE technique and ANSSI control)
-- **Affected Objects**: Lists of users, groups, computers, and objects requiring attention
+- **Detailed Findings**: Collapsed by default (click to expand; each severity section has Expand All/Collapse All). Findings that fire once per affected object are consolidated into a single entry per Category+Issue - the shared Impact/Remediation/MITRE/ANSSI tags are shown once, and every affected object is listed underneath with its own specific detail and detection time, rather than repeating the whole finding once per object
+- **Affected Objects**: Every user, group, computer, or object flagged by a finding, listed under that finding with its own specific description
 
 ### Remediation Guidance
 Each finding includes:
