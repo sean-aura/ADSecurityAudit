@@ -9,7 +9,7 @@
 
 .NOTES
     Author: AlchemicalChef
-    Version: 1.16.2
+    Version: 1.17.0
     Requires: Active Directory PowerShell Module, Windows Server 2016+
 
 .EXAMPLE
@@ -64,6 +64,7 @@ $moduleScripts = @(
     'src/ExchangeEscalationAudits.ps1',
     'src/RodcSecurityAudits.ps1',
     'src/ControlPaths.ps1',
+    'src/ForestConsolidation.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
 )
@@ -110,6 +111,8 @@ Export-ModuleMember -Function @(
     'Get-ADControlPathGraph',
     'Test-ADControlPaths',
     'Export-ADControlPathGraphBloodHound',
+    'Get-ADForestConsolidation',
+    'Export-ADForestConsolidationHTML',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',
