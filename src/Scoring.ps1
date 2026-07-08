@@ -230,11 +230,12 @@ $Script:ADFindingMetadataMap = @{
     'Credentials Referenced in Logon/Startup Script'      = @{ Mitre = 'T1552.001'; Anssi = 'vuln2_script_credentials';     Weight = 20 }
     'Insecure Setting Deployed via GPO'                   = @{ Mitre = 'T1484.001'; Anssi = 'vuln3_gpo_insecure_setting';   Weight = 10 }
 
-    # --- Known DC Vulnerabilities by Patch/Build (MS14-068, MS17-010, ZeroLogon, PrintNightmare, BadSuccessor) ---
+    # --- Known DC Vulnerabilities by Patch/Build (MS14-068, MS17-010, ZeroLogon, PrintNightmare, CVE-2026-41089 Netlogon RCE, BadSuccessor) ---
     'DC Missing ZeroLogon Patch'                          = @{ Mitre = 'T1068';     Anssi = 'vuln1_zerologon_unpatched';    Weight = 40 }
     'DC Vulnerable to MS17-010'                           = @{ Mitre = 'T1210';     Anssi = 'vuln1_ms17010_unpatched';      Weight = 40 }
     'DC Vulnerable to MS14-068'                           = @{ Mitre = 'T1558.001'; Anssi = 'vuln1_ms14068_unpatched';      Weight = 40 }
     'PrintNightmare Exposure on DC'                       = @{ Mitre = 'T1068';     Anssi = 'vuln2_printnightmare_exposed'; Weight = 20 }
+    'DC Missing CVE-2026-41089 Patch (Netlogon RCE)'      = @{ Mitre = 'T1210';     Anssi = 'vuln1_netlogon_cve2026_41089_unpatched'; Weight = 40 }
     'BadSuccessor / dMSA Escalation Exposure'             = @{ Mitre = 'T1098';     Anssi = 'vuln2_badsuccessor_dmsa';      Weight = 20 }
 
     # --- Exchange-in-AD Privilege Escalation (Exchange Windows Permissions / WriteDACL) ---

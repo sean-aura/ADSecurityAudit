@@ -5,6 +5,64 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0]
+### Added
+- `Test-ADKnownDCVulnerabilities`: new check for CVE-2026-41089 (unauthenticated
+  Netlogon RCE against Domain Controllers, patched May 12, 2026, CVSS 9.8,
+  actively exploited as of June 2026) - detection is patch/build-level only,
+  consistent with this function's existing ZeroLogon/MS17-010/MS14-068/
+  PrintNightmare checks. No exploitation or protocol traffic of any kind.
+  New `$Script:ADFindingMetadataMap` entry in `src/Scoring.ps1` (MITRE T1210,
+  ANSSI `vuln1_netlogon_cve2026_41089_unpatched`).
+- `Test-ADKnownDCVulnerabilities` / BadSuccessor finding: now distinguishes
+  Domain Controllers patched for CVE-2025-53779 (build 26100.4946+, August
+  2025) from unpatched ones via a new per-DC UBR (Update Build Revision)
+  remote registry read (`Get-ADKnownVulnUBR`, using .NET's
+  `[Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey` - read-only, no writes,
+  no code execution), instead of flagging every Windows Server 2025 DC
+  identically regardless of patch level. A DC whose UBR cannot be read
+  (e.g. remote registry access denied) is reported with an unknown patch
+  status rather than silently assumed patched. Per independent post-patch
+  research (Akamai, "BadSuccessor Is Dead, Long Live BadSuccessor(?)"), the
+  finding continues to fire for patched DCs - severity is reduced from High
+  to Medium only once every affected DC in the environment is confirmed
+  patched - since the underlying dMSA-linking primitive remains partially
+  abusable even after the KDC-side fix.
+- New `tests/KnownVulnAudits.Tests.ps1` Pester coverage for both features:
+  the CVE-2026-41089 vulnerable/patched evidence paths, and the UBR
+  patched/unpatched/boundary/unreadable classification paths plus the
+  full-patch severity reduction.
+
+### Changed
+- `Test-ADKnownDCVulnerabilities`'s `.DESCRIPTION` comment block and the
+  file-level header comment in `src/KnownVulnAudits.ps1` updated to
+  document both additions above.
+
+### Output / schema changes
+- Additive only. New `Details` keys on the BadSuccessor finding:
+  `PatchedDomainControllers`, `UnpatchedDomainControllers`,
+  `UnknownPatchStatusDomainControllers`, `BadSuccessorPatchedUBRThreshold`.
+  New per-DC fields on `PerDomainControllerState`: `UBR`,
+  `BadSuccessorPatchStatus`. New `Issue` string and `Details` shape for the
+  CVE-2026-41089 finding, following the same pattern as the existing four
+  legacy-CVE findings. The `ADSecurityFinding` object's top-level fields
+  are unchanged; existing ZeroLogon/MS17-010/MS14-068/PrintNightmare
+  findings are byte-for-byte unaffected.
+
+### Sourcing note
+- The CVE-2026-41089 fix date (May 12, 2026, CVSS 9.8) and the CVE-2025-53779
+  UBR threshold (26100.4946) were independently re-verified on 2026-07-09
+  against multiple sources citing MSRC directly (SecurityWeek, Tenable, Zero
+  Day Initiative, Help Net Security, CERT-EU for CVE-2026-41089; Microsoft's
+  own KB5063878 support article for the UBR threshold) - both match this
+  release's thresholds exactly. CERT-EU's advisory additionally lists
+  verified per-OS fixed-build boundaries for CVE-2026-41089 (recorded in the
+  `Netlogon2026.FixNote` comment in `src/KnownVulnAudits.ps1`); several
+  lower-quality aggregator sites gave mutually inconsistent KB numbers for
+  the same CVE and were deliberately not relied on. This function's
+  detection logic remains FixDate-only (not per-OS build), consistent with
+  the other three legacy-CVE checks in the same table.
+
 ## [1.17.1]
 ### Fixed
 - **External intelligence refresh (Q3 2026)** - periodic maintenance pass over `src/KnownVulnAudits.ps1` and `src/Scoring.ps1`'s external references. No detection logic, schema, or output-contract changes.
