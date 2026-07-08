@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.17.0'
+    ModuleVersion = '1.17.1'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -61,6 +61,13 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @"
+v1.17.1 - External Intelligence Refresh (Q3 2026)
+- Quarterly refresh of external references in Test-ADKnownDCVulnerabilities and the MITRE ATT&CK mapping table. No detection logic, schema, or output contract changes.
+- Re-verified all four legacy CVE fix-date thresholds (ZeroLogon, MS17-010, MS14-068, PrintNightmare) directly against MSRC; all four dates were already correct. Added inline source-URL + verification-date citation comments so the next refresh has a starting point.
+- Added the missing MITRE ATT&CK display name for T1068 (Exploitation for Privilege Escalation) to `\$Script:MitreTechniqueNames` - it was already referenced by two findings (DC Missing ZeroLogon Patch, PrintNightmare Exposure on DC) but had no display-name entry, a drift point flagged by this project's own maintenance checklist.
+- Corrected the BadSuccessor / dMSA Escalation Exposure finding text, which claimed no version-detectable patched state existed for the issue. Microsoft shipped a partial KDC-side fix (CVE-2025-53779, August 2025, build 26100.4946+) since that text was written; Description/Impact/Remediation now reflect the patch while noting independent research shows the underlying dMSA-linking primitive still enables related abuse post-patch. The detection guard itself (Server 2025 base build >= 26100) is unchanged - distinguishing patched from unpatched builds would require reading the OS UBR, which is a new detection surface and is out of scope for this refresh (see the accompanying feature-request docs).
+- Flagged two new feature-request candidates (not implemented in this release): a new Test-ADKnownDCVulnerabilities-family check for CVE-2026-41089 (unauthenticated Netlogon RCE, patched May 2026, actively exploited), and build-revision (UBR)-based patch-level detection for the existing BadSuccessor guard.
+
 v1.17.0 - Multi-Domain / Forest Consolidation
 - Added Get-ADForestConsolidation / Export-ADForestConsolidationHTML: an offline, file-based post-processing feature (not a live-AD detection module, not part of the Main.ps1 test dispatch table) that reads two or more of this module's own prior AD_Security_Audit_/AD_Security_Score_ JSON exports - one per domain - and rolls them up into a forest-wide view: a forest score/maturity using the same worst-category (MAX) semantics as Get-ADRiskScore, a per-category heatmap (worst domain per category), a worst-first domain comparison table, cross-domain trust-risk enrichment (annotates Test-ADDomainTrusts findings with the target domain's own score/maturity when that domain's report is also supplied), and "not scanned this run" flags for domains missing versus a prior consolidated run. No AD queries, credentials, or network access of any kind - pure offline aggregation of exports this module already produces. Comparable in spirit to PingCastle's paid "Conso" report, offered for free and implemented independently against this project's own JSON schema.
 

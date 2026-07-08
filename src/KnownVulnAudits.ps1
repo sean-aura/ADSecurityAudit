@@ -30,6 +30,8 @@
 # every threshold is cited in one place rather than scattered through the
 # check logic below.
 $Script:KnownVulnFixThresholds = @{
+    # Verified against MSRC (https://msrc.microsoft.com/update-guide/vulnerability/CVE-2020-1472)
+    # on 2026-07-09. Fix date unchanged since prior review.
     ZeroLogon = @{
         Issue       = 'DC Missing ZeroLogon Patch'
         Cve         = 'CVE-2020-1472'
@@ -37,6 +39,8 @@ $Script:KnownVulnFixThresholds = @{
         FixNote     = 'August 11, 2020 cumulative/security-only updates (e.g. KB4565351 / KB4571694 / KB4565349 / KB4565354 depending on OS) - initial Netlogon secure-channel enforcement fix.'
         Description = 'Netlogon Remote Protocol elevation-of-privilege (ZeroLogon) allows an unauthenticated attacker on the network to reset the DC computer account password and obtain Domain Admin-equivalent access.'
     }
+    # Verified against MSRC (https://learn.microsoft.com/en-us/security-updates/securitybulletins/2017/ms17-010)
+    # on 2026-07-09. Fix date unchanged since prior review.
     MS17010 = @{
         Issue       = 'DC Vulnerable to MS17-010'
         Cve         = 'MS17-010 (CVE-2017-0143 through CVE-2017-0148)'
@@ -44,6 +48,8 @@ $Script:KnownVulnFixThresholds = @{
         FixNote     = 'March 14, 2017 Patch Tuesday updates (e.g. KB4012212 / KB4012213 / KB4013389 depending on OS) - SMBv1 remote code execution fix (EternalBlue).'
         Description = 'Unauthenticated SMBv1 remote code execution (EternalBlue) allows full compromise of the Domain Controller over the network with no credentials.'
     }
+    # Verified against MSRC (https://msrc.microsoft.com/blog/2014/11/additional-information-about-cve-2014-6324/)
+    # on 2026-07-09. Fix date unchanged since prior review.
     MS14068 = @{
         Issue       = 'DC Vulnerable to MS14-068'
         Cve         = 'CVE-2014-6324'
@@ -51,6 +57,8 @@ $Script:KnownVulnFixThresholds = @{
         FixNote     = 'November 18, 2014 out-of-band update (KB3011780) - Kerberos PAC signature validation fix.'
         Description = 'A forged Kerberos PAC can claim Domain Admin group membership for any authenticated low-privilege user, which the unpatched KDC accepts without validating the signature.'
     }
+    # Verified against MSRC (https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-34527)
+    # on 2026-07-09. Fix date unchanged since prior review.
     PrintNightmare = @{
         Issue       = 'PrintNightmare Exposure on DC'
         Cve         = 'CVE-2021-34527'
@@ -65,6 +73,21 @@ $Script:KnownVulnFixThresholds = @{
 # only meaningful on DCs running this build or later, since dMSA is a
 # Server 2025 feature - guard the check to that build so older DCs never
 # generate a false positive.
+#
+# Re-verified 2026-07-09: this remains a base-build (major-version) guard
+# only, not a patch-level one. Microsoft shipped a partial fix for the
+# original one-sided-link escalation (CVE-2025-53779) in the August 12,
+# 2025 cumulative update, KB5063878, OS build 26100.4946
+# (https://support.microsoft.com/en-us/topic/august-12-2025-kb5063878-update-for-windows-server-2025-os-build-26100-4946-69b2de20-e07d-404a-a19f-fd8c4ae27e0f).
+# Distinguishing patched (build >= 26100.4946, via the UBR registry value)
+# from unpatched Server 2025 DCs is a new detection surface this function
+# does not currently read - not just a threshold edit - so it has been
+# left as a feature-request candidate rather than folded into this guard;
+# see the "BadSuccessor build-revision (UBR) patch detection" feature
+# request produced alongside this refresh. The base-build guard below is
+# still correct as a "does this DC even have dMSA" gate irrespective of
+# patch level, and no backport of dMSA itself to earlier OS builds has
+# been observed, so 26100 as a floor remains accurate.
 $Script:KnownVulnServer2025Build = 26100
 
 function Test-ADKnownDCVulnerabilities {
@@ -92,10 +115,15 @@ function Test-ADKnownDCVulnerabilities {
           - BadSuccessor / dMSA Escalation Exposure - only on Domain
             Controllers running Windows Server 2025 (build >=
             $Script:KnownVulnServer2025Build), since dMSA is a Server 2025
-            feature; there is no version-detectable "patched" state for
-            this issue at time of writing, so its presence is reported as
-            an environment-level exposure requiring delegation/ACL review
-            rather than a missing-patch finding.
+            feature. Microsoft shipped a partial KDC-side fix for the
+            original one-sided-link escalation as CVE-2025-53779 (August
+            2025, build 26100.4946+), but this function only checks the
+            base OS build, not that patch level, and independent research
+            has shown the underlying dMSA-linking primitive still enables
+            related credential/privilege abuse post-patch - so this remains
+            reported as an environment-level exposure requiring
+            delegation/ACL review rather than a simple missing-patch
+            finding.
 
         Each DC is evaluated independently and degrades gracefully if it
         cannot be reached (Verbose warning only; no finding is raised for
@@ -394,8 +422,8 @@ function Test-ADKnownDCVulnerabilities {
         $finding.SeverityLevel = 3
         $finding.AffectedObject = ($server2025DCs -join ', ')
         $finding.Description = "$($server2025DCs.Count) Domain Controller(s) are running Windows Server 2025 (build >= $($Script:KnownVulnServer2025Build)), which introduces delegated Managed Service Accounts (dMSA): $($server2025DCs -join ', ')."
-        $finding.Impact = "The dMSA feature ('BadSuccessor') lets any principal with CreateChild/msDS-DelegatedManagedServiceAccount rights over an OU create a dMSA that inherits the resulting-password-authority of an existing account it 'succeeds', which can be abused for privilege escalation against any account (including Tier-0) if delegation is not tightly scoped. There is no build/version-detectable 'patched' state for this issue; it is a configuration/delegation exposure inherent to the feature being present."
-        $finding.Remediation = "Audit and restrict who holds CreateChild/msDS-DelegatedManagedServiceAccount and generic-write rights on OUs, especially any OU containing or above Tier-0 objects; monitor for unexpected dMSA object creation; consult current Microsoft/vendor guidance for this feature before treating any specific configuration as fully mitigated."
+        $finding.Impact = "The dMSA feature ('BadSuccessor') originally let any principal with CreateChild/msDS-DelegatedManagedServiceAccount rights over an OU create a dMSA and link it one-sidedly to an existing account to inherit that account's effective privileges and Kerberos keys - abusable against any account, including Tier-0. Microsoft's August 2025 fix (CVE-2025-53779, build 26100.4946+) made the KDC require a mutual (two-sided) link before honoring the relationship, closing that direct path, but does not restrict who can create a dMSA or write its link attributes - independent research has shown a controlled dMSA can still be paired with a target the attacker also controls to extract that target's credentials. This remains a configuration/delegation exposure, not a fully-patched one."
+        $finding.Remediation = "Ensure all Server 2025 DCs are updated to at least the August 2025 cumulative update (KB5063878, build 26100.4946) or later, which addresses CVE-2025-53779. Independently of patch level, audit and restrict who holds CreateChild/msDS-DelegatedManagedServiceAccount and generic-write rights on OUs and on dMSA objects themselves, especially anywhere at or above Tier-0; monitor for unexpected dMSA creation and changes to the migration-link attributes; consult current Microsoft/vendor guidance before treating any specific configuration as fully mitigated."
         $finding.Details = @{
             AffectedDomainControllers = @($server2025DCs)
             Server2025BuildThreshold  = $Script:KnownVulnServer2025Build

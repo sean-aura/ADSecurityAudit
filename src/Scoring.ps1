@@ -52,6 +52,7 @@ $Script:MitreTechniqueNames = @{
     'T1003'      = 'OS Credential Dumping'
     'T1003.006'  = 'OS Credential Dumping: DCSync'
     'T1037'      = 'Boot or Logon Initialization Scripts'
+    'T1068'      = 'Exploitation for Privilege Escalation'
     'T1078.002'  = 'Valid Accounts: Domain Accounts'
     'T1078.003'  = 'Valid Accounts: Local Accounts'
     'T1087.002'  = 'Account Discovery: Domain Account'
