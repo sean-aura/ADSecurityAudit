@@ -5,6 +5,79 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.5]
+### Fixed
+- **HTML report footer showing "vUnknown" instead of the real module
+  version**: `ADSecurityAudit.psd1`'s `ReleaseNotes` used an expandable
+  (double-quoted) here-string (`@" ... "@`). `Import-PowerShellDataFile`
+  runs in PowerShell's restricted "data language" mode, which rejects any
+  embedded expression in a here-string outright - even an accidental one -
+  because the type itself is considered dynamic. The 1.18.3 release notes
+  entry mentioned a literal `$User` in prose, which was silently
+  interpreted as a variable-expansion token, causing
+  `Import-PowerShellDataFile` to throw on the *entire* manifest and fall
+  back to the hardcoded `'Unknown'` default in `ADSecurityAudit.psm1`.
+  Switched `ReleaseNotes` to a literal (single-quoted) here-string
+  (`@' ... '@`), which closes off this whole bug class permanently rather
+  than just fixing this one instance - verified with
+  `Import-PowerShellDataFile` against the real manifest.
+- **HTML report gave no indication a report was generated offline from a
+  snapshot**: `Export-ADSecurityReportHTML` now accepts `-RunMode` ('Live'
+  or 'Offline (Snapshot)') and `-SnapshotCollectedDate`. The report title
+  now shows a colored mode badge, a dedicated warning banner appears for
+  offline runs (noting no live AD access was made and pointing at which
+  tests were skipped), and the header info grid shows the collection mode
+  plus - for offline runs - when the underlying snapshot was originally
+  collected. `Start-ADSecurityAudit` wires this through automatically for
+  both the live and `-FromSnapshot` code paths.
+- **Several already-"snapshot-aware" modules silently fell back to live
+  queries when a snapshot collection was legitimately empty** (e.g. zero
+  domain trusts - the common case for single-domain forests - or zero
+  extra computers beyond DCs): the presence check used throughout the
+  codebase was `$Snapshot.ContainsKey('X') -and $Snapshot.X`, which
+  evaluates false for an empty-but-successfully-collected array or
+  hashtable, indistinguishable from "not collected" under this check.
+  Removed the truthiness half of the check everywhere (21 occurrences
+  across 13 files - `Common.ps1`, `ControlPaths.ps1`,
+  `KerberosHardeningAudits.ps1`, `StaleObjectDepthAudits.ps1`,
+  `RodcSecurityAudits.ps1`, `CoercionRelayAudits.ps1`, `UserAudits.ps1`,
+  `KrbtgtAudits.ps1`, `MachineAccountQuotaAudits.ps1`,
+  `ExchangeEscalationAudits.ps1`, `DnsSecurityAudits.ps1`,
+  `GpoSecretsAudits.ps1`, `CertificateServicesExtendedAudits.ps1`) so
+  `ContainsKey` alone decides whether snapshot data is used. Found via
+  actual execution against a synthetic snapshot with legitimately-empty
+  collections, not static review - a live single-domain-forest `-FromSnapshot`
+  run would previously have made unwanted live `Get-ADTrust` calls from
+  `Test-ADKerberosHardening` despite claiming "no live AD access is
+  performed".
+- Verified this release end-to-end: full syntax-parse of all 41 module
+  files with zero errors, a real module import/export smoke test, and a
+  full `Start-ADSecurityAudit -FromSnapshot` run against a synthetic
+  snapshot producing valid JSON/HTML/CSV output.
+
+## [1.18.4]
+### Fixed
+- **`Start-ADSecurityAudit -FromSnapshot` was not actually offline for
+  roughly half the audit**: `AuditPolicyConfiguration` and 11 other
+  registered tests (`PrivilegedGroups`, `AdminSDHolder`, `GroupPolicies`,
+  `ReplicationSecurity`, `DomainSecurity`, `DangerousPermissions`,
+  `CertificateServices`, `DomainTrusts`, `LAPSDeployment`,
+  `ConstrainedDelegation`, `DomainAdminEquivalence` - the full set of
+  pre-v1.3.0 "core auditing" modules) have never been retrofitted with
+  `-Snapshot` support. `Invoke-ADRuleSet`'s documented fallback for
+  functions without `-Snapshot` was to run them live, which meant
+  `-FromSnapshot` silently made live AD/DC connections for 12 of 27 tests
+  - directly contradicting its own doc comment and the README's "no live
+  AD access is performed" claim. `Invoke-ADRuleSet` now SKIPS a test that
+  lacks `-Snapshot` support by default (with a warning naming it) instead
+  of quietly falling back to live queries, so `-FromSnapshot` actually
+  means no live AD access unless you ask otherwise. The old behaviour is
+  still available via a new opt-in `-AllowLiveFallbackForUnsupportedTests`
+  switch on both `Invoke-ADRuleSet` and `Start-ADSecurityAudit`, for anyone
+  who specifically wants a partial-live/partial-offline run.
+  `Start-ADSecurityAudit -FromSnapshot` also now prints up front which
+  tests will be skipped, before the run starts.
+
 ## [1.18.3]
 ### Fixed
 - **`Test-ADUserSecurity` failing under `-FromSnapshot` with "Cannot process

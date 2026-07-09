@@ -117,7 +117,7 @@ function Test-ADGpoDeployedSecrets {
     # -------------------------------------------------------------------
     $gpoList = @()
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('GPOs') -and $Snapshot.GPOs) {
+        if ($Snapshot -and $Snapshot.ContainsKey('GPOs')) {
             Write-Verbose "Test-ADGpoDeployedSecrets: using snapshot GPO list for enumeration (SYSVOL reads are still live)."
             $gpoList = @($Snapshot.GPOs | ForEach-Object {
                 [PSCustomObject]@{ Id = $_.Id; DisplayName = $_.DisplayName }

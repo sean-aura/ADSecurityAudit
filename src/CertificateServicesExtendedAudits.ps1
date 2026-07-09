@@ -323,7 +323,7 @@ function Test-ADCSExtended {
     $configContext = $null
 
     if ($Snapshot) {
-        if ($Snapshot.ContainsKey('ADCS') -and $Snapshot.ADCS -and $Snapshot.ADCS.Installed) {
+        if ($Snapshot.ContainsKey('ADCS') -and $Snapshot.ADCS.Installed) {
             Write-Verbose "Test-ADCSExtended: using snapshot AD CS inventory."
             $adcsInstalled = $true
             $certTemplates = @($Snapshot.ADCS.CertificateTemplates)

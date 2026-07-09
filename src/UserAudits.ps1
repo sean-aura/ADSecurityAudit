@@ -24,7 +24,7 @@ function Test-ADUserSecurity {
     $findings = @()
     
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('Users') -and $Snapshot.Users) {
+        if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
             Write-Verbose "Test-ADUserSecurity: using snapshot data."
             $users = @($Snapshot.Users)
             if ($SearchBase) {

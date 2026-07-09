@@ -145,7 +145,7 @@ function Test-ADStaleObjectDepth {
     $domainControllers = @()
 
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('Users') -and $Snapshot.Users) {
+        if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
             Write-Verbose "Test-ADStaleObjectDepth: using snapshot user data."
             $users = @($Snapshot.Users)
         }
@@ -162,7 +162,7 @@ function Test-ADStaleObjectDepth {
     }
 
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('Computers') -and $Snapshot.Computers) {
+        if ($Snapshot -and $Snapshot.ContainsKey('Computers')) {
             Write-Verbose "Test-ADStaleObjectDepth: using snapshot computer data."
             $computers = @($Snapshot.Computers)
         }
@@ -179,7 +179,7 @@ function Test-ADStaleObjectDepth {
     }
 
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers') -and $Snapshot.DomainControllers) {
+        if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers')) {
             Write-Verbose "Test-ADStaleObjectDepth: using snapshot DC inventory."
             $domainControllers = @($Snapshot.DomainControllers)
         }

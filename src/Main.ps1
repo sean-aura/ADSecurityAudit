@@ -27,7 +27,16 @@ function Start-ADSecurityAudit {
         # re-run offline against that snapshot via Invoke-ADRuleSet instead
         # of querying AD live - no live AD access is performed.
         [Parameter()]
-        [string]$FromSnapshot
+        [string]$FromSnapshot,
+
+        # As of v1.18.3: roughly half the registered tests have no
+        # -Snapshot support yet (see Invoke-ADRuleSet's help), so by
+        # default -FromSnapshot SKIPS them rather than silently falling
+        # back to live queries, to honor the "no live AD access" contract
+        # above. Pass this switch to restore the old behaviour and run
+        # those tests live alongside the offline ones.
+        [Parameter()]
+        [switch]$AllowLiveFallbackForUnsupportedTests
     )
     
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -99,9 +108,21 @@ function Start-ADSecurityAudit {
                 $testsToRun = $Script:ADTestFunctionRegistry.Keys | Where-Object { $_ -notin $ExcludeTests }
             }
 
+            if (-not $AllowLiveFallbackForUnsupportedTests) {
+                $unsupportedTests = @($testsToRun | Where-Object {
+                    $fn = Get-Command -Name $Script:ADTestFunctionRegistry[$_] -ErrorAction SilentlyContinue
+                    $fn -and -not $fn.Parameters.ContainsKey('Snapshot')
+                })
+                if ($unsupportedTests.Count -gt 0) {
+                    Write-Host "Note: $($unsupportedTests.Count) test(s) have no offline/-Snapshot support yet and will be skipped (no live AD access performed): $($unsupportedTests -join ', ')" -ForegroundColor Yellow
+                    Write-Host "Pass -AllowLiveFallbackForUnsupportedTests to run them live instead.`n" -ForegroundColor Yellow
+                }
+            }
+
             Write-Host "Running $($testsToRun.Count) test(s) via Invoke-ADRuleSet...`n" -ForegroundColor Yellow
             $allFindings = @(Invoke-ADRuleSet -Snapshot $snapshot -IncludeTests $testsToRun `
-                -InactiveDaysThreshold $InactiveDaysThreshold -PasswordAgeThreshold $PasswordAgeThreshold)
+                -InactiveDaysThreshold $InactiveDaysThreshold -PasswordAgeThreshold $PasswordAgeThreshold `
+                -AllowLiveFallbackForUnsupportedTests:$AllowLiveFallbackForUnsupportedTests)
 
             if ($IncludePrivilegedUsersReport) {
                 Write-Warning "IncludePrivilegedUsersReport requires live AD access and is not available in -FromSnapshot mode; skipping."
@@ -332,7 +353,20 @@ function Start-ADSecurityAudit {
             # Export to HTML
             Write-Progress -Activity "Exporting Audit Reports" -Status "Building HTML report..." -PercentComplete 40
             $htmlPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.html"
-            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore
+            $reportRunMode = if ($FromSnapshot) { 'Offline (Snapshot)' } else { 'Live' }
+            $reportSnapshotCollectedDate = $null
+            if ($FromSnapshot -and $snapshot.CollectedDate) {
+                # CollectedDate may come back as [string] after the JSON
+                # round-trip (-ToJson / -FromSnapshot); coerce defensively
+                # rather than letting a bad string fail parameter binding.
+                $reportSnapshotCollectedDate = if ($snapshot.CollectedDate -is [datetime]) {
+                    $snapshot.CollectedDate
+                }
+                else {
+                    try { [datetime]$snapshot.CollectedDate } catch { $null }
+                }
+            }
+            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunMode $reportRunMode -SnapshotCollectedDate $reportSnapshotCollectedDate
             Write-Host "HTML report exported to: $htmlPath" -ForegroundColor Green
             
             # Export to CSV with formula injection protection

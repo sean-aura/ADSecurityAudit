@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.18.3'
+    ModuleVersion = '1.18.5'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -60,7 +60,16 @@
             LicenseUri = 'https://opensource.org/licenses/MIT'
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
-            ReleaseNotes = @"
+            ReleaseNotes = @'
+v1.18.5 - Fix vUnknown Version, Add Offline Report Indicator, Fix Empty-Snapshot-Collection Live Fallback
+- Fixed the HTML report showing "vUnknown" instead of the real module version: ReleaseNotes used an expandable here-string, and a literal $User mention in the 1.18.3 notes made Import-PowerShellDataFile reject the entire manifest and fall back to 'Unknown'. Switched ReleaseNotes to a literal here-string, closing off this whole bug class.
+- Added an offline/live indicator to the HTML report: Export-ADSecurityReportHTML now takes -RunMode and -SnapshotCollectedDate, showing a mode badge, a dedicated offline warning banner, and the snapshot collection timestamp when run via -FromSnapshot.
+- Fixed several already-snapshot-aware modules silently falling back to live queries when a snapshot collection was legitimately empty (e.g. zero trusts in a single-domain forest): removed the truthiness half of 21 "$Snapshot.ContainsKey(...) -and $Snapshot.X" checks across 13 files so ContainsKey alone decides whether snapshot data is used. Found via live execution testing, not static review.
+- This release was verified end-to-end with a real PowerShell 7 runtime: full syntax-parse of all 41 files, a module import/export smoke test, and a full Start-ADSecurityAudit -FromSnapshot run producing valid JSON/HTML/CSV output.
+
+v1.18.4 - Make -FromSnapshot Actually Offline
+- Fixed Start-ADSecurityAudit -FromSnapshot silently making live AD/DC connections for 12 of 27 tests (AuditPolicyConfiguration, PrivilegedGroups, AdminSDHolder, GroupPolicies, ReplicationSecurity, DomainSecurity, DangerousPermissions, CertificateServices, DomainTrusts, LAPSDeployment, ConstrainedDelegation, DomainAdminEquivalence - none of which have -Snapshot support yet), contradicting its own "no live AD access" documentation. Invoke-ADRuleSet now skips unsupported tests by default (with a warning) instead of falling back to live queries. Added an opt-in -AllowLiveFallbackForUnsupportedTests switch on both Invoke-ADRuleSet and Start-ADSecurityAudit to restore the old behaviour for anyone who wants a partial-live run. Start-ADSecurityAudit -FromSnapshot now also prints which tests will be skipped before the run starts.
+
 v1.18.3 - Fix Test-ADUserSecurity Regression Under -FromSnapshot
 - Fixed Test-ADUserSecurity failing under -FromSnapshot with "Cannot process argument transformation on parameter 'User' ... the adapter cannot set the value of property 'Name'": a regression from 1.18.2. Test-PrivilegedUser's $User parameter was strongly typed as [Microsoft.ActiveDirectory.Management.ADUser], which broke once Snapshot.Users held flattened PSCustomObjects instead of raw ADUser objects. The parameter is now untyped since the function only reads .MemberOf.
 
@@ -232,7 +241,7 @@ v1.0.0 - Initial Release
 - LAPS deployment verification
 - Audit policy validation
 - Constrained delegation analysis
-"@
+'@
         }
     }
 }

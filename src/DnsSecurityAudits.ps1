@@ -151,7 +151,7 @@ function Test-ADDnsSecurity {
         $nonDefaultMembers = [System.Collections.ArrayList]::new()
         $dnsAdminsDN = $null
 
-        if ($Snapshot -and $Snapshot.ContainsKey('Groups') -and $Snapshot.Groups) {
+        if ($Snapshot -and $Snapshot.ContainsKey('Groups')) {
             Write-Verbose "Test-ADDnsSecurity: using snapshot data for DnsAdmins membership."
             $dnsAdminsGroup = $Snapshot.Groups | Where-Object { $_.Name -eq 'DnsAdmins' } | Select-Object -First 1
 

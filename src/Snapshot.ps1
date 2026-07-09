@@ -687,9 +687,25 @@ function Invoke-ADRuleSet {
         Iterates $Script:ADTestFunctionRegistry (the same test set Main.ps1's
         live audit runs) and, for each function, checks whether it declares
         a -Snapshot parameter via (Get-Command $fn).Parameters.ContainsKey
-        ('Snapshot') BEFORE splatting -Snapshot to it. Functions that have
-        not yet been retrofitted with -Snapshot are simply invoked live, so
-        adding -Snapshot to new modules never breaks ones that lack it.
+        ('Snapshot') BEFORE splatting -Snapshot to it.
+
+        By default, a function that has not yet been retrofitted with
+        -Snapshot is SKIPPED (with a warning), not run live. This is what
+        actually honors Start-ADSecurityAudit -FromSnapshot's documented
+        "no live AD access is performed" contract - as of v1.18.3, roughly
+        half the registered tests (the pre-v1.3.0 "core auditing" modules:
+        PrivilegedGroups, AdminSDHolder, GroupPolicies, ReplicationSecurity,
+        DomainSecurity, DangerousPermissions, CertificateServices,
+        DomainTrusts, LAPSDeployment, AuditPolicyConfiguration,
+        ConstrainedDelegation, DomainAdminEquivalence) have never been
+        retrofitted with -Snapshot support, so silently falling back to
+        live queries for them would mean -FromSnapshot quietly touches live
+        AD/DCs for nearly half the audit - the opposite of what "offline"
+        mode promises.
+
+        Pass -AllowLiveFallbackForUnsupportedTests to restore the old
+        behaviour (run unsupported tests live instead of skipping them) if
+        you specifically want a partial-live/partial-offline run.
 
         Also forwards a small set of well-known threshold parameters
         (InactiveDaysThreshold, PasswordAgeThreshold, MaxPasswordAgeDays)
@@ -703,6 +719,10 @@ function Invoke-ADRuleSet {
         tests.
     .PARAMETER ExcludeTests
         Optional list of registry keys to skip.
+    .PARAMETER AllowLiveFallbackForUnsupportedTests
+        When set, tests that don't declare -Snapshot are run live instead
+        of being skipped. Off by default so -FromSnapshot performs no live
+        AD access unless explicitly opted into.
     .OUTPUTS
         [ADSecurityFinding[]] - the same finding objects the live audit
         produces; the output/finding schema is unchanged.
@@ -722,7 +742,10 @@ function Invoke-ADRuleSet {
         [int]$InactiveDaysThreshold = 90,
 
         [Parameter()]
-        [int]$PasswordAgeThreshold = 180
+        [int]$PasswordAgeThreshold = 180,
+
+        [Parameter()]
+        [switch]$AllowLiveFallbackForUnsupportedTests
     )
 
     $candidateParams = @{
@@ -739,6 +762,7 @@ function Invoke-ADRuleSet {
     $testKeys = @($testKeys)
 
     $allFindings = @()
+    $skippedTests = [System.Collections.ArrayList]::new()
     $totalTestCount = $testKeys.Count
     $currentTestIndex = 0
 
@@ -763,14 +787,21 @@ function Invoke-ADRuleSet {
             }
         }
 
-        # CRITICAL non-breaking check: only splat -Snapshot to functions that
-        # actually declare it. Modules without the parameter are called live.
+        # CRITICAL: only splat -Snapshot to functions that actually declare
+        # it. A function without -Snapshot support is SKIPPED by default -
+        # not run live - so -FromSnapshot actually performs no live AD
+        # access unless -AllowLiveFallbackForUnsupportedTests is set.
         if ($fn.Parameters.ContainsKey('Snapshot')) {
             $callParams['Snapshot'] = $Snapshot
             Write-Verbose "Invoke-ADRuleSet: running '$testKey' ($functionName) from snapshot."
         }
+        elseif ($AllowLiveFallbackForUnsupportedTests) {
+            Write-Warning "Invoke-ADRuleSet: '$testKey' ($functionName) has no -Snapshot parameter; running live (per -AllowLiveFallbackForUnsupportedTests)."
+        }
         else {
-            Write-Verbose "Invoke-ADRuleSet: '$testKey' ($functionName) has no -Snapshot parameter; running live."
+            Write-Warning "Invoke-ADRuleSet: '$testKey' ($functionName) has no -Snapshot parameter yet; skipping (no live AD access performed). Pass -AllowLiveFallbackForUnsupportedTests to run it live instead."
+            [void]$skippedTests.Add($testKey)
+            continue
         }
 
         try {
@@ -817,6 +848,10 @@ function Invoke-ADRuleSet {
     }
 
     Write-Progress -Activity "Running Active Directory Security Audit (offline / snapshot)" -Completed
+
+    if ($skippedTests.Count -gt 0) {
+        Write-Warning "Invoke-ADRuleSet: skipped $($skippedTests.Count) test(s) with no offline/-Snapshot support: $($skippedTests -join ', '). Re-run with -AllowLiveFallbackForUnsupportedTests to include them via live queries instead."
+    }
 
     return $allFindings
 }

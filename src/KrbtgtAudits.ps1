@@ -20,7 +20,7 @@ function Test-KRBTGTAccount {
     try {
         # Get KRBTGT account - from the snapshot's Users collection when one
         # was supplied, otherwise via a live query (unchanged behaviour).
-        if ($Snapshot -and $Snapshot.ContainsKey('Users') -and $Snapshot.Users) {
+        if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
             Write-Verbose "Test-KRBTGTAccount: using snapshot data."
             $krbtgtAccount = $Snapshot.Users | Where-Object { $_.SamAccountName -eq 'krbtgt' } | Select-Object -First 1
             if (-not $krbtgtAccount) {
