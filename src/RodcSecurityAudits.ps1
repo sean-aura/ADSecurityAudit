@@ -136,7 +136,7 @@ function Test-ADRodcSecurity {
     # -------------------------------------------------------------------
     $rodcs = @()
 
-    if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers') -and $Snapshot.DomainControllers) {
+    if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers')) {
         Write-Verbose "Test-ADRodcSecurity: using RODC list from snapshot DomainControllers."
         $rodcs = @($Snapshot.DomainControllers | Where-Object { $_.IsReadOnly -eq $true -or "$($_.IsReadOnly)" -eq 'True' })
     }
@@ -316,7 +316,7 @@ function Test-ADRodcSecurity {
     # -------------------------------------------------------------------
     $krbtgtUsers = @()
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('Users') -and $Snapshot.Users) {
+        if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
             Write-Verbose "Test-ADRodcSecurity: sourcing krbtgt_* accounts from snapshot Users."
             $krbtgtUsers = @($Snapshot.Users | Where-Object { $_.SamAccountName -like 'krbtgt_*' })
         }

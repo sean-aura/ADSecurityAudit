@@ -20,10 +20,29 @@ function Export-ADSecurityReportHTML {
         [array]$PrivilegedUsers = $null,
 
         [Parameter()]
-        [PSCustomObject]$RiskScore = $null
+        [PSCustomObject]$RiskScore = $null,
+
+        # Added for the -FromSnapshot offline workflow: 'Live' (default) or
+        # 'Offline (Snapshot)'. Surfaced in the report header so a reader
+        # can tell at a glance whether findings came from a live AD pass or
+        # a previously-collected snapshot, without having to check the
+        # generating command.
+        [Parameter()]
+        [ValidateSet('Live', 'Offline (Snapshot)')]
+        [string]$RunMode = 'Live',
+
+        # When -RunMode is 'Offline (Snapshot)', the timestamp the snapshot
+        # was originally collected (Get-ADSnapshot's CollectedDate). Shown
+        # alongside the report-generation date so a reader can see how
+        # stale the underlying data is relative to when the report was run.
+        [Parameter()]
+        [Nullable[datetime]]$SnapshotCollectedDate = $null
     )
     
     $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $isOfflineRun = ($RunMode -eq 'Offline (Snapshot)')
+    $runModeBadgeColor = if ($isOfflineRun) { '#e67e22' } else { '#27ae60' }
+    $snapshotCollectedDateText = if ($SnapshotCollectedDate) { $SnapshotCollectedDate.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
     
     # Group findings by severity
     $criticalFindings = $Findings | Where-Object { $_.Severity -eq 'Critical' } | Sort-Object Category
@@ -145,18 +164,30 @@ function Export-ADSecurityReportHTML {
 </head>
 <body>
     <div class="container">
-        <h1>&#128737; Active Directory Security Assessment Report</h1>
+        <h1>&#128737; Active Directory Security Assessment Report <span style="display:inline-block; vertical-align:middle; font-size:0.4em; font-weight:bold; letter-spacing:0.05em; text-transform:uppercase; color:#fff; background:$runModeBadgeColor; padding:4px 10px; border-radius:12px; margin-left:10px;">$(HtmlEncode $RunMode)</span></h1>
         
         <div class="warning-box">
             <p><strong>&#9888; CONFIDENTIAL SECURITY REPORT</strong></p>
             <p>This report contains sensitive security information about your Active Directory environment. Handle with care and share only with authorized personnel.</p>
         </div>
+$(if ($isOfflineRun) {
+@"
+        <div class="warning-box" style="background:#fdf2e3; border-color:#e67e22;">
+            <p><strong>&#128190; OFFLINE / SNAPSHOT-BASED REPORT</strong></p>
+            <p>This report was generated with <code>-FromSnapshot</code> from a previously collected snapshot - no live Active Directory or Domain Controller connections were made during this run.$(if ($snapshotCollectedDateText) { " The underlying snapshot data was collected on <strong>$snapshotCollectedDateText</strong>" }) Findings reflect the environment's state at collection time and may not include changes made since then. Some checks that have no offline/snapshot support are skipped entirely in this mode (see the run log for the skipped-test list) - for a like-for-like comparison against a live run, cross-reference which tests actually executed.</p>
+        </div>
+"@
+})
         
         <div class="header-info">
             <div><strong>DOMAIN</strong><span style="font-size: 1.2em; color: #2c3e50;">$(HtmlEncode $Domain)</span></div>
             <div><strong>REPORT DATE</strong><span style="font-size: 1.2em; color: #2c3e50;">$reportDate</span></div>
+            <div><strong>COLLECTION MODE</strong><span style="font-size: 1.2em; color: $runModeBadgeColor; font-weight:bold;">$(HtmlEncode $RunMode)</span></div>
             <div><strong>SCAN DURATION</strong><span style="font-size: 1.2em; color: #2c3e50;">$([math]::Round($Duration.TotalSeconds, 2)) seconds</span></div>
             <div><strong>TOTAL FINDINGS</strong><span style="font-size: 1.2em; color: #2c3e50;">$($Findings.Count)</span></div>
+$(if ($isOfflineRun -and $snapshotCollectedDateText) {
+"            <div><strong>SNAPSHOT COLLECTED</strong><span style=`"font-size: 1.2em; color: #2c3e50;`">$snapshotCollectedDateText</span></div>"
+})
         </div>
         
         <h2>&#128202; Executive Summary</h2>

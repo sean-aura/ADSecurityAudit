@@ -63,7 +63,7 @@ function Test-ADCoercionAndRelayExposure {
     # -------------------------------------------------------------------
     $domainControllers = @()
 
-    if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers') -and $Snapshot.DomainControllers) {
+    if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers')) {
         Write-Verbose "Test-ADCoercionAndRelayExposure: using snapshot DC inventory."
         $domainControllers = @($Snapshot.DomainControllers)
     }

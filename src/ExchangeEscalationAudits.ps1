@@ -91,7 +91,7 @@ function Test-ADExchangeEscalation {
     $domainAces = @()
     $adminSDHolderAces = @()
 
-    if ($Snapshot -and $Snapshot.ContainsKey('ACLs') -and $Snapshot.ACLs) {
+    if ($Snapshot -and $Snapshot.ContainsKey('ACLs')) {
         Write-Verbose "Test-ADExchangeEscalation: using ACLs from snapshot."
 
         if ($Snapshot.ACLs.ContainsKey('DomainRoot') -and $Snapshot.ACLs.DomainRoot) {

@@ -51,7 +51,7 @@ function Test-ADMachineAccountQuota {
         if ($Snapshot -and $Snapshot.ContainsKey('MachineAccountQuota') -and $null -ne $Snapshot.MachineAccountQuota) {
             Write-Verbose "Test-ADMachineAccountQuota: using snapshot data."
             $quota = $Snapshot.MachineAccountQuota
-            if ($Snapshot.ContainsKey('Domain') -and $Snapshot.Domain) {
+            if ($Snapshot.ContainsKey('Domain')) {
                 $domainDN = $Snapshot.Domain.DistinguishedName
             }
         }

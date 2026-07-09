@@ -145,7 +145,7 @@ function Test-ADKerberosHardening {
             $tier0 = @(Get-ADTier0Principal -Snapshot $Snapshot)
             $tier0Dns = @($tier0 | ForEach-Object { $_.DistinguishedName } | Where-Object { $_ })
 
-            if ($Snapshot -and $Snapshot.ContainsKey('Users') -and $Snapshot.Users) {
+            if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
                 Write-Verbose "Test-ADKerberosHardening: evaluating account-level RC4 permission from snapshot."
                 $krbtgtDn = ($Snapshot.Users | Where-Object { $_.SamAccountName -eq 'krbtgt' } | Select-Object -First 1).DistinguishedName
                 $watchDns = @($tier0Dns + $krbtgtDn | Where-Object { $_ } | Select-Object -Unique)
@@ -200,7 +200,7 @@ function Test-ADKerberosHardening {
 
         # --- 1b. Trust-level: TRUST_USES_AES_KEYS not set (snapshot-aware) ---
         try {
-            $trusts = if ($Snapshot -and $Snapshot.ContainsKey('Trusts') -and $Snapshot.Trusts) {
+            $trusts = if ($Snapshot -and $Snapshot.ContainsKey('Trusts')) {
                 Write-Verbose "Test-ADKerberosHardening: evaluating trust encryption from snapshot."
                 @($Snapshot.Trusts)
             }
@@ -469,7 +469,7 @@ function Test-ADKerberosHardening {
     # Check 3: Cross-Trust TGT Delegation Enabled (snapshot-aware)
     # =====================================================================
     try {
-        $trusts = if ($Snapshot -and $Snapshot.ContainsKey('Trusts') -and $Snapshot.Trusts) {
+        $trusts = if ($Snapshot -and $Snapshot.ContainsKey('Trusts')) {
             Write-Verbose "Test-ADKerberosHardening: evaluating cross-trust TGT delegation from snapshot."
             @($Snapshot.Trusts)
         }

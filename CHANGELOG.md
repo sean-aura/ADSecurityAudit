@@ -5,6 +5,159 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.5]
+### Fixed
+- **HTML report footer showing "vUnknown" instead of the real module
+  version**: `ADSecurityAudit.psd1`'s `ReleaseNotes` used an expandable
+  (double-quoted) here-string (`@" ... "@`). `Import-PowerShellDataFile`
+  runs in PowerShell's restricted "data language" mode, which rejects any
+  embedded expression in a here-string outright - even an accidental one -
+  because the type itself is considered dynamic. The 1.18.3 release notes
+  entry mentioned a literal `$User` in prose, which was silently
+  interpreted as a variable-expansion token, causing
+  `Import-PowerShellDataFile` to throw on the *entire* manifest and fall
+  back to the hardcoded `'Unknown'` default in `ADSecurityAudit.psm1`.
+  Switched `ReleaseNotes` to a literal (single-quoted) here-string
+  (`@' ... '@`), which closes off this whole bug class permanently rather
+  than just fixing this one instance - verified with
+  `Import-PowerShellDataFile` against the real manifest.
+- **HTML report gave no indication a report was generated offline from a
+  snapshot**: `Export-ADSecurityReportHTML` now accepts `-RunMode` ('Live'
+  or 'Offline (Snapshot)') and `-SnapshotCollectedDate`. The report title
+  now shows a colored mode badge, a dedicated warning banner appears for
+  offline runs (noting no live AD access was made and pointing at which
+  tests were skipped), and the header info grid shows the collection mode
+  plus - for offline runs - when the underlying snapshot was originally
+  collected. `Start-ADSecurityAudit` wires this through automatically for
+  both the live and `-FromSnapshot` code paths.
+- **Several already-"snapshot-aware" modules silently fell back to live
+  queries when a snapshot collection was legitimately empty** (e.g. zero
+  domain trusts - the common case for single-domain forests - or zero
+  extra computers beyond DCs): the presence check used throughout the
+  codebase was `$Snapshot.ContainsKey('X') -and $Snapshot.X`, which
+  evaluates false for an empty-but-successfully-collected array or
+  hashtable, indistinguishable from "not collected" under this check.
+  Removed the truthiness half of the check everywhere (21 occurrences
+  across 13 files - `Common.ps1`, `ControlPaths.ps1`,
+  `KerberosHardeningAudits.ps1`, `StaleObjectDepthAudits.ps1`,
+  `RodcSecurityAudits.ps1`, `CoercionRelayAudits.ps1`, `UserAudits.ps1`,
+  `KrbtgtAudits.ps1`, `MachineAccountQuotaAudits.ps1`,
+  `ExchangeEscalationAudits.ps1`, `DnsSecurityAudits.ps1`,
+  `GpoSecretsAudits.ps1`, `CertificateServicesExtendedAudits.ps1`) so
+  `ContainsKey` alone decides whether snapshot data is used. Found via
+  actual execution against a synthetic snapshot with legitimately-empty
+  collections, not static review - a live single-domain-forest `-FromSnapshot`
+  run would previously have made unwanted live `Get-ADTrust` calls from
+  `Test-ADKerberosHardening` despite claiming "no live AD access is
+  performed".
+- Verified this release end-to-end: full syntax-parse of all 41 module
+  files with zero errors, a real module import/export smoke test, and a
+  full `Start-ADSecurityAudit -FromSnapshot` run against a synthetic
+  snapshot producing valid JSON/HTML/CSV output.
+
+## [1.18.4]
+### Fixed
+- **`Start-ADSecurityAudit -FromSnapshot` was not actually offline for
+  roughly half the audit**: `AuditPolicyConfiguration` and 11 other
+  registered tests (`PrivilegedGroups`, `AdminSDHolder`, `GroupPolicies`,
+  `ReplicationSecurity`, `DomainSecurity`, `DangerousPermissions`,
+  `CertificateServices`, `DomainTrusts`, `LAPSDeployment`,
+  `ConstrainedDelegation`, `DomainAdminEquivalence` - the full set of
+  pre-v1.3.0 "core auditing" modules) have never been retrofitted with
+  `-Snapshot` support. `Invoke-ADRuleSet`'s documented fallback for
+  functions without `-Snapshot` was to run them live, which meant
+  `-FromSnapshot` silently made live AD/DC connections for 12 of 27 tests
+  - directly contradicting its own doc comment and the README's "no live
+  AD access is performed" claim. `Invoke-ADRuleSet` now SKIPS a test that
+  lacks `-Snapshot` support by default (with a warning naming it) instead
+  of quietly falling back to live queries, so `-FromSnapshot` actually
+  means no live AD access unless you ask otherwise. The old behaviour is
+  still available via a new opt-in `-AllowLiveFallbackForUnsupportedTests`
+  switch on both `Invoke-ADRuleSet` and `Start-ADSecurityAudit`, for anyone
+  who specifically wants a partial-live/partial-offline run.
+  `Start-ADSecurityAudit -FromSnapshot` also now prints up front which
+  tests will be skipped, before the run starts.
+
+## [1.18.3]
+### Fixed
+- **`Test-ADUserSecurity` failing under `-FromSnapshot` with "Cannot process
+  argument transformation on parameter 'User' ... the adapter cannot set
+  the value of property 'Name'"**: a regression from the 1.18.2 flattening
+  fix. `Test-PrivilegedUser`'s `$User` parameter was strongly typed as
+  `[Microsoft.ActiveDirectory.Management.ADUser]`, which was harmless while
+  `Snapshot.Users` held raw `ADUser` objects (the type already matched),
+  but once those were flattened to `PSCustomObject`s in 1.18.2, every
+  `-FromSnapshot` call had to coerce a `PSCustomObject` into a real
+  `ADUser` instance - which fails, since that type isn't constructible via
+  property copying. `Test-PrivilegedUser` only ever reads `.MemberOf`, so
+  the parameter is now untyped and works with either shape.
+
+## [1.18.2]
+### Fixed
+- **`Start-ADSecurityAudit -FromSnapshot` failing with "dictionary ...
+  contains the duplicated keys 'ObjectGuid' and 'ObjectGUID'"**: `Domain`,
+  `DomainControllers`, `Users`, and `Computers` were still being stored in
+  the snapshot as raw `Get-ADDomain`/`Get-ADDomainController`/
+  `Get-ADUser`/`Get-ADComputer` objects. The ActiveDirectory module's
+  property bag can expose the same attribute under two differently-cased
+  names (the typed property alongside a case-variant extended property);
+  both serialise to distinct, valid JSON keys, but `ConvertFrom-Json`'s
+  case-insensitive key comparer throws when reading that JSON back in on
+  the `-FromSnapshot` side. All four collections are now flattened to
+  plain `PSCustomObject`s with an explicit, single-cased property list -
+  the same pattern already used for Groups/GPOs/ADCS/Trusts - which
+  removes the whole class of issue rather than just this one attribute
+  pair. `Computers` no longer collects
+  `msDS-AllowedToActOnBehalfOfOtherIdentity` (RBCD): it's a binary
+  security-descriptor attribute in the same risk class as
+  `nTSecurityDescriptor`, and no `-Snapshot`-aware check currently reads it
+  (the existing RBCD check in `DelegationAudits.ps1` is live-only).
+
+## [1.18.1]
+### Fixed
+- **`Get-ADSnapshot` "hang" on `-ToJson`**: the AD CS collection step was
+  requesting `-Properties *` on every certificate template and certificate
+  authority object. That pulls back every attribute on the object,
+  including `nTSecurityDescriptor` (a full ACL with per-ACE
+  `IdentityReference` objects) and other large/binary attributes that
+  `Test-ADCSExtended` never reads from the snapshot. `ConvertTo-Json -Depth
+  12` then had to walk that entire object graph for every template and CA
+  with zero progress output, which is what looked like an indefinite hang
+  on any domain with more than a handful of templates - it wasn't stuck,
+  it was serialising kilobytes of unused ACL/attribute data per object.
+  `Get-ADSnapshot` now requests only the specific properties
+  `Test-ADCSExtended` reads (`displayName`, `msPKI-Certificate-Name-Flag`,
+  `msPKI-Enrollment-Flag`, `msPKI-Certificate-Application-Policy`,
+  `pKIExtendedKeyUsage` for templates; `dNSHostName`, `cACertificate` for
+  CAs) and flattens both to plain `PSCustomObject`s, the same pattern
+  already used for Groups/GPOs. Applied the same fix to domain-trust
+  collection (`Get-ADTrust -Properties *` -> `trustAttributes, Direction,
+  TrustType`), since trusts can carry similarly large binary attributes
+  (e.g. `trustAuthIncoming`/`trustAuthOutgoing`) that were never read.
+- `Get-ADSnapshot` had no progress indication at all beyond `-Verbose`
+  output, unlike `Start-ADSecurityAudit`'s live-mode loop. Added a
+  12-stage `Write-Progress` bar covering every collection area (domain/DCs,
+  machine account quota, dSHeuristics, pre-Windows 2000 compatible access,
+  users, computers, groups, GPOs, ACLs, AD CS, DNS zones, trusts).
+  `Invoke-ADRuleSet` (the dispatcher `Start-ADSecurityAudit -FromSnapshot`
+  uses) also had no progress bar even though the live-mode test loop in
+  `Main.ps1` does; it now reports "Test N of M" the same way.
+- The domain and domain-controller collection steps in `Get-ADSnapshot`
+  were the only two steps with no `Write-Verbose` output at all (start or
+  completion), unlike every other collection area - `-Verbose` gave no
+  indication anything was happening there. Added matching start/completion
+  verbose messages.
+- `-ExportPath` (`Start-ADSecurityAudit`) and `-ToJson`'s parent directory
+  (`Get-ADSnapshot`) previously failed with a hard error if the folder
+  didn't already exist. Both now create the folder automatically
+  (`New-Item -ItemType Directory -Force`) and only error if creation
+  itself fails (e.g. permissions).
+- `README.md`: the Usage section's example commands were plain text
+  instead of fenced ` ```powershell ` blocks, so they rendered as
+  unbroken, unformatted paragraphs instead of separate monospaced command
+  lines. Also corrected `-OutputPath` to the actual parameter name,
+  `-ExportPath`.
+
 ## [1.18.0]
 ### Added
 - `Test-ADKnownDCVulnerabilities`: new check for CVE-2026-41089 (unauthenticated

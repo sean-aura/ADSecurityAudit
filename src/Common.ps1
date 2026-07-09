@@ -173,7 +173,7 @@ function Get-ADTier0Principal {
     $tier0 = [System.Collections.ArrayList]::new()
     $seen = @{}
 
-    if ($Snapshot -and $Snapshot.ContainsKey('Groups') -and $Snapshot.Groups) {
+    if ($Snapshot -and $Snapshot.ContainsKey('Groups')) {
         Write-Verbose "Get-ADTier0Principal: deriving Tier-0 set from snapshot."
         foreach ($group in $Snapshot.Groups) {
             if ($group.Name -notin $Script:ProtectedGroups) { continue }

@@ -125,7 +125,7 @@ function Get-ADControlPathGraph {
     # --- Resolve domain ---
     $domain = $null
     try {
-        $domain = if ($Snapshot -and $Snapshot.ContainsKey('Domain') -and $Snapshot.Domain) {
+        $domain = if ($Snapshot -and $Snapshot.ContainsKey('Domain')) {
             $Snapshot.Domain
         }
         else {
@@ -151,7 +151,7 @@ function Get-ADControlPathGraph {
     # --- Domain Controllers ---
     $dcList = @()
     try {
-        $dcList = if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers') -and $Snapshot.DomainControllers) {
+        $dcList = if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers')) {
             @($Snapshot.DomainControllers)
         }
         else {
@@ -195,7 +195,7 @@ function Get-ADControlPathGraph {
     #     member of it, so they are added as targets in their own right. ---
     foreach ($groupName in $Script:ProtectedGroups) {
         $groupDN = $null
-        if ($Snapshot -and $Snapshot.ContainsKey('Groups') -and $Snapshot.Groups) {
+        if ($Snapshot -and $Snapshot.ContainsKey('Groups')) {
             $match = $Snapshot.Groups | Where-Object { $_.Name -eq $groupName } | Select-Object -First 1
             if ($match) { $groupDN = $match.DistinguishedName }
         }
@@ -218,7 +218,7 @@ function Get-ADControlPathGraph {
 
     # --- Group membership edges (member DN -> group DN) ---
     $groups = @()
-    if ($Snapshot -and $Snapshot.ContainsKey('Groups') -and $Snapshot.Groups) {
+    if ($Snapshot -and $Snapshot.ContainsKey('Groups')) {
         $groups = @($Snapshot.Groups)
     }
     else {
