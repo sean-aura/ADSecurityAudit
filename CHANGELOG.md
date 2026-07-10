@@ -5,6 +5,90 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0]
+### Added
+- **Offline/`-Snapshot` parity for the remaining 12 live-only modules**
+  (originally planned as steps 18-29 of the offline-parity backlog;
+  shipped together in this single 1.19.0 release): `Test-ADPrivilegedGroups`,
+  `Test-AdminSDHolder`, `Test-ADReplicationSecurity`,
+  `Test-ADDangerousPermissions`, `Test-ADGroupPolicies`,
+  `Test-LAPSDeployment`, `Test-ConstrainedDelegation`, `Test-ADDomainTrusts`,
+  `Test-AuditPolicyConfiguration`, `Test-ADDomainSecurity`,
+  `Test-ADCertificateServices`, and `Test-ADDomainAdminEquivalence` all now
+  accept an optional `-Snapshot` parameter. `Invoke-ADRuleSet`'s
+  "will be skipped under `-FromSnapshot`" list is now empty - all 27
+  registered tests support `-Snapshot`, fully or partially.
+- New shared helper `Resolve-ADSnapshotGroupMember` (`src/Common.ps1`):
+  resolves group membership recursively in-memory against a snapshot,
+  mirroring `Get-ADGroupMember [-Recursive]` with no live AD access.
+  Cycle-safe (a group nested inside itself, directly or transitively, is
+  detected and does not hang or stack-overflow). Reused by
+  `Test-ADPrivilegedGroups`, `Test-AdminSDHolder`, and
+  `Test-ADDomainAdminEquivalence`.
+- `Snapshot.ACLs` gains three new fixed targets: `DomainControllersOU`,
+  `UsersContainer`, `ComputersContainer` (same flattened-ACE shape as the
+  existing `AdminSDHolder`/`DomainRoot`/`CertificateTemplatesContainer`
+  targets). A domain that has renamed/moved one of these containers simply
+  omits that key - every consumer checks `ContainsKey` before reading it.
+- Every `Snapshot.ACLs` target now also carries `HasAuditRules`
+  (`$true`/`$false`/`$null` if undeterminable at collection time due to a
+  `SeSecurityPrivilege`/SACL-read limitation - `$null` never produces a
+  finding, only an explicit `$false` does).
+- `Snapshot.GPOs[]` gains `LinkedTo` (array of linked DNs), built from a
+  single pass over every OU/domain-root `gPLink` attribute instead of the
+  live code's per-GPO reverse lookup.
+- New `Snapshot.LapsSchema` (`LegacyLapsPresent`/`WindowsLapsPresent`
+  booleans, from a one-time schema-object presence check).
+- New `Snapshot.PasswordPolicy` (`MinPasswordLength`/`ComplexityEnabled`/
+  `ReversibleEncryptionEnabled`), `Snapshot.Forest.ForestMode`,
+  `Snapshot.RecycleBinEnabled`, and `Domain.DomainMode`.
+- `Snapshot.Trusts[]` gains `SIDFilteringQuarantined`,
+  `SelectiveAuthentication`, `Created`, `Modified` - four more plain
+  scalars on the already-narrowed `Get-ADTrust` property list from the
+  v1.18.1 hang fix; no binary/key-history attributes reintroduced.
+- `Snapshot.Users[]`/`Snapshot.Computers[]` gain `TrustedToAuthForDelegation`.
+  `Snapshot.Computers[]` also gains `HasRbcdConfigured` (a boolean presence
+  flag for Resource-Based Constrained Delegation, derived from a targeted
+  LDAP filter - never the raw `msDS-AllowedToActOnBehalfOfOtherIdentity`
+  security descriptor, which was deliberately removed from the snapshot in
+  v1.18.2 for the same reason `nTSecurityDescriptor` is never stored
+  wholesale). RBCD offline coverage is scoped to computer objects, matching
+  real-world usage - a deliberate, documented narrowing.
+- `Snapshot.Users[]` gains `scriptPath` and `HasShadowCredentials`;
+  `Snapshot.Computers[]` gains `HasShadowCredentials` and a per-computer
+  `Access` ACL (named `-Properties` only, flattened immediately via
+  `ConvertTo-ADFlatAce` - never `-Properties *`, the exact pattern that
+  caused the v1.18.1 hang). `HasShadowCredentials` is a boolean presence
+  flag derived from a targeted `(msDS-KeyCredentialLink=*)` LDAP filter,
+  never the raw key-credential blob.
+- New `Snapshot.PrivilegedUserAcls`: ACLs for `adminCount=1` users
+  specifically (not every user, to avoid ballooning the snapshot for
+  accounts that will never need this data).
+- `Snapshot.ADCS.CertificateTemplates[]`/`.CertificateAuthorities[]` gain
+  per-object `Access` ACLs (same flattened shape as `Snapshot.ACLs.*`,
+  bounded to template/CA object counts - never a domain-wide sweep) and
+  templates gain `msPKI-RA-Signature`.
+- `ADSecurityAudit.psd1`, `README.md` updated for all of the above.
+
+### Notes
+- No `Snapshot.*` field was renamed or removed anywhere in this release -
+  every schema change above is additive, and every new/extended function
+  keeps its live-mode behaviour byte-for-byte identical to before.
+- Three sub-checks remain live-only by design, matching the precedent
+  already set by `Test-ADCoercionAndRelayExposure`/`Test-ADLegacyAuthSurface`:
+  `Test-ADGroupPolicies`' SYSVOL file-share ACL check and
+  `Test-AuditPolicyConfiguration`'s per-DC `auditpol` check are real-time
+  machine/network state with no AD-schema equivalent. Both still run when
+  `-Snapshot` is supplied (with a `Write-Warning` noting they did), so
+  `-FromSnapshot` reports don't silently lose that coverage - they just
+  aren't "no live AD access" for those two specific sub-checks.
+- `Get-ADSnapshot`'s per-computer ACL sweep (needed for
+  `Test-ADDomainAdminEquivalence`) is, by design, the one place in this
+  entire backlog where a domain-wide per-object ACL read is unavoidable;
+  every other step deliberately bounded ACL collection to a small, fixed
+  set of targets. Benchmark collection time on a realistic computer count
+  before relying on `-ToJson` in a large environment.
+
 ## [1.18.5]
 ### Fixed
 - **HTML report footer showing "vUnknown" instead of the real module

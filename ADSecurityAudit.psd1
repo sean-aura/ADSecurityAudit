@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.18.5'
+    ModuleVersion = '1.19.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -61,6 +61,14 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.19.0 - Offline/-Snapshot Parity for the Remaining 12 Live-Only Modules (Steps 18-29)
+- This release combines the entire offline-parity backlog into a single update: Test-ADPrivilegedGroups, Test-AdminSDHolder, Test-ADReplicationSecurity, Test-ADDangerousPermissions, Test-ADGroupPolicies, Test-LAPSDeployment, Test-ConstrainedDelegation, Test-ADDomainTrusts, Test-AuditPolicyConfiguration, Test-ADDomainSecurity, Test-ADCertificateServices, and Test-ADDomainAdminEquivalence all now accept an optional -Snapshot parameter. As of this release, all 27 registered Start-ADSecurityAudit tests support -Snapshot, fully or partially - Invoke-ADRuleSet's "will be skipped under -FromSnapshot" list is now empty.
+- New shared helper Resolve-ADSnapshotGroupMember (src/Common.ps1) resolves group membership recursively in-memory against a snapshot, mirroring Get-ADGroupMember [-Recursive] with no live AD access. Reused by the PrivilegedGroups, AdminSDHolder, and DomainAdminEquivalence checks.
+- Additive Snapshot.* schema changes only - no existing field renamed or removed: three new Snapshot.ACLs targets (DomainControllersOU, UsersContainer, ComputersContainer); a HasAuditRules tri-state (true/false/null-if-undeterminable) field on every Snapshot.ACLs target; Snapshot.GPOs[].LinkedTo (built from a single gPLink pass instead of a live per-GPO reverse lookup); Snapshot.LapsSchema; Snapshot.PasswordPolicy, Snapshot.Forest, Snapshot.RecycleBinEnabled, and Domain.DomainMode; Snapshot.Trusts[] gains SIDFilteringQuarantined/SelectiveAuthentication/Created/Modified; Snapshot.Users[]/.Computers[] gain TrustedToAuthForDelegation; Snapshot.Computers[] gains HasRbcdConfigured, PasswordLastSet, HasShadowCredentials, and a per-computer Access ACL; Snapshot.Users[] gains scriptPath, HasShadowCredentials; new Snapshot.PrivilegedUserAcls (ACLs for adminCount=1 users specifically, not every user); Snapshot.ADCS.CertificateTemplates[]/.CertificateAuthorities[] gain per-object Access ACLs and templates gain msPKI-RA-Signature.
+- Security-descriptor-shaped attributes (RBCD, shadow credentials) are represented as boolean presence flags derived from a targeted LDAP filter, never as the raw binary value - consistent with the "never store nTSecurityDescriptor/binary attributes wholesale" rule established in v1.18.1/v1.18.2.
+- Three modules remain partially live-only by design, matching the precedent already set by Test-ADCoercionAndRelayExposure/Test-ADLegacyAuthSurface: Test-ADGroupPolicies' SYSVOL file-share ACL check and Test-AuditPolicyConfiguration's per-DC auditpol check are real-time machine/network state with no AD-schema equivalent and always run live, with a Write-Warning noting this when invoked under -Snapshot.
+- All new snapshot collections follow the established safety discipline: named -Properties only (never -Properties *), every ACL flattened immediately via ConvertTo-ADFlatAce, and ContainsKey-only presence checks (an empty-but-valid collection must never trigger a live fallback).
+
 v1.18.5 - Fix vUnknown Version, Add Offline Report Indicator, Fix Empty-Snapshot-Collection Live Fallback
 - Fixed the HTML report showing "vUnknown" instead of the real module version: ReleaseNotes used an expandable here-string, and a literal $User mention in the 1.18.3 notes made Import-PowerShellDataFile reject the entire manifest and fall back to 'Unknown'. Switched ReleaseNotes to a literal here-string, closing off this whole bug class.
 - Added an offline/live indicator to the HTML report: Export-ADSecurityReportHTML now takes -RunMode and -SnapshotCollectedDate, showing a mode badge, a dedicated offline warning banner, and the snapshot collection timestamp when run via -FromSnapshot.

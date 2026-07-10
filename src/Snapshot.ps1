@@ -163,7 +163,10 @@ function Get-ADSnapshot {
         [hashtable] with keys: CollectedDate, Domain, DomainControllers,
         Users, Computers, Groups, GPOs, ACLs, ADCS, DnsZones, Trusts,
         MachineAccountQuota, DsHeuristics, DsHeuristicsDN, PreWin2000GroupDN,
-        PreWin2000Members.
+        PreWin2000Members, LapsSchema, PasswordPolicy, Forest,
+        RecycleBinEnabled, PrivilegedUserAcls (added in v1.19.0's
+        offline-parity backlog - see CHANGELOG 1.19.0 for the per-field
+        breakdown of what moved from live-only to snapshot-backed).
     #>
     [CmdletBinding()]
     param(
@@ -197,9 +200,11 @@ function Get-ADSnapshot {
     # in Start-ADSecurityAudit).
     $snapshotStages = @(
         'Domain & Domain Controllers', 'Machine Account Quota', 'dSHeuristics',
-        'Pre-Windows 2000 Compatible Access', 'Users', 'Computers', 'Groups',
-        'GPOs', 'ACLs on key objects', 'AD CS configuration', 'DNS zones',
-        'Domain trusts'
+        'Pre-Windows 2000 Compatible Access', 'Users',
+        'ACLs on privileged (adminCount=1) users', 'Computers', 'Groups',
+        'GPOs', 'ACLs on key objects', 'LAPS schema presence',
+        'Password policy, forest mode, Recycle Bin', 'AD CS configuration',
+        'DNS zones', 'Domain trusts'
     )
     $Script:ADSnapshotStageIndex = 0
     function Step-ADSnapshotProgress {
@@ -227,6 +232,11 @@ function Get-ADSnapshot {
         DsHeuristicsDN      = $null
         PreWin2000GroupDN   = $null
         PreWin2000Members   = @()
+        LapsSchema          = $null
+        PasswordPolicy      = $null
+        Forest              = $null
+        RecycleBinEnabled   = $null
+        PrivilegedUserAcls  = @()
     }
 
     # --- Domain + DC inventory ---
@@ -357,8 +367,26 @@ function Get-ADSnapshot {
                 ServicePrincipalNames, MemberOf, Enabled, DistinguishedName, `
                 UserPrincipalName, adminCount, SamAccountName, SID, Description, `
                 'msDS-SupportedEncryptionTypes', userAccountControl, WhenCreated, `
-                'msDS-AllowedToDelegateTo', SIDHistory, PrimaryGroupID
+                'msDS-AllowedToDelegateTo', SIDHistory, PrimaryGroupID, `
+                TrustedToAuthForDelegation, scriptPath
         })
+
+        # --- v1.19.0 offline-parity backlog, step 29 ---
+        # Shadow-credentials presence flag: a single, targeted LDAP filter
+        # against (msDS-KeyCredentialLink=*), never the raw attribute value
+        # (a serialised key-credential blob - same risk class as every other
+        # binary/security-descriptor attribute this backlog keeps out of the
+        # snapshot). Run once; cross-reference by DN during flattening.
+        $shadowCredUserDNs = [System.Collections.Generic.HashSet[string]]::new()
+        try {
+            @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser shadow-credentials presence (snapshot)' -Query {
+                Get-ADUser -LDAPFilter '(msDS-KeyCredentialLink=*)' -ErrorAction Stop
+            }) | ForEach-Object { [void]$shadowCredUserDNs.Add($_.DistinguishedName) }
+        }
+        catch {
+            Write-Verbose "Get-ADSnapshot: shadow-credentials presence check (Users) failed: $_"
+        }
+
         $snapshot.Users = @($rawUsers | ForEach-Object {
             [PSCustomObject]@{
                 Name                                 = $_.Name
@@ -384,6 +412,9 @@ function Get-ADSnapshot {
                 'msDS-AllowedToDelegateTo'              = @($_.'msDS-AllowedToDelegateTo')
                 SIDHistory                              = @($_.SIDHistory | ForEach-Object { "$_" })
                 PrimaryGroupID                          = $_.PrimaryGroupID
+                TrustedToAuthForDelegation              = $_.TrustedToAuthForDelegation
+                scriptPath                              = $_.scriptPath
+                HasShadowCredentials                    = $shadowCredUserDNs.Contains($_.DistinguishedName)
             }
         })
         Write-Verbose "Get-ADSnapshot: collected $($snapshot.Users.Count) users."
@@ -392,14 +423,38 @@ function Get-ADSnapshot {
         Write-Warning "Get-ADSnapshot: failed to collect users: $_"
     }
 
+    # --- v1.19.0 offline-parity backlog, step 29 ---
+    # ACLs on adminCount=1 users specifically (not every user - keeps the
+    # snapshot from ballooning for accounts that will never need this data).
+    # Named -Properties only, flattened immediately via ConvertTo-ADFlatAce -
+    # never a raw ActiveDirectorySecurity object, even transiently.
+    Step-ADSnapshotProgress -Stage 'ACLs on privileged (adminCount=1) users'
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting ACLs on adminCount=1 users..."
+        $adminCountUsersForAcl = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser adminCount=1 ACL (snapshot)' -Query {
+            Get-ADUser -LDAPFilter '(adminCount=1)' -Properties nTSecurityDescriptor -ErrorAction Stop
+        })
+        $snapshot.PrivilegedUserAcls = @($adminCountUsersForAcl | ForEach-Object {
+            [PSCustomObject]@{
+                DistinguishedName = $_.DistinguishedName
+                SamAccountName    = $_.SamAccountName
+                Owner             = "$($_.nTSecurityDescriptor.Owner)"
+                Access            = @(ConvertTo-ADFlatAce -Access @($_.nTSecurityDescriptor.Access))
+            }
+        })
+        Write-Verbose "Get-ADSnapshot: collected ACLs for $($snapshot.PrivilegedUserAcls.Count) adminCount=1 user(s)."
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect ACLs on adminCount=1 users: $_"
+    }
+
     # --- Computers (paged) ---
-    # Same flattening fix as Users above. Note: msDS-AllowedToActOnBehalfOfOtherIdentity
-    # (RBCD) is intentionally no longer collected here - it's a binary
-    # security-descriptor attribute (same risk class as nTSecurityDescriptor,
-    # see the AD CS note above) and no -Snapshot-aware check currently reads
-    # it from Computers (src/DelegationAudits.ps1's RBCD check is live-only).
-    # Re-add it, flattened to an SDDL string, if a snapshot-aware RBCD check
-    # is added later.
+    # Same flattening fix as Users above. Note: the raw
+    # msDS-AllowedToActOnBehalfOfOtherIdentity (RBCD) security descriptor
+    # value itself is still never collected here (same risk class as
+    # nTSecurityDescriptor) - as of v1.19.0 (step 24), RBCD offline
+    # detection instead uses a boolean presence flag (HasRbcdConfigured,
+    # below) derived from a targeted LDAP filter.
     Step-ADSnapshotProgress -Stage 'Computers'
     try {
         Write-Verbose "Get-ADSnapshot: collecting computers..."
@@ -409,8 +464,40 @@ function Get-ADSnapshot {
                 DistinguishedName, TrustedForDelegation, 'msDS-AllowedToDelegateTo', `
                 PrimaryGroupID, SID, 'ms-Mcs-AdmPwdExpirationTime', `
                 'msLAPS-PasswordExpirationTime', userAccountControl, WhenCreated, `
-                SamAccountName, ServicePrincipalNames
+                SamAccountName, ServicePrincipalNames, TrustedToAuthForDelegation, `
+                PasswordLastSet, nTSecurityDescriptor
         })
+
+        # --- v1.19.0 offline-parity backlog, step 24 ---
+        # RBCD presence flag: targeted LDAP filter, never the raw
+        # msDS-AllowedToActOnBehalfOfOtherIdentity security descriptor
+        # (intentionally removed from the snapshot in v1.18.2 for the same
+        # reason nTSecurityDescriptor is never stored wholesale elsewhere).
+        # Scoped to computer objects, matching real-world RBCD/dMSA usage -
+        # a deliberate, documented narrowing, not an oversight.
+        $rbcdComputerDNs = [System.Collections.Generic.HashSet[string]]::new()
+        try {
+            @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer RBCD presence (snapshot)' -Query {
+                Get-ADComputer -LDAPFilter '(msDS-AllowedToActOnBehalfOfOtherIdentity=*)' -ErrorAction Stop
+            }) | ForEach-Object { [void]$rbcdComputerDNs.Add($_.DistinguishedName) }
+        }
+        catch {
+            Write-Verbose "Get-ADSnapshot: RBCD presence check failed: $_"
+        }
+
+        # --- v1.19.0 offline-parity backlog, step 29 ---
+        # Shadow-credentials presence flag - same pattern as RBCD above,
+        # never the raw msDS-KeyCredentialLink value.
+        $shadowCredComputerDNs = [System.Collections.Generic.HashSet[string]]::new()
+        try {
+            @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer shadow-credentials presence (snapshot)' -Query {
+                Get-ADComputer -LDAPFilter '(msDS-KeyCredentialLink=*)' -ErrorAction Stop
+            }) | ForEach-Object { [void]$shadowCredComputerDNs.Add($_.DistinguishedName) }
+        }
+        catch {
+            Write-Verbose "Get-ADSnapshot: shadow-credentials presence check (Computers) failed: $_"
+        }
+
         $snapshot.Computers = @($rawComputers | ForEach-Object {
             [PSCustomObject]@{
                 Name                                = $_.Name
@@ -429,6 +516,11 @@ function Get-ADSnapshot {
                 userAccountControl                     = $_.userAccountControl
                 WhenCreated                             = $_.WhenCreated
                 ServicePrincipalNames                  = @($_.ServicePrincipalNames)
+                TrustedToAuthForDelegation              = $_.TrustedToAuthForDelegation
+                HasRbcdConfigured                       = $rbcdComputerDNs.Contains($_.DistinguishedName)
+                PasswordLastSet                         = $_.PasswordLastSet
+                HasShadowCredentials                    = $shadowCredComputerDNs.Contains($_.DistinguishedName)
+                Access                                   = @(ConvertTo-ADFlatAce -Access @($_.nTSecurityDescriptor.Access))
             }
         })
         Write-Verbose "Get-ADSnapshot: collected $($snapshot.Computers.Count) computers."
@@ -469,6 +561,37 @@ function Get-ADSnapshot {
         Write-Verbose "Get-ADSnapshot: collecting GPOs..."
         Import-Module GroupPolicy -ErrorAction Stop
         $rawGpos = Get-GPO -All
+
+        # --- v1.19.0 offline-parity backlog, step 22 ---
+        # Single pass over every OU and the domain root's gPLink attribute,
+        # building a GUID -> [linked DNs] reverse index once, instead of the
+        # live code's O(GPOs x OUs) per-GPO Get-ADObject -Filter "gPLink -like
+        # '*<guid>*'" pattern. gPLink format: "[LDAP://cn={GUID},cn=policies,
+        # cn=system,DC=...;<options>][...]" - domain functional level can put
+        # gPLink on non-OU containers too, so this filters broadly rather
+        # than assuming OUs only.
+        $linkIndex = @{}
+        try {
+            $domainForGpLink = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -ErrorAction Stop }
+            $gpLinkObjects = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADObject gPLink (snapshot)' -Query {
+                Get-ADObject -Filter "gPLink -like '*'" -Properties gPLink, DistinguishedName -ResultPageSize 500 -ErrorAction Stop
+            })
+            foreach ($linkedObj in $gpLinkObjects) {
+                if (-not $linkedObj.gPLink) { continue }
+                $guidMatches = [regex]::Matches($linkedObj.gPLink, '(?i)cn=\{([0-9A-F-]{36})\}')
+                foreach ($m in $guidMatches) {
+                    $guid = $m.Groups[1].Value.ToUpper()
+                    if (-not $linkIndex.ContainsKey($guid)) {
+                        $linkIndex[$guid] = [System.Collections.ArrayList]::new()
+                    }
+                    [void]$linkIndex[$guid].Add($linkedObj.DistinguishedName)
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Get-ADSnapshot: gPLink single-pass collection failed (LinkedTo will be empty): $_"
+        }
+
         $snapshot.GPOs = @($rawGpos | ForEach-Object {
             $gpo = $_
             $permissions = $null
@@ -478,6 +601,7 @@ function Get-ADSnapshot {
             catch {
                 Write-Verbose "Get-ADSnapshot: failed to get permissions for GPO '$($gpo.DisplayName)': $_"
             }
+            $gpoGuidUpper = $gpo.Id.ToString().ToUpper().Trim('{', '}')
             [PSCustomObject]@{
                 Id               = $gpo.Id.ToString()
                 DisplayName      = $gpo.DisplayName
@@ -490,6 +614,7 @@ function Get-ADSnapshot {
                         Permission = "$($_.Permission)"
                     }
                 })
+                LinkedTo         = if ($linkIndex.ContainsKey($gpoGuidUpper)) { @($linkIndex[$gpoGuidUpper]) } else { @() }
             }
         })
         Write-Verbose "Get-ADSnapshot: collected $($snapshot.GPOs.Count) GPOs."
@@ -512,13 +637,44 @@ function Get-ADSnapshot {
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
         $aclTargets['CertificateTemplatesContainer'] = "CN=Certificate Templates,$pkiContainer"
 
+        # --- v1.19.0 offline-parity backlog, step 21 ---
+        # Three more fixed ACL targets, added for Test-ADDangerousPermissions's
+        # critical-OU sweep. Same loop, same flattening - just more dictionary
+        # entries. If a domain has renamed/moved one of these containers, the
+        # per-target try/catch below already handles it gracefully: the key
+        # is simply absent from Snapshot.ACLs, and every -Snapshot-aware
+        # consumer must check ContainsKey before reading it.
+        $aclTargets['DomainControllersOU'] = "OU=Domain Controllers,$($domainForAcl.DistinguishedName)"
+        $aclTargets['UsersContainer']      = "CN=Users,$($domainForAcl.DistinguishedName)"
+        $aclTargets['ComputersContainer']  = "CN=Computers,$($domainForAcl.DistinguishedName)"
+
         foreach ($targetName in $aclTargets.Keys) {
             try {
                 $obj = Get-ADObject -Identity $aclTargets[$targetName] -Properties nTSecurityDescriptor -ErrorAction Stop
+
+                # --- v1.19.0 offline-parity backlog, step 26 ---
+                # Audit-rule (SACL) presence, for Test-AuditPolicyConfiguration's
+                # two SACL-presence checks. Reading SACL entries requires the
+                # caller to both hold SeSecurityPrivilege and have explicitly
+                # requested SACL_SECURITY_INFORMATION - running elevated
+                # (-RunAsAdministrator) does not guarantee that by itself.
+                # Fail safe: $null ("undetermined"), never a misleading
+                # $false, so a collection-time privilege limitation can never
+                # manifest as a false "no auditing configured" finding.
+                $hasAuditRules = $null
+                try {
+                    $auditRules = $obj.nTSecurityDescriptor.GetAuditRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+                    $hasAuditRules = $auditRules.Count -gt 0
+                }
+                catch {
+                    Write-Verbose "Get-ADSnapshot: could not read SACL for '$targetName': $_"
+                }
+
                 $snapshot.ACLs[$targetName] = @{
                     DistinguishedName = $obj.DistinguishedName
                     Owner             = "$($obj.nTSecurityDescriptor.Owner)"
                     Access            = @(ConvertTo-ADFlatAce -Access @($obj.nTSecurityDescriptor.Access))
+                    HasAuditRules     = $hasAuditRules
                 }
             }
             catch {
@@ -528,6 +684,107 @@ function Get-ADSnapshot {
     }
     catch {
         Write-Warning "Get-ADSnapshot: failed during ACL collection: $_"
+    }
+
+    # --- v1.19.0 offline-parity backlog, step 23: LAPS schema presence ---
+    # A one-time boolean presence check (legacy LAPS and Windows LAPS schema
+    # extensions), for Test-LAPSDeployment's schema-presence gate. Booleans
+    # only - no need to carry the schema object itself.
+    Step-ADSnapshotProgress -Stage 'LAPS schema presence'
+    try {
+        Write-Verbose "Get-ADSnapshot: checking LAPS schema presence..."
+        $schemaNCForLaps = ([ADSI]"LDAP://RootDSE").schemaNamingContext
+        $legacyLapsPresent = $false
+        $windowsLapsPresent = $false
+        try {
+            $legacyLapsPresent = [bool](Get-ADObject -Identity "CN=ms-Mcs-AdmPwd,$schemaNCForLaps" -ErrorAction SilentlyContinue)
+        }
+        catch {
+            Write-Verbose "Get-ADSnapshot: legacy LAPS schema check failed: $_"
+        }
+        try {
+            $windowsLapsPresent = [bool](Get-ADObject -Identity "CN=ms-LAPS-Password,$schemaNCForLaps" -ErrorAction SilentlyContinue)
+        }
+        catch {
+            Write-Verbose "Get-ADSnapshot: Windows LAPS schema check failed: $_"
+        }
+        $snapshot.LapsSchema = @{
+            LegacyLapsPresent  = $legacyLapsPresent
+            WindowsLapsPresent = $windowsLapsPresent
+        }
+        Write-Verbose "Get-ADSnapshot: LapsSchema = Legacy:$legacyLapsPresent, Windows:$windowsLapsPresent"
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect LAPS schema presence: $_"
+    }
+
+    # --- v1.19.0 offline-parity backlog, step 27: domain-wide policy/feature state ---
+    # Four small, additive single-object reads, for Test-ADDomainSecurity.
+    # Each carries only the specific scalars that module reads - never the
+    # whole policy/feature/forest object.
+    Step-ADSnapshotProgress -Stage 'Password policy, forest mode, Recycle Bin'
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting default domain password policy..."
+        $pwdPolicy = Invoke-ADQueryWithRetry -OperationName 'Get-ADDefaultDomainPasswordPolicy (snapshot)' -Query {
+            Get-ADDefaultDomainPasswordPolicy -ErrorAction Stop
+        }
+        if ($pwdPolicy) {
+            $snapshot.PasswordPolicy = @{
+                MinPasswordLength           = $pwdPolicy.MinPasswordLength
+                ComplexityEnabled           = $pwdPolicy.ComplexityEnabled
+                ReversibleEncryptionEnabled = $pwdPolicy.ReversibleEncryptionEnabled
+            }
+        }
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect default domain password policy: $_"
+    }
+
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting forest functional level..."
+        $forestForSnapshot = Invoke-ADQueryWithRetry -OperationName 'Get-ADForest (snapshot)' -Query {
+            Get-ADForest -ErrorAction Stop
+        }
+        if ($forestForSnapshot) {
+            $snapshot.Forest = @{ ForestMode = "$($forestForSnapshot.ForestMode)" }
+        }
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect forest functional level: $_"
+    }
+
+    try {
+        Write-Verbose "Get-ADSnapshot: checking AD Recycle Bin status..."
+        $recycleBinFeature = Invoke-ADQueryWithRetry -OperationName 'Get-ADOptionalFeature Recycle Bin (snapshot)' -Query {
+            Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'" -ErrorAction Stop
+        }
+        $snapshot.RecycleBinEnabled = [bool]($recycleBinFeature -and @($recycleBinFeature.EnabledScopes).Count -gt 0)
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to check AD Recycle Bin status: $_"
+    }
+
+    # DomainMode is a simple additional field on the Domain object already
+    # collected above - fold it in here rather than re-querying Get-ADDomain.
+    try {
+        if ($snapshot.Domain) {
+            $domainModeObj = Invoke-ADQueryWithRetry -OperationName 'Get-ADDomain DomainMode (snapshot)' -Query {
+                Get-ADDomain -ErrorAction Stop
+            }
+            if ($domainModeObj) {
+                $snapshot.Domain = [PSCustomObject]@{
+                    DistinguishedName = $snapshot.Domain.DistinguishedName
+                    DNSRoot           = $snapshot.Domain.DNSRoot
+                    NetBIOSName       = $snapshot.Domain.NetBIOSName
+                    Forest            = $snapshot.Domain.Forest
+                    DomainSID         = $snapshot.Domain.DomainSID
+                    DomainMode        = "$($domainModeObj.DomainMode)"
+                }
+            }
+        }
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect DomainMode: $_"
     }
 
     # --- AD CS configuration (templates + CAs); optional component ---
@@ -553,7 +810,8 @@ function Get-ADSnapshot {
 
         $templateProperties = @(
             'displayName', 'msPKI-Certificate-Name-Flag', 'msPKI-Enrollment-Flag',
-            'msPKI-Certificate-Application-Policy', 'pKIExtendedKeyUsage'
+            'msPKI-Certificate-Application-Policy', 'pKIExtendedKeyUsage',
+            'msPKI-RA-Signature'
         )
         $caProperties = @('dNSHostName', 'cACertificate')
 
@@ -574,9 +832,22 @@ function Get-ADSnapshot {
         # Flatten to plain PSCustomObjects (same rationale as Groups/GPOs
         # above): the raw Get-ADObject type carries schema/property-cache
         # metadata that ConvertTo-Json otherwise has to traverse too.
+        #
+        # v1.19.0 offline-parity backlog, step 28: per-template/per-CA ACLs
+        # (via the same Get-Acl + ConvertTo-ADFlatAce mechanism used
+        # everywhere else in the snapshot), read once per object here.
+        # Template/CA counts are small and bounded (tens, and 1-3
+        # respectively) - not the same risk class as a domain-wide sweep.
         $snapshot.ADCS = @{
             Installed = $true
             CertificateTemplates = @($certTemplates | ForEach-Object {
+                $templateAclAccess = $null
+                try {
+                    $templateAclAccess = (Get-Acl -Path "AD:$($_.DistinguishedName)" -ErrorAction Stop).Access
+                }
+                catch {
+                    Write-Verbose "Get-ADSnapshot: could not read ACL for certificate template '$($_.Name)': $_"
+                }
                 [PSCustomObject]@{
                     Name                                    = $_.Name
                     DistinguishedName                       = $_.DistinguishedName
@@ -585,14 +856,24 @@ function Get-ADSnapshot {
                     'msPKI-Enrollment-Flag'                  = $_.'msPKI-Enrollment-Flag'
                     'msPKI-Certificate-Application-Policy'   = @($_.'msPKI-Certificate-Application-Policy')
                     pKIExtendedKeyUsage                      = @($_.pKIExtendedKeyUsage)
+                    'msPKI-RA-Signature'                     = $_.'msPKI-RA-Signature'
+                    Access                                    = @(ConvertTo-ADFlatAce -Access @($templateAclAccess))
                 }
             })
             CertificateAuthorities = @($certAuthorities | ForEach-Object {
+                $caAclAccess = $null
+                try {
+                    $caAclAccess = (Get-Acl -Path "AD:$($_.DistinguishedName)" -ErrorAction Stop).Access
+                }
+                catch {
+                    Write-Verbose "Get-ADSnapshot: could not read ACL for certificate authority '$($_.Name)': $_"
+                }
                 [PSCustomObject]@{
                     Name               = $_.Name
                     DistinguishedName  = $_.DistinguishedName
                     dNSHostName        = $_.dNSHostName
                     cACertificate      = @($_.cACertificate)
+                    Access              = @(ConvertTo-ADFlatAce -Access @($caAclAccess))
                 }
             })
         }
@@ -643,15 +924,24 @@ function Get-ADSnapshot {
     Step-ADSnapshotProgress -Stage 'Domain trusts'
     try {
         Write-Verbose "Get-ADSnapshot: collecting domain trusts..."
+        # --- v1.19.0 offline-parity backlog, step 25 ---
+        # Four more plain scalars (two booleans, two datetimes) added to the
+        # already-narrowed property list from the v1.18.1 hang fix. No
+        # binary/key-history attributes reintroduced.
         $rawTrusts = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADTrust (snapshot)' -Query {
-            Get-ADTrust -Filter * -Properties trustAttributes, Direction, TrustType -ErrorAction Stop
+            Get-ADTrust -Filter * -Properties trustAttributes, Direction, TrustType, `
+                SIDFilteringQuarantined, SelectiveAuthentication, Created, Modified -ErrorAction Stop
         })
         $snapshot.Trusts = @($rawTrusts | ForEach-Object {
             [PSCustomObject]@{
-                Target          = $_.Target
-                trustAttributes = $_.trustAttributes
-                Direction       = "$($_.Direction)"
-                TrustType       = "$($_.TrustType)"
+                Target                   = $_.Target
+                trustAttributes          = $_.trustAttributes
+                Direction                = "$($_.Direction)"
+                TrustType                = "$($_.TrustType)"
+                SIDFilteringQuarantined  = $_.SIDFilteringQuarantined
+                SelectiveAuthentication  = $_.SelectiveAuthentication
+                Created                  = $_.Created
+                Modified                 = $_.Modified
             }
         })
         Write-Verbose "Get-ADSnapshot: collected $($snapshot.Trusts.Count) trusts."
@@ -692,16 +982,18 @@ function Invoke-ADRuleSet {
         By default, a function that has not yet been retrofitted with
         -Snapshot is SKIPPED (with a warning), not run live. This is what
         actually honors Start-ADSecurityAudit -FromSnapshot's documented
-        "no live AD access is performed" contract - as of v1.18.3, roughly
-        half the registered tests (the pre-v1.3.0 "core auditing" modules:
-        PrivilegedGroups, AdminSDHolder, GroupPolicies, ReplicationSecurity,
-        DomainSecurity, DangerousPermissions, CertificateServices,
-        DomainTrusts, LAPSDeployment, AuditPolicyConfiguration,
-        ConstrainedDelegation, DomainAdminEquivalence) have never been
-        retrofitted with -Snapshot support, so silently falling back to
-        live queries for them would mean -FromSnapshot quietly touches live
-        AD/DCs for nearly half the audit - the opposite of what "offline"
-        mode promises.
+        "no live AD access is performed" contract.
+
+        As of v1.19.0, all 27 registered tests declare -Snapshot, fully or
+        partially (see README's "-FromSnapshot coverage" section for the
+        small number of remaining live-only sub-checks - e.g. SYSVOL's
+        file-share ACL, the per-DC auditpol read - which are genuinely
+        real-time machine/network state with no AD-schema equivalent and so
+        stay live-only even under -Snapshot, the same way
+        Test-ADCoercionAndRelayExposure's and Test-ADLegacyAuthSurface's
+        live-only sub-checks already did before this release). This skip
+        path remains in place for safety (e.g. a future new test that hasn't
+        been retrofitted yet), it just has nothing to skip today.
 
         Pass -AllowLiveFallbackForUnsupportedTests to restore the old
         behaviour (run unsupported tests live instead of skipping them) if

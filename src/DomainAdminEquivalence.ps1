@@ -1,11 +1,411 @@
 #region Domain Admin Equivalence Audit
 
 function Test-ADDomainAdminEquivalence {
+    <#
+    .SYNOPSIS
+        Correlates ACLs, group membership, delegation, and attribute-level
+        signals to detect principals with effective Domain Admin-equivalent
+        control, even without explicit group membership.
+    .PARAMETER Snapshot
+        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
+        every sub-check reads from the snapshot instead of live AD: per-
+        computer ACLs and adminCount=1 user ACLs (Snapshot.Computers[].Access
+        / Snapshot.PrivilegedUserAcls), a shadow-credentials presence flag
+        (HasShadowCredentials, never the raw msDS-KeyCredentialLink value),
+        scriptPath, SIDHistory (already collected since v1.18.2),
+        TrustedToAuthForDelegation/HasRbcdConfigured (from the
+        ConstrainedDelegation offline-parity step), and the existing
+        Snapshot.ACLs.DomainRoot/.AdminSDHolder/.DomainControllersOU
+        targets. No live AD access is performed. Added in v1.19.0 - the
+        last of the 12 offline-parity retrofits in this release.
+    #>
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter()]
+        [hashtable]$Snapshot
+    )
 
     Write-Verbose "Starting Admin Equivalence Audit"
     $findings = @()
+
+    if ($Snapshot) {
+        Write-Verbose "Test-ADDomainAdminEquivalence: running from snapshot (no live AD access)."
+
+        $domainDN = if ($Snapshot.Domain) { $Snapshot.Domain.DistinguishedName } else { $null }
+        $domainName = if ($Snapshot.Domain) { $Snapshot.Domain.DNSRoot } else { $null }
+        $netBIOSName = if ($Snapshot.Domain) { $Snapshot.Domain.NetBIOSName } else { $null }
+        $domainSID = if ($Snapshot.Domain) { "$($Snapshot.Domain.DomainSID)" } else { $null }
+
+        $legitimatePrincipals = @(
+            'NT AUTHORITY\SYSTEM',
+            'BUILTIN\Administrators'
+        )
+        if ($netBIOSName) {
+            $legitimatePrincipals += @(
+                "$netBIOSName\Administrators",
+                "$netBIOSName\Domain Admins",
+                "$netBIOSName\Enterprise Admins",
+                "$netBIOSName\Schema Admins",
+                "$netBIOSName\Domain Controllers",
+                "$netBIOSName\Enterprise Domain Controllers",
+                "$netBIOSName\Read-only Domain Controllers"
+            )
+        }
+
+        $sensitiveGroupNames = @(
+            'Domain Admins', 'Enterprise Admins', 'Schema Admins', 'Administrators',
+            'Backup Operators', 'Account Operators', 'DNSAdmins', 'Print Operators', 'Server Operators'
+        )
+
+        $principalEvidence = @{}
+        function Add-SnapshotEvidence {
+            param([string]$Principal, [string]$Reason, [hashtable]$Context)
+            if (-not $Principal) { return }
+            if (-not $principalEvidence.ContainsKey($Principal)) {
+                $principalEvidence[$Principal] = [System.Collections.ArrayList]::new()
+            }
+            [void]$principalEvidence[$Principal].Add([PSCustomObject]@{ Reason = $Reason; Context = $Context })
+        }
+
+        $groupsByName = @{}
+        if ($Snapshot.ContainsKey('Groups')) {
+            foreach ($g in @($Snapshot.Groups)) { if ($g -and $g.Name) { $groupsByName[$g.Name] = $g } }
+        }
+        $usersByDN = @{}
+        $usersBySam = @{}
+        if ($Snapshot.ContainsKey('Users')) {
+            foreach ($u in @($Snapshot.Users)) {
+                if ($u -and $u.DistinguishedName) { $usersByDN[$u.DistinguishedName] = $u }
+                if ($u -and $u.SamAccountName) { $usersBySam[$u.SamAccountName] = $u }
+            }
+        }
+
+        # DC names, for the delegation-to-DC cross-reference below.
+        $dcNames = @()
+        if ($Snapshot.ContainsKey('DomainControllers')) {
+            $dcNames = @(@($Snapshot.DomainControllers) | ForEach-Object { $_.Name })
+        }
+        $dcComputerDNsForRbcd = @()
+        if ($Snapshot.ContainsKey('Computers') -and $Snapshot.ContainsKey('DomainControllers')) {
+            $dcNameSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$dcNames)
+            $dcComputerDNsForRbcd = @(@($Snapshot.Computers) | Where-Object { $dcNameSet.Contains($_.Name) })
+        }
+
+        # Recursive protected-group membership (reuses step 18's helper).
+        $protectedMembersDNs = [System.Collections.Generic.HashSet[string]]::new()
+        $sensitivePrincipals = @{}
+        foreach ($groupName in $sensitiveGroupNames) {
+            $group = $groupsByName[$groupName]
+            if (-not $group) { continue }
+            $members = @(Resolve-ADSnapshotGroupMember -Snapshot $Snapshot -GroupDistinguishedName $group.DistinguishedName)
+            foreach ($m in $members) {
+                if ($m.DistinguishedName) { [void]$protectedMembersDNs.Add($m.DistinguishedName) }
+                if ($m.objectClass -eq 'user' -and $m.SamAccountName -and -not $sensitivePrincipals.ContainsKey($m.SamAccountName)) {
+                    $sensitivePrincipals[$m.SamAccountName] = $m.DistinguishedName
+                }
+            }
+        }
+
+        # 1. AdminSDHolder "ghost" accounts (adminCount=1, not in any protected group)
+        Write-Verbose "Test-ADDomainAdminEquivalence: analyzing AdminSDHolder ghost accounts..."
+        if ($Snapshot.ContainsKey('Users')) {
+            $adminCountUsers = @($Snapshot.Users | Where-Object { $_.adminCount -eq 1 })
+            foreach ($user in $adminCountUsers) {
+                if (-not $protectedMembersDNs.Contains($user.DistinguishedName) -and $user.SamAccountName -ne 'krbtgt') {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Admin Equivalence'
+                    $finding.Issue = 'AdminSDHolder Ghost Account'
+                    $finding.Severity = 'Medium'
+                    $finding.SeverityLevel = 2
+                    $finding.AffectedObject = $user.SamAccountName
+                    $finding.Description = "User has 'adminCount=1' but is not a member of any protected group. This may indicate a leftover administrative account or a persistence backdoor where ACLs are frozen by SDProp."
+                    $finding.Impact = "The account's ACL inheritance remains disabled and its permissions frozen even though it's no longer in a protected group, which can mask a persistence mechanism or leave stale, overly-permissive rights in place unnoticed."
+                    $finding.Remediation = "Clear the 'adminCount' attribute (set to 0) and enable permission inheritance on the object. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
+                    $finding.Details = @{ UserDN = $user.DistinguishedName; Domain = $domainName }
+                    $findings += $finding
+                }
+            }
+        }
+
+        # 2. Shadow Credentials presence (Users + Computers with HasShadowCredentials)
+        Write-Verbose "Test-ADDomainAdminEquivalence: scanning for Shadow Credentials presence..."
+        foreach ($collectionKey in @('Users', 'Computers')) {
+            if (-not $Snapshot.ContainsKey($collectionKey)) { continue }
+            foreach ($obj in @($Snapshot[$collectionKey] | Where-Object { $_.HasShadowCredentials })) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Admin Equivalence'
+                $finding.Issue = 'Shadow Credentials Detected'
+                $finding.Severity = 'High'
+                $finding.SeverityLevel = 3
+                $finding.AffectedObject = $obj.Name
+                $finding.Description = "Object has 'msDS-KeyCredentialLink' populated. Unless Windows Hello for Business is deployed, this indicates a potential 'Shadow Credentials' attack (Whisker/Certipy) allowing account takeover."
+                $finding.Impact = "An attacker with this key credential can authenticate as the object via PKINIT without knowing (or changing) its password, giving silent, persistent account takeover that survives a password reset."
+                $finding.Remediation = "Investigate the 'msDS-KeyCredentialLink' attribute. If not legitimate WHfB, clear the attribute immediately. Reference: https://posts.specterops.io/shadow-credentials-abusing-key-credential-link-translation-to-en-9d8f9fb12be8"
+                $finding.Details = @{
+                    ObjectDN    = $obj.DistinguishedName
+                    ObjectClass = if ($collectionKey -eq 'Users') { 'user' } else { 'computer' }
+                    Domain      = $domainName
+                }
+                $findings += $finding
+            }
+        }
+
+        # 3. Shadow Credentials write access on computers (per-computer ACLs)
+        Write-Verbose "Test-ADDomainAdminEquivalence: checking Shadow Credentials write access on computers..."
+        $keyCredLinkGuid = '5b47d60f-6090-40b2-9f37-2a4de88f3063'
+        $spnGuid = 'f3a64788-5306-11d1-a9c5-0000f80367c1'
+        if ($Snapshot.ContainsKey('Computers')) {
+            foreach ($computer in @($Snapshot.Computers)) {
+                foreach ($ace in @($computer.Access)) {
+                    $principal = $ace.IdentityReference
+                    if ($ace.IsInherited -or $principal -in $legitimatePrincipals) { continue }
+                    if ($ace.ActiveDirectoryRights -match 'WriteProperty|GenericWrite|GenericAll') {
+                        $aceGuid = "$($ace.ObjectType)".ToLower()
+                        if ($aceGuid -eq '00000000-0000-0000-0000-000000000000' -or $aceGuid -eq $keyCredLinkGuid) {
+                            Add-SnapshotEvidence -Principal $principal -Reason "Shadow Credentials write access on computer '$($computer.Name)' - allows authentication as the computer account" -Context @{
+                                Target = 'Shadow Credentials'; ComputerName = $computer.Name; DistinguishedName = $computer.DistinguishedName
+                                OperatingSystem = $computer.OperatingSystem; Rights = "$($ace.ActiveDirectoryRights)"
+                                AttackPath = 'Write msDS-KeyCredentialLink -> Request TGT as computer -> Compromise system'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        # 4. Shadow Credentials write access + WriteSPN on privileged (adminCount=1) users
+        Write-Verbose "Test-ADDomainAdminEquivalence: checking Shadow Credentials/WriteSPN write access on privileged users..."
+        $privilegedUserAclsByDN = @{}
+        if ($Snapshot.ContainsKey('PrivilegedUserAcls')) {
+            foreach ($pua in @($Snapshot.PrivilegedUserAcls)) {
+                if ($pua -and $pua.DistinguishedName) { $privilegedUserAclsByDN[$pua.DistinguishedName] = $pua }
+            }
+        }
+        foreach ($kvp in $sensitivePrincipals.GetEnumerator()) {
+            $sam = $kvp.Key
+            $dn = $kvp.Value
+            $pua = $privilegedUserAclsByDN[$dn]
+            if (-not $pua) { continue }
+            foreach ($ace in @($pua.Access)) {
+                $principal = $ace.IdentityReference
+                if ($ace.IsInherited -or $principal -in $legitimatePrincipals) { continue }
+                if ($ace.ActiveDirectoryRights -match 'WriteProperty|GenericWrite|GenericAll') {
+                    $aceGuid = "$($ace.ObjectType)".ToLower()
+                    if ($aceGuid -eq '00000000-0000-0000-0000-000000000000' -or $aceGuid -eq $keyCredLinkGuid) {
+                        Add-SnapshotEvidence -Principal $principal -Reason "Shadow Credentials write access on privileged user '$sam' - direct account takeover" -Context @{
+                            Target = 'Shadow Credentials (Privileged User)'; Account = $sam; DistinguishedName = $dn
+                            Rights = "$($ace.ActiveDirectoryRights)"; AttackPath = 'Write msDS-KeyCredentialLink -> Authenticate as user -> Full compromise'
+                        }
+                    }
+                    if ($aceGuid -eq '00000000-0000-0000-0000-000000000000' -or $aceGuid -eq $spnGuid) {
+                        Add-SnapshotEvidence -Principal $principal -Reason "WriteSPN on privileged account '$sam' - enables targeted Kerberoasting" -Context @{
+                            Target = 'WriteSPN'; Account = $sam; DistinguishedName = $dn
+                            Rights = "$($ace.ActiveDirectoryRights)"; AttackPath = 'Add fake SPN -> Request service ticket -> Offline password cracking'
+                        }
+                    }
+                }
+            }
+        }
+
+        # 5. SID History Injection (already-collected Snapshot.Users.SIDHistory)
+        Write-Verbose "Test-ADDomainAdminEquivalence: scanning for SID History Injection..."
+        if ($Snapshot.ContainsKey('Users')) {
+            foreach ($user in @($Snapshot.Users | Where-Object { @($_.SIDHistory).Count -gt 0 })) {
+                foreach ($sidStr in @($user.SIDHistory)) {
+                    if ($domainSID -and $sidStr -like "$domainSID*") {
+                        $finding = [ADSecurityFinding]::new()
+                        $finding.Category = 'Admin Equivalence'
+                        $finding.Issue = 'SID History Injection (Same Domain)'
+                        $finding.Severity = 'Critical'
+                        $finding.SeverityLevel = 4
+                        $finding.AffectedObject = $user.SamAccountName
+                        $finding.Description = "User contains a SID from the CURRENT domain in its SID History ($sidStr). This is a definitive sign of a Golden Ticket or SID History injection attack."
+                        $finding.Impact = "The account carries privileges from the injected SID in addition to its normal group memberships, effectively granting hidden, unauthorized access that standard group-membership reviews will not reveal."
+                        $finding.Remediation = "Immediate Incident Response required. Reset the account and investigate origin. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
+                        $finding.Details = @{ UserDN = $user.DistinguishedName; InjectedSID = $sidStr; Domain = $domainName }
+                        $findings += $finding
+                    }
+                    if ($sidStr -match '-(500|512|519)$') {
+                        $finding = [ADSecurityFinding]::new()
+                        $finding.Category = 'Admin Equivalence'
+                        $finding.Issue = 'Privileged SID in History'
+                        $finding.Severity = 'Critical'
+                        $finding.SeverityLevel = 4
+                        $finding.AffectedObject = $user.SamAccountName
+                        $finding.Description = "User has a highly privileged SID ($sidStr) in their SID History. They possess Domain Admin rights regardless of group membership."
+                        $finding.Impact = "The account has effective Domain Admin (or equivalent) rights that won't show up in any group-membership audit, since the privilege comes from SID History rather than an actual group the account belongs to."
+                        $finding.Remediation = "Clear the sIDHistory attribute immediately unless this is a verified migration account. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
+                        $finding.Details = @{ UserDN = $user.DistinguishedName; PrivilegedSID = $sidStr; Domain = $domainName }
+                        $findings += $finding
+                    }
+                }
+            }
+        }
+
+        # 6. Legacy logon scripts (new scriptPath field)
+        Write-Verbose "Test-ADDomainAdminEquivalence: scanning for legacy logon script abuse..."
+        if ($Snapshot.ContainsKey('Users')) {
+            foreach ($user in @($Snapshot.Users | Where-Object { $_.scriptPath })) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Legacy Attack Vector'
+                $finding.Issue = 'Legacy Logon Script Defined'
+                $finding.Severity = 'Low'
+                $finding.SeverityLevel = 1
+                $finding.AffectedObject = $user.SamAccountName
+                $finding.Description = "User has a legacy logon script defined: '$($user.scriptPath)'. Attackers can modify this file to achieve code execution upon user logon."
+                $finding.Impact = "Anyone able to write to the referenced script file gains code execution as every user the script runs for at their next logon, a low-effort persistence and lateral-movement foothold."
+                $finding.Remediation = "Migrate to Group Policy Preferences and clear the 'scriptPath' attribute. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/logon-script-issues"
+                $finding.Details = @{ UserDN = $user.DistinguishedName; ScriptPath = $user.scriptPath; Domain = $domainName }
+                $findings += $finding
+            }
+        }
+
+        # 7. Direct control of Domain Root / AdminSDHolder / DC OU
+        Write-Verbose "Test-ADDomainAdminEquivalence: checking direct control of Domain Root/AdminSDHolder/DC OU..."
+        $controlTargets = @(
+            @{ Name = 'Domain Root'; AclKey = 'DomainRoot' },
+            @{ Name = 'AdminSDHolder'; AclKey = 'AdminSDHolder' },
+            @{ Name = 'Domain Controllers OU'; AclKey = 'DomainControllersOU' }
+        )
+        foreach ($target in $controlTargets) {
+            if (-not ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey($target.AclKey))) {
+                Write-Verbose "Test-ADDomainAdminEquivalence: snapshot has no ACLs.$($target.AclKey) entry; skipping '$($target.Name)' control check."
+                continue
+            }
+            $targetAcl = $Snapshot.ACLs[$target.AclKey]
+            foreach ($ace in @($targetAcl.Access)) {
+                $principal = $ace.IdentityReference
+                if ($ace.IsInherited -or $principal -in $legitimatePrincipals) { continue }
+                if ($ace.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite|AllExtendedRights') {
+                    Add-SnapshotEvidence -Principal $principal -Reason "$($target.Name) control via $($ace.ActiveDirectoryRights)" -Context @{
+                        Target = $target.Name; DistinguishedName = $targetAcl.DistinguishedName
+                        Rights = "$($ace.ActiveDirectoryRights)"; AccessControlType = "$($ace.AccessControlType)"
+                        Inheritance = if ($ace.IsInherited) { 'Inherited' } else { 'Explicit' }
+                    }
+                }
+            }
+        }
+
+        # 8. AdminSDHolder ACL analysis (dedicated finding, mirrors live's separate check)
+        Write-Verbose "Test-ADDomainAdminEquivalence: performing AdminSDHolder ACL analysis..."
+        if ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('AdminSDHolder')) {
+            foreach ($ace in @($Snapshot.ACLs['AdminSDHolder'].Access)) {
+                $principal = $ace.IdentityReference
+                if ($ace.IsInherited -or $principal -in $legitimatePrincipals) { continue }
+                if ($ace.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite') {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Admin Equivalence'
+                    $finding.Issue = 'AdminSDHolder ACL Compromise'
+                    $finding.Severity = 'Critical'
+                    $finding.SeverityLevel = 4
+                    $finding.AffectedObject = 'AdminSDHolder'
+                    $finding.Description = "Principal '$principal' has dangerous rights ($($ace.ActiveDirectoryRights)) on AdminSDHolder. This grants persistent Domain Admin rights via SDProp."
+                    $finding.Impact = "Because SDProp periodically re-applies AdminSDHolder's ACL to every protected (Tier-0) account and group, this principal effectively controls the DACL of every Domain Admin, Enterprise Admin, and other protected object in the domain - a single ACE here compromises the entire tier."
+                    $finding.Remediation = "Remove the ACE immediately and check all protected groups for 'adminCount=1' users. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
+                    $finding.Details = @{ Principal = $principal; Rights = "$($ace.ActiveDirectoryRights)"; Domain = $domainName }
+                    $findings += $finding
+                }
+            }
+        }
+
+        # 9. Constrained delegation to Domain Controllers
+        Write-Verbose "Test-ADDomainAdminEquivalence: checking constrained delegation to Domain Controllers..."
+        foreach ($collectionKey in @('Users', 'Computers')) {
+            if (-not $Snapshot.ContainsKey($collectionKey)) { continue }
+            foreach ($obj in @($Snapshot[$collectionKey] | Where-Object { @($_.'msDS-AllowedToDelegateTo').Count -gt 0 })) {
+                foreach ($targetSPN in @($obj.'msDS-AllowedToDelegateTo')) {
+                    $targetHost = ($targetSPN -split '/')[1]
+                    if (-not $targetHost) { continue }
+                    if ($targetHost -match ':') { $targetHost = ($targetHost -split ':')[0] }
+                    $targetHostShort = ($targetHost -split '\.')[0]
+
+                    if ($targetHostShort -in $dcNames) {
+                        Add-SnapshotEvidence -Principal $(if ($obj.SamAccountName) { $obj.SamAccountName } else { $obj.Name }) -Reason "Admin Equivalence Edge: AllowedToDelegate (Constrained Delegation) to Domain Controller $targetHostShort" -Context @{
+                            Target = $targetHostShort; SPN = $targetSPN; Attack = 'Impersonate users to DC via S4U2Proxy'
+                        }
+                    }
+
+                    if ($obj.TrustedToAuthForDelegation) {
+                        $targets = @(@($obj.'msDS-AllowedToDelegateTo') | ForEach-Object {
+                            $parts = $_ -split '/'
+                            if ($parts.Count -ge 2) { $parts[1] } else { $_ }
+                        })
+                        Add-SnapshotEvidence -Principal $obj.SamAccountName -Reason "Constrained delegation WITH protocol transition on '$($obj.SamAccountName)' - allows impersonation to sensitive services" -Context @{
+                            Target = 'Constrained Delegation + Protocol Transition'; Account = $obj.SamAccountName
+                            DistinguishedName = $obj.DistinguishedName; AllowedToDelegate = ($obj.'msDS-AllowedToDelegateTo' -join '; ')
+                            TargetHosts = ($targets -join '; '); AttackPath = 'S4U2Self allows impersonation of ANY user to delegated services without authentication'
+                        }
+                    }
+                }
+            }
+        }
+
+        # 10. RBCD on Domain Controllers (presence flag from step 24)
+        Write-Verbose "Test-ADDomainAdminEquivalence: checking RBCD on Domain Controllers..."
+        foreach ($dc in @($dcComputerDNsForRbcd | Where-Object { $_.HasRbcdConfigured })) {
+            Add-SnapshotEvidence -Principal $dc.Name -Reason "Admin Equivalence Edge: RBCD (AllowedToActOnBehalfOfOtherIdentity) configured on Domain Controller $($dc.Name)" -Context @{
+                Target = $dc.Name; Attack = 'Compromise DC via RBCD impersonation'
+            }
+        }
+
+        # 11. Dangerous built-in group membership (direct members only)
+        Write-Verbose "Test-ADDomainAdminEquivalence: checking dangerous built-in group membership..."
+        foreach ($groupName in @('Print Operators', 'Server Operators', 'Backup Operators', 'Account Operators', 'DnsAdmins')) {
+            $group = $groupsByName[$groupName]
+            if (-not $group) { continue }
+            foreach ($memberDN in @($group.Members)) {
+                $memberUser = $usersByDN[$memberDN]
+                if (-not $memberUser) { continue }
+                Add-SnapshotEvidence -Principal $memberUser.SamAccountName -Reason "Membership in dangerous built-in group '$groupName' - provides privilege escalation paths" -Context @{
+                    Group = $groupName; Member = $memberUser.SamAccountName; MemberDN = $memberDN
+                    AttackPath = switch ($groupName) {
+                        'Print Operators' { 'Load printer drivers on DCs -> Execute code as SYSTEM' }
+                        'Server Operators' { 'Modify services on DCs -> Execute code as SYSTEM' }
+                        'Backup Operators' { 'Backup SAM/SYSTEM -> Extract credentials -> Full domain compromise' }
+                        'Account Operators' { 'Modify non-protected accounts -> Add to privileged groups' }
+                        'DnsAdmins' { 'Load arbitrary DLL in DNS service on DC -> Execute as SYSTEM' }
+                        default { 'Privilege escalation via built-in group rights' }
+                    }
+                }
+            }
+        }
+
+        # Build findings from evidence (same aggregation as the live path)
+        foreach ($principal in $principalEvidence.Keys) {
+            $evidence = $principalEvidence[$principal]
+            $criticalEvidence = @($evidence | Where-Object { $_.Reason -match 'Domain Root|AdminSDHolder|DCSync|Domain Controller|Privileged account|PKI|Unconstrained|AllowedToDelegate|AllowedToAct|ReadLAPSPassword|ReadGMSAPassword|WriteGPLink|Shadow Credentials|Certificate|Constrained Delegation|RBCD|LAPS password|DNS zone|Exchange|WriteSPN' })
+
+            $severity = if ($criticalEvidence.Count -gt 0) { 'Critical' } else { 'High' }
+            $severityLevel = if ($severity -eq 'Critical') { 4 } else { 3 }
+
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Admin Equivalence'
+            $finding.Issue = 'Domain Admin Equivalent Access Detected'
+            $finding.Severity = $severity
+            $finding.SeverityLevel = $severityLevel
+            $finding.AffectedObject = $principal
+            $finding.Description = "Principal '$principal' holds permissions that provide Domain Admin-equivalent control: $($evidence.Reason -join '; ')."
+            $finding.Impact = 'Compromise of this principal would allow attackers to seize control of protected groups, the domain naming context, PKI infrastructure, or perform DCSync.'
+            $finding.Remediation = @"
+Review and remove the excessive permissions listed in the evidence:
+1. Restrict Domain Naming Context and AdminSDHolder control.
+2. Lock down AD CS/PKI containers in the Configuration Partition.
+3. Audit and remove Unconstrained Delegation from non-DC computers.
+4. Restrict control over DNSAdmins and Print Operators.
+5. Remove Constrained/RBCD delegation paths to Domain Controllers.
+6. Audit LAPS and GMSA password read permissions.
+7. Restrict WriteGPLink permissions on Domain and OU objects.
+8. Clear adminCount attribute for 'ghost' accounts.
+9. Remove Shadow Credentials if not using Windows Hello for Business.
+10. Clear SID History injection entries.
+"@
+            $finding.Details = @{ Evidence = $evidence; Domain = $domainName }
+            $findings += $finding
+        }
+
+        Write-Verbose "Admin Equivalence audit complete (snapshot mode). Found $($findings.Count) issues."
+        return $findings
+    }
 
     try {
         $domain = Get-ADDomain

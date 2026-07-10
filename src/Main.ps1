@@ -29,12 +29,15 @@ function Start-ADSecurityAudit {
         [Parameter()]
         [string]$FromSnapshot,
 
-        # As of v1.18.3: roughly half the registered tests have no
-        # -Snapshot support yet (see Invoke-ADRuleSet's help), so by
-        # default -FromSnapshot SKIPS them rather than silently falling
-        # back to live queries, to honor the "no live AD access" contract
-        # above. Pass this switch to restore the old behaviour and run
-        # those tests live alongside the offline ones.
+        # As of v1.19.0, all 27 registered tests declare -Snapshot support
+        # (fully or partially - see Invoke-ADRuleSet's help for the small
+        # number of remaining live-only sub-checks). This switch/skip
+        # mechanism remains in place for any future new test that hasn't
+        # been retrofitted yet, so by default -FromSnapshot SKIPS an
+        # unsupported test rather than silently falling back to live
+        # queries, to honor the "no live AD access" contract above. Pass
+        # this switch to restore the old behaviour and run those tests live
+        # alongside the offline ones.
         [Parameter()]
         [switch]$AllowLiveFallbackForUnsupportedTests
     )

@@ -239,6 +239,166 @@ function Get-ADTier0Principal {
     return @($tier0 | ForEach-Object { $_.PrivilegedGroupsString = ($_.PrivilegedGroups -join '; '); $_ })
 }
 
+# Recursively resolve group membership entirely in-memory against a
+# Get-ADSnapshot snapshot (introduced in v1.19.0 for the offline-parity
+# backlog, steps 18-29). This is the offline equivalent of
+# Get-ADGroupMember [-Recursive] - it never touches AD; it only walks
+# already-collected Snapshot.Groups/.Users/.Computers data.
+#
+# Detection only: in-memory graph traversal of already-collected snapshot
+# data. No exploitation, coercion, relay, or PoC code.
+function Resolve-ADSnapshotGroupMember {
+    <#
+    .SYNOPSIS
+        Resolves group membership from an in-memory Get-ADSnapshot snapshot,
+        mirroring Get-ADGroupMember [-Recursive] with no live AD access.
+    .DESCRIPTION
+        Walks $Snapshot.Groups[].Members starting from the group identified
+        by -GroupDistinguishedName. Each member DN is cross-referenced
+        against Snapshot.Groups (a nested group - recursed into unless
+        -DirectOnly is set), Snapshot.Users, and Snapshot.Computers (leaf
+        members - emitted directly; computer accounts, gMSAs, etc. can be
+        direct group members just like users).
+
+        Cycle-safe: a $seen hashtable of visited group DNs guards against a
+        group nested inside itself (directly or transitively) - AD does not
+        prevent this. A cycle simply stops recursing back into a group
+        already on the current path; it never hangs or overflows the stack.
+    .PARAMETER Snapshot
+        The snapshot hashtable (from Get-ADSnapshot / ConvertTo-ADHashtable).
+    .PARAMETER GroupDistinguishedName
+        The DistinguishedName of the group to resolve members for.
+    .PARAMETER DirectOnly
+        When set, mirrors plain Get-ADGroupMember (no -Recursive): nested
+        groups are returned as members themselves, and their own members are
+        not walked into.
+    .OUTPUTS
+        PSCustomObject[] with SamAccountName, DistinguishedName, objectClass -
+        the same useful surface Get-ADGroupMember's live output exposes to
+        every consumer in this module.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Snapshot,
+
+        [Parameter(Mandatory)]
+        [string]$GroupDistinguishedName,
+
+        [switch]$DirectOnly
+    )
+
+    $results = [System.Collections.ArrayList]::new()
+
+    if (-not $Snapshot.ContainsKey('Groups')) {
+        Write-Verbose "Resolve-ADSnapshotGroupMember: snapshot has no 'Groups' key; returning no members."
+        return @()
+    }
+
+    # Build lookup tables once per call. Groups/Users/Computers are already
+    # fully materialised in memory, so this is cheap even for a large
+    # domain - it's just a dictionary index, not a new AD query.
+    $groupsByDN = @{}
+    foreach ($g in @($Snapshot.Groups)) {
+        if ($g -and $g.DistinguishedName) {
+            $groupsByDN[$g.DistinguishedName] = $g
+        }
+    }
+    $usersByDN = @{}
+    if ($Snapshot.ContainsKey('Users')) {
+        foreach ($u in @($Snapshot.Users)) {
+            if ($u -and $u.DistinguishedName) {
+                $usersByDN[$u.DistinguishedName] = $u
+            }
+        }
+    }
+    $computersByDN = @{}
+    if ($Snapshot.ContainsKey('Computers')) {
+        foreach ($c in @($Snapshot.Computers)) {
+            if ($c -and $c.DistinguishedName) {
+                $computersByDN[$c.DistinguishedName] = $c
+            }
+        }
+    }
+
+    $seen = @{}
+
+    function Resolve-Members {
+        param([string]$GroupDN)
+
+        if ($seen.ContainsKey($GroupDN)) {
+            # Cycle detected (group nested inside itself, directly or
+            # transitively) - stop recursing into this branch rather than
+            # hang or stack-overflow. The non-cyclic members already
+            # collected on other branches are unaffected.
+            Write-Verbose "Resolve-ADSnapshotGroupMember: membership cycle detected at '$GroupDN'; not recursing further."
+            return
+        }
+        $seen[$GroupDN] = $true
+
+        $group = $groupsByDN[$GroupDN]
+        if (-not $group) {
+            return
+        }
+
+        foreach ($memberDN in @($group.Members)) {
+            if (-not $memberDN) { continue }
+
+            if ($groupsByDN.ContainsKey($memberDN)) {
+                $nestedGroup = $groupsByDN[$memberDN]
+                if ($DirectOnly) {
+                    [void]$results.Add([PSCustomObject]@{
+                        SamAccountName    = $nestedGroup.Name
+                        DistinguishedName = $nestedGroup.DistinguishedName
+                        objectClass       = 'group'
+                    })
+                }
+                else {
+                    [void]$results.Add([PSCustomObject]@{
+                        SamAccountName    = $nestedGroup.Name
+                        DistinguishedName = $nestedGroup.DistinguishedName
+                        objectClass       = 'group'
+                    })
+                    Resolve-Members -GroupDN $memberDN
+                }
+            }
+            elseif ($usersByDN.ContainsKey($memberDN)) {
+                $u = $usersByDN[$memberDN]
+                [void]$results.Add([PSCustomObject]@{
+                    SamAccountName    = $u.SamAccountName
+                    DistinguishedName = $u.DistinguishedName
+                    objectClass       = 'user'
+                })
+            }
+            elseif ($computersByDN.ContainsKey($memberDN)) {
+                $c = $computersByDN[$memberDN]
+                [void]$results.Add([PSCustomObject]@{
+                    SamAccountName    = $c.SamAccountName
+                    DistinguishedName = $c.DistinguishedName
+                    objectClass       = 'computer'
+                })
+            }
+            else {
+                # Member DN doesn't resolve against any collected
+                # collection (e.g. a foreign-security-principal or an
+                # object class this snapshot doesn't carry). Emit a
+                # best-effort record rather than silently dropping it, the
+                # same "unknown, not a hard failure" posture used elsewhere
+                # in this backlog (see step 20's ObjectClass fallback).
+                [void]$results.Add([PSCustomObject]@{
+                    SamAccountName    = $null
+                    DistinguishedName = $memberDN
+                    objectClass       = 'unknown'
+                })
+            }
+        }
+    }
+
+    Resolve-Members -GroupDN $GroupDistinguishedName
+
+    return @($results)
+}
+
 # Sanitize values for CSV export to prevent formula injection
 function ConvertTo-SafeCsvValue {
     [CmdletBinding()]

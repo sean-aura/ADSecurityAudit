@@ -1,12 +1,160 @@
 #region Replication and DCSync Audit
 
 function Test-ADReplicationSecurity {
+    <#
+    .SYNOPSIS
+        Audits DCSync-enabling replication rights and privileged-operations
+        group membership.
+    .PARAMETER Snapshot
+        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
+        the domain-root ACL check reads Snapshot.ACLs.DomainRoot, and
+        identity resolution falls back to an in-memory cross-reference
+        against Snapshot.Users/Groups/DomainControllers instead of a live
+        SID lookup (best-effort ObjectClass, same as the live code's own
+        fallback for unresolvable SIDs). Added in v1.19.0.
+    #>
     [CmdletBinding()]
-    param()
-    
+    param(
+        [Parameter()]
+        [hashtable]$Snapshot
+    )
+
     Write-Verbose "Starting replication security audit (DCSync detection)..."
     $findings = @()
-    
+
+    if ($Snapshot) {
+        Write-Verbose "Test-ADReplicationSecurity: running from snapshot (no live AD access)."
+
+        $netBIOSName = if ($Snapshot.Domain) { $Snapshot.Domain.NetBIOSName } else { $null }
+        $legitimateReplicators = @(
+            'NT AUTHORITY\SYSTEM'
+            'BUILTIN\Administrators'
+        )
+        if ($netBIOSName) {
+            $legitimateReplicators += "$netBIOSName\Domain Controllers"
+            $legitimateReplicators += "$netBIOSName\Enterprise Domain Controllers"
+            $legitimateReplicators += "$netBIOSName\Domain Admins"
+            $legitimateReplicators += "$netBIOSName\Enterprise Admins"
+            $legitimateReplicators += "$netBIOSName\Read-only Domain Controllers"
+        }
+
+        $dcsyncRights = @{
+            'DS-Replication-Get-Changes' = '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
+            'DS-Replication-Get-Changes-All' = '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'
+            'DS-Replication-Get-Changes-In-Filtered-Set' = '89e95b76-444d-4c62-991a-0facbeda640c'
+        }
+
+        # Build cross-reference lookups (by SamAccountName and SID) for the
+        # offline identity-resolution fallback.
+        $bySam = @{}
+        $bySid = @{}
+        foreach ($collectionKey in @('Users', 'Groups', 'DomainControllers')) {
+            if (-not $Snapshot.ContainsKey($collectionKey)) { continue }
+            $objectClassForCollection = switch ($collectionKey) {
+                'Users' { 'user' }
+                'Groups' { 'group' }
+                'DomainControllers' { 'computer' }
+            }
+            foreach ($obj in @($Snapshot[$collectionKey])) {
+                if (-not $obj) { continue }
+                $samName = if ($collectionKey -eq 'DomainControllers') { $obj.Name } else { $obj.SamAccountName }
+                if ($samName) { $bySam[$samName] = $objectClassForCollection }
+                if ($obj.SID) { $bySid["$($obj.SID)"] = $objectClassForCollection }
+            }
+        }
+
+        if ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('DomainRoot')) {
+            foreach ($ace in @($Snapshot.ACLs['DomainRoot'].Access)) {
+                $identityReference = $ace.IdentityReference
+
+                if ($ace.IsInherited -or $identityReference -in $legitimateReplicators) { continue }
+
+                $hasDCSyncRight = $false
+                $rightsFound = @()
+
+                if ($ace.ActiveDirectoryRights -match 'ExtendedRight' -or $ace.ActiveDirectoryRights -match 'GenericAll') {
+                    $objectTypeGuid = "$($ace.ObjectType)".ToLower()
+                    foreach ($rightName in $dcsyncRights.Keys) {
+                        if ($objectTypeGuid -eq $dcsyncRights[$rightName].ToLower() -or $ace.ActiveDirectoryRights -match 'GenericAll') {
+                            $hasDCSyncRight = $true
+                            $rightsFound += $rightName
+                        }
+                    }
+                }
+
+                if ($hasDCSyncRight) {
+                    # Offline identity resolution: cross-reference the
+                    # identity string directly against Snapshot collections
+                    # (strip a NetBIOS-domain prefix if present) or SID -
+                    # no live SID-translate/Get-ADObject lookup available.
+                    $principalClass = 'Unknown'
+                    $bareIdentity = if ($identityReference -match '\\') { ($identityReference -split '\\', 2)[1] } else { $identityReference }
+                    if ($identityReference -match '^S-1-' -and $bySid.ContainsKey($identityReference)) {
+                        $principalClass = $bySid[$identityReference]
+                    }
+                    elseif ($bySam.ContainsKey($bareIdentity)) {
+                        $principalClass = $bySam[$bareIdentity]
+                    }
+
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Replication Security'
+                    $finding.Issue = 'Unauthorized DCSync Permissions'
+                    $finding.Severity = 'Critical'
+                    $finding.SeverityLevel = 4
+                    $finding.AffectedObject = $identityReference
+                    $finding.Description = "Non-standard principal '$identityReference' has DCSync replication rights on the domain."
+                    $finding.Impact = "This principal can perform DCSync attacks to retrieve password hashes for any account, including KRBTGT and Domain Admins. Attackers can then create Golden Tickets for persistent, unrestricted domain access."
+                    $finding.Remediation = "Remove replication rights immediately: `$acl = Get-Acl 'AD:\`$domainDN'; Find and remove the ACE for '$identityReference'; Set-Acl -Path 'AD:\`$domainDN' -AclObject `$acl"
+                    $finding.Details = @{
+                        Identity = $identityReference
+                        ObjectClass = $principalClass
+                        ActiveDirectoryRights = $ace.ActiveDirectoryRights
+                        Rights = $rightsFound -join ', '
+                        ObjectType = $ace.ObjectType
+                    }
+                    $findings += $finding
+                }
+            }
+        }
+        else {
+            Write-Verbose "Test-ADReplicationSecurity: snapshot has no ACLs.DomainRoot entry; skipping DCSync ACL check."
+        }
+
+        # Suspicious-group-membership check: direct members only, matching
+        # the live code's non-recursive Get-ADGroupMember.
+        if ($Snapshot.ContainsKey('Groups')) {
+            $groupsByName = @{}
+            foreach ($g in @($Snapshot.Groups)) {
+                if ($g -and $g.Name) { $groupsByName[$g.Name] = $g }
+            }
+            $suspiciousGroups = @('Backup Operators', 'Account Operators', 'Server Operators')
+            foreach ($groupName in $suspiciousGroups) {
+                $group = $groupsByName[$groupName]
+                if (-not $group) { continue }
+                $members = @($group.Members)
+                if ($members.Count -gt 0) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Replication Security'
+                    $finding.Issue = "Membership in Privileged Operations Group"
+                    $finding.Severity = 'Medium'
+                    $finding.SeverityLevel = 2
+                    $finding.AffectedObject = $groupName
+                    $finding.Description = "Group '$groupName' has $($members.Count) member(s). These groups have powerful rights that could be leveraged for privilege escalation or data exfiltration."
+                    $finding.Impact = "Members of this group may have rights that can be leveraged for privilege escalation or data exfiltration."
+                    $finding.Remediation = "Review membership and remove unnecessary accounts. Members: $($members -join ', ')"
+                    $finding.Details = @{
+                        GroupDN = $group.DistinguishedName
+                        Members = $members
+                    }
+                    $findings += $finding
+                }
+            }
+        }
+
+        Write-Verbose "Replication security audit complete (snapshot mode). Found $($findings.Count) issues."
+        return $findings
+    }
+
     try {
         $domain = Get-ADDomain
         $domainDN = $domain.DistinguishedName
