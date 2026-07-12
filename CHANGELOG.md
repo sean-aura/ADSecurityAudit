@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.0]
+### Changed
+- Unified the static HTML report and the JSON-upload dashboard onto one shared, professional
+  visual design - a single light theme (no dark/light toggle), consistent severity coloring,
+  and a system font stack (removes the dashboard's Google Fonts CDN dependency).
+- Reordered the static report so the executive risk picture and a new prioritized remediation
+  list appear before technical detail: Executive Summary -> Prioritized Remediation Order ->
+  Risk Score & Maturity -> Control Paths -> severity-grouped Findings.
+- Removed every `linear-gradient` from status/summary cards and the score gauge in favor of
+  flat color + accent border, for reliable grayscale/print legibility.
+### Added
+- Inline hand-built SVG visuals in the static report: a risk-score ring gauge, per-category
+  risk bars, and a simplified source-to-Tier-0 control-path diagram. No 3rd-party chart
+  library or CDN asset is used anywhere in the report.
+- A "Prioritized Remediation Order" section: the top findings ranked worst-first by severity
+  then by category risk score, each linking straight to its full evidence further down the
+  report. Presentation-only - it sorts existing fields and adds no new scoring logic.
+- The dashboard (`ui/`) now renders Risk Score, ANSSI maturity, and MITRE ATT&CK summary,
+  none of which it previously displayed.
+### Fixed
+- The dashboard's sample data and rendering code were out of sync with the current
+  `ADSecurityFinding`/`Get-ADRiskScore` contract (a stale pre-AD-only-scope Entra field,
+  and missing severity-level/ANSSI/MITRE fields); both are now aligned with the current,
+  AD-only schema.
+
 ## [1.19.1]
 ### Fixed
 This release fixes bugs found immediately after v1.19.0 shipped, all

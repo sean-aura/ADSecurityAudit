@@ -4,12 +4,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AD Security Audit Dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap"
-      rel="stylesheet"
-    />
     <link rel="stylesheet" href="./assets/styles.css" />
   </head>
   <body>
@@ -158,6 +152,66 @@
             <span id="total-count" class="pill">0 findings</span>
             <span id="last-updated" class="pill">Waiting for data…</span>
           </div>
+        </section>
+
+        <section class="panel" id="priority-panel" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Prioritized remediation order</p>
+              <h2>Where to start</h2>
+              <p class="muted">Findings ranked worst-first by severity, then by how risky their category is overall. A starting work order, not a replacement for reviewing every finding.</p>
+            </div>
+          </div>
+          <ol id="priority-list" class="priority-list"></ol>
+        </section>
+
+        <section class="panel" id="risk-score-panel" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Risk score &amp; maturity</p>
+              <h2>Global risk score, ANSSI maturity, and MITRE ATT&amp;CK coverage</h2>
+              <p class="muted">Higher score is worse. The global score equals the worst category's score - an environment is only as strong as its weakest risk area.</p>
+            </div>
+          </div>
+          <div class="scoring-grid">
+            <div class="score-panel">
+              <h3>Global Risk Score</h3>
+              <div class="gauge-wrap">
+                <div id="risk-gauge"></div>
+                <div class="score-meta">
+                  <p id="risk-score-meta"></p>
+                </div>
+              </div>
+            </div>
+            <div class="maturity-panel">
+              <h3>ANSSI Maturity Level</h3>
+              <div class="maturity-head" id="maturity-head">- <small>/ 5</small></div>
+              <p id="maturity-label" style="color:var(--ink); margin: 6px 0 4px;"></p>
+              <div class="maturity-stepper" id="maturity-stepper"></div>
+            </div>
+          </div>
+          <h3>Risk by Category</h3>
+          <div class="category-bars-svg" id="category-bars-svg">No category scores yet.</div>
+          <div id="mitre-section" hidden>
+            <h3>&#128506; MITRE ATT&amp;CK Technique Summary</h3>
+            <div style="overflow-x: auto;">
+              <table class="mitre-table">
+                <thead><tr><th>Technique</th><th>Name</th><th>Findings</th></tr></thead>
+                <tbody id="mitre-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" id="control-paths-panel" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Attack paths</p>
+              <h2>Control Paths to Tier-0</h2>
+              <p class="muted">Chained group-membership, ACL, and ownership relationships that let a non-privileged principal reach a Tier-0 object. No single hop here need look critical on its own.</p>
+            </div>
+          </div>
+          <div id="control-paths-list"></div>
         </section>
 
         <section class="panel">
