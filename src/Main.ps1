@@ -43,6 +43,11 @@ function Start-ADSecurityAudit {
     )
     
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+
+    # Reset the offline-skip-note tracker (v1.19.1) so notes from a
+    # previous Start-ADSecurityAudit call in the same PowerShell session
+    # never leak into this run's HTML report.
+    Reset-ADOfflineSkipNotes
     
     if (-not (Test-Path $ExportPath)) {
         try {
@@ -126,6 +131,13 @@ function Start-ADSecurityAudit {
             $allFindings = @(Invoke-ADRuleSet -Snapshot $snapshot -IncludeTests $testsToRun `
                 -InactiveDaysThreshold $InactiveDaysThreshold -PasswordAgeThreshold $PasswordAgeThreshold `
                 -AllowLiveFallbackForUnsupportedTests:$AllowLiveFallbackForUnsupportedTests)
+
+            $skipNotesForConsole = @(Get-ADOfflineSkipNotes)
+            if ($skipNotesForConsole.Count -gt 0) {
+                $stillLiveCountForConsole = @($skipNotesForConsole | Where-Object { $_.Mode -eq 'StillLive' }).Count
+                $skippedCountForConsole = $skipNotesForConsole.Count - $stillLiveCountForConsole
+                Write-Host "Offline coverage note: $skippedCountForConsole sub-check(s) skipped, $stillLiveCountForConsole sub-check(s) still ran live - see the HTML report's 'Offline Mode Coverage Notes' section for the full breakdown.`n" -ForegroundColor Yellow
+            }
 
             if ($IncludePrivilegedUsersReport) {
                 Write-Warning "IncludePrivilegedUsersReport requires live AD access and is not available in -FromSnapshot mode; skipping."
@@ -369,7 +381,8 @@ function Start-ADSecurityAudit {
                     try { [datetime]$snapshot.CollectedDate } catch { $null }
                 }
             }
-            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunMode $reportRunMode -SnapshotCollectedDate $reportSnapshotCollectedDate
+            $offlineSkipNotes = @(Get-ADOfflineSkipNotes)
+            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunMode $reportRunMode -SnapshotCollectedDate $reportSnapshotCollectedDate -OfflineSkipNotes $offlineSkipNotes
             Write-Host "HTML report exported to: $htmlPath" -ForegroundColor Green
             
             # Export to CSV with formula injection protection

@@ -89,6 +89,8 @@ function Test-ADCoercionAndRelayExposure {
     # are only attempted when this function is called WITHOUT -Snapshot.
     if ($Snapshot) {
         Write-Verbose "Test-ADCoercionAndRelayExposure: -Snapshot supplied; skipping live per-DC service/registry probes (offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'CoercionAndRelayExposure' -Check 'Per-DC Spooler/WebClient service state and LDAP-signing registry probes' `
+            -Reason 'Real-time per-DC service/registry state with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
         return $findings
     }
 

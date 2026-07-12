@@ -290,6 +290,8 @@ function Test-ADDomainHardeningFlags {
     }
     else {
         Write-Verbose "Test-ADDomainHardeningFlags: -Snapshot supplied; skipping live anonymous-bind network probe (offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'DomainHardeningFlags' -Check 'Anonymous LDAP bind probe' `
+            -Reason 'A live network probe against a DC, not an AD attribute. Run this check live (without -Snapshot) if you need this coverage.'
     }
 
     Write-Verbose "Domain Hardening Flags audit complete. Found $($findings.Count) issues."

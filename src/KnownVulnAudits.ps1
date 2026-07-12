@@ -247,6 +247,8 @@ function Test-ADKnownDCVulnerabilities {
 
     if ($Snapshot) {
         Write-Verbose "Test-ADKnownDCVulnerabilities: -Snapshot supplied; skipping (OS build/hotfix/service state has no snapshot equivalent and offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'KnownDCVulnerabilities' -Check 'Entire test: per-DC OS build/hotfix/Spooler service state' `
+            -Reason 'Real-time per-DC machine state (OS build, installed hotfix level, service state) with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
         return $findings
     }
 

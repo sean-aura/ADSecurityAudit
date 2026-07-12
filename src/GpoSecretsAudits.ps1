@@ -89,17 +89,17 @@ function Test-ADGpoDeployedSecrets {
              Authentication disabled, unencrypted RDP security layer
              allowed).
     .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        the list of GPOs to enumerate is taken from Snapshot.GPOs (Id only)
-        instead of a live Get-GPO -All call. Every other read in this
-        function is a SYSVOL/registry.pol read against a live file share
-        and is NOT part of the current snapshot schema, so this audit still
-        performs live, read-only I/O even when -Snapshot is supplied - it
-        is treated the same as the other live-only sub-checks elsewhere in
-        the module (e.g. Test-ADLegacyAuthSurface, the DnsSecurity
-        zone-level checks). No live AD/network access is skipped merely by
-        passing -Snapshot; this is documented for -FromSnapshot users so
-        the offline-mode expectation is explicit.
+        Optional snapshot hashtable (from Get-ADSnapshot). Every check in
+        this function is a SYSVOL/registry.pol read against a live file
+        share, with no possible snapshot representation - so when -Snapshot
+        is supplied, this entire test is SKIPPED (with a Write-Warning),
+        performing zero live AD/network access, consistent with the other
+        entirely-live-only tests in this module (e.g. Test-ADLegacyAuthSurface,
+        Test-ADKnownDCVulnerabilities). Fixed in v1.19.1: prior to this it
+        still performed live SYSVOL reads even with -Snapshot supplied
+        (only the GPO *list* itself came from the snapshot) - unacceptable
+        for a genuinely offline analysis where no DC/file-share path may
+        even exist. Run this test live (without -Snapshot) for this coverage.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
@@ -112,23 +112,29 @@ function Test-ADGpoDeployedSecrets {
     Write-Verbose "Starting GPO-Deployed Secrets & Insecure Settings audit..."
     $findings = @()
 
+    # Fixed in v1.19.1: this used to still perform live SYSVOL file-share
+    # reads even when -Snapshot was supplied (only the GPO *list* came from
+    # the snapshot). For a genuinely offline analysis - e.g. re-analysing a
+    # JSON snapshot on a machine with no network path to any DC at all -
+    # that is not acceptable: this function's entire purpose is reading
+    # SYSVOL file content, which has no snapshot representation, so under
+    # -Snapshot it now skips entirely rather than attempt any connection.
+    if ($Snapshot) {
+        Write-Warning "Test-ADGpoDeployedSecrets: -Snapshot supplied; skipping entirely (this test's entire purpose is reading SYSVOL file content - GPP cpassword, deployed scripts, GptTmpl.inf - which has no AD-schema/snapshot equivalent; offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'GpoDeployedSecrets' -Check 'Entire test: SYSVOL policy file content (GPP cpassword, deployed scripts, GptTmpl.inf)' `
+            -Reason 'This check scans file content, not AD attributes - there is no snapshot representation possible. Run this check live (without -Snapshot) if you need this coverage.'
+        return $findings
+    }
+
     # -------------------------------------------------------------------
     # Resolve the list of GPOs (id + display name) to enumerate.
     # -------------------------------------------------------------------
     $gpoList = @()
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('GPOs')) {
-            Write-Verbose "Test-ADGpoDeployedSecrets: using snapshot GPO list for enumeration (SYSVOL reads are still live)."
-            $gpoList = @($Snapshot.GPOs | ForEach-Object {
-                [PSCustomObject]@{ Id = $_.Id; DisplayName = $_.DisplayName }
-            })
-        }
-        else {
-            Import-Module GroupPolicy -ErrorAction Stop
-            $gpoList = @(Invoke-ADQueryWithRetry -OperationName "Enumerate GPOs" -Query {
-                Get-GPO -All | Select-Object Id, DisplayName
-            })
-        }
+        Import-Module GroupPolicy -ErrorAction Stop
+        $gpoList = @(Invoke-ADQueryWithRetry -OperationName "Enumerate GPOs" -Query {
+            Get-GPO -All | Select-Object Id, DisplayName
+        })
     }
     catch {
         Write-Warning "Test-ADGpoDeployedSecrets: failed to enumerate GPOs: $_"

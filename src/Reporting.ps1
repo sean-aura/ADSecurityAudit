@@ -36,7 +36,18 @@ function Export-ADSecurityReportHTML {
         # alongside the report-generation date so a reader can see how
         # stale the underlying data is relative to when the report was run.
         [Parameter()]
-        [Nullable[datetime]]$SnapshotCollectedDate = $null
+        [Nullable[datetime]]$SnapshotCollectedDate = $null,
+
+        # Added in v1.19.1: the offline-skip-note list (Get-ADOfflineSkipNotes)
+        # collected during this run. Each entry is a specific sub-check that
+        # either did not run at all under -Snapshot (Mode='Skipped') or ran
+        # anyway over a live connection because it has no possible snapshot
+        # representation (Mode='StillLive'). Rendered as an explicit
+        # "Offline Mode Coverage Notes" section so a reader doesn't have to
+        # go dig through the run's transcript to know what this specific
+        # report does and doesn't cover.
+        [Parameter()]
+        [array]$OfflineSkipNotes = @()
     )
     
     $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -171,11 +182,38 @@ function Export-ADSecurityReportHTML {
             <p>This report contains sensitive security information about your Active Directory environment. Handle with care and share only with authorized personnel.</p>
         </div>
 $(if ($isOfflineRun) {
+    $stillLiveNotes = @($OfflineSkipNotes | Where-Object { $_.Mode -eq 'StillLive' })
+    $liveConnectionClaim = if ($stillLiveNotes.Count -gt 0) {
+        "$($stillLiveNotes.Count) specific sub-check(s) still performed live, read-only AD/network I/O during this run (listed below) - everything else came from the snapshot with no live connections."
+    }
+    else {
+        "no live Active Directory or Domain Controller connections were made during this run."
+    }
 @"
         <div class="warning-box" style="background:#fdf2e3; border-color:#e67e22;">
             <p><strong>&#128190; OFFLINE / SNAPSHOT-BASED REPORT</strong></p>
-            <p>This report was generated with <code>-FromSnapshot</code> from a previously collected snapshot - no live Active Directory or Domain Controller connections were made during this run.$(if ($snapshotCollectedDateText) { " The underlying snapshot data was collected on <strong>$snapshotCollectedDateText</strong>" }) Findings reflect the environment's state at collection time and may not include changes made since then. Some checks that have no offline/snapshot support are skipped entirely in this mode (see the run log for the skipped-test list) - for a like-for-like comparison against a live run, cross-reference which tests actually executed.</p>
+            <p>This report was generated with <code>-FromSnapshot</code> from a previously collected snapshot - $liveConnectionClaim$(if ($snapshotCollectedDateText) { " The underlying snapshot data was collected on <strong>$snapshotCollectedDateText</strong>." }) Findings reflect the environment's state at collection time and may not include changes made since then.</p>
         </div>
+$(if (@($OfflineSkipNotes).Count -gt 0) {
+@"
+        <div class="warning-box" style="background:#fdf6e3; border-color:#d4ac0d;">
+            <p><strong>&#128269; OFFLINE MODE COVERAGE NOTES</strong> - $(@($OfflineSkipNotes).Count) sub-check(s) below were not evaluated from the snapshot, or ran live anyway. This is why an offline report can show different findings than a live run of the same audit against the same domain state.</p>
+            <table class="mitre-table">
+                <tr><th>Test</th><th>Sub-Check Not Covered From Snapshot</th><th>Status</th><th>Why</th></tr>
+$(($OfflineSkipNotes | Sort-Object Test, Check | ForEach-Object {
+    $statusBadge = if ($_.Mode -eq 'StillLive') {
+        '<span style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.85em;">STILL LIVE</span>'
+    }
+    else {
+        '<span style="background:#7f8c8d;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.85em;">SKIPPED</span>'
+    }
+    "                <tr><td>$(HtmlEncode $_.Test)</td><td>$(HtmlEncode $_.Check)</td><td>$statusBadge</td><td>$(HtmlEncode $_.Reason)</td></tr>"
+}) -join "`n")
+            </table>
+            <p style="margin-top:10px; font-size:0.9em; color:#7f8c8d;">"SKIPPED" sub-checks contribute zero findings in this report - a like-for-like comparison against a live run must account for this coverage gap, not just the finding counts. "STILL LIVE" sub-checks ran and can contribute findings, but did so over a live connection despite <code>-FromSnapshot</code>.</p>
+        </div>
+"@
+})
 "@
 })
         

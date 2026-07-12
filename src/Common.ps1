@@ -195,6 +195,15 @@ function Get-ADTier0Principal {
         }
         return @($tier0 | ForEach-Object { $_.PrivilegedGroupsString = ($_.PrivilegedGroups -join '; '); $_ })
     }
+    elseif ($Snapshot) {
+        # Fixed in v1.19.1: a -Snapshot was supplied but has no 'Groups' key
+        # (e.g. a malformed or very old snapshot file). This used to fall
+        # through to the live loop below unconditionally - not acceptable
+        # for a genuinely offline analysis. Return an empty Tier-0 set
+        # instead of making any live call.
+        Write-Verbose "Get-ADTier0Principal: -Snapshot supplied but has no 'Groups' key; returning an empty Tier-0 set (no live AD access performed)."
+        return @()
+    }
 
     foreach ($groupName in $Script:ProtectedGroups) {
         try {
@@ -397,6 +406,83 @@ function Resolve-ADSnapshotGroupMember {
     Resolve-Members -GroupDN $GroupDistinguishedName
 
     return @($results)
+}
+
+# --- v1.19.1: offline-analysis skip tracking ---
+# When a test running under -Snapshot skips a sub-check that has no
+# AD-schema/snapshot equivalent (SYSVOL content, live network probes,
+# per-DC remoting, etc.), it records that fact here instead of just
+# writing a Write-Warning that only shows up in the console transcript.
+# Start-ADSecurityAudit resets this list at the start of every run and
+# threads it through to Export-ADSecurityReportHTML so the HTML report
+# itself can show "what wasn't scanned and why", not just the log.
+$Script:ADOfflineSkipNotes = [System.Collections.ArrayList]::new()
+
+function Reset-ADOfflineSkipNotes {
+    <#
+    .SYNOPSIS
+        Clears the offline-skip-note list. Called once at the start of
+        every Start-ADSecurityAudit run (both live and -FromSnapshot) so
+        notes never leak between runs in the same PowerShell session.
+    #>
+    [CmdletBinding()]
+    param()
+    $Script:ADOfflineSkipNotes = [System.Collections.ArrayList]::new()
+}
+
+function Add-ADOfflineSkipNote {
+    <#
+    .SYNOPSIS
+        Records one live-only sub-check for the HTML report's "Offline
+        Mode Coverage Notes" section.
+    .PARAMETER Test
+        The registry name of the test (e.g. 'GroupPolicies'), matching
+        $Script:ADTestFunctionRegistry's keys / Invoke-ADRuleSet's -IncludeTests.
+    .PARAMETER Check
+        Short name of the specific sub-check (e.g. 'SYSVOL file-share ACL').
+    .PARAMETER Reason
+        Why it can't run offline (no AD-schema/snapshot equivalent, live
+        network probe, etc.) - shown verbatim in the report.
+    .PARAMETER Mode
+        'Skipped' (default) - the sub-check did not run at all under
+        -Snapshot, so this coverage is simply missing from the results.
+        'StillLive' - the sub-check ran anyway, over a live network/AD
+        connection, because it has no representation in a snapshot at all
+        (e.g. reading file content). Distinguished from 'Skipped' because
+        it's the opposite finding-coverage story: coverage IS present, but
+        -Snapshot did not actually avoid contacting a DC for this one check.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Test,
+
+        [Parameter(Mandatory)]
+        [string]$Check,
+
+        [Parameter(Mandatory)]
+        [string]$Reason,
+
+        [Parameter()]
+        [ValidateSet('Skipped', 'StillLive')]
+        [string]$Mode = 'Skipped'
+    )
+    [void]$Script:ADOfflineSkipNotes.Add([PSCustomObject]@{
+        Test   = $Test
+        Check  = $Check
+        Reason = $Reason
+        Mode   = $Mode
+    })
+}
+
+function Get-ADOfflineSkipNotes {
+    <#
+    .SYNOPSIS
+        Returns the skip notes recorded so far in this run.
+    #>
+    [CmdletBinding()]
+    param()
+    return @($Script:ADOfflineSkipNotes)
 }
 
 # Sanitize values for CSV export to prevent formula injection

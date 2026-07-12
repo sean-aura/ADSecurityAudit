@@ -8,10 +8,13 @@ function Test-ADGroupPolicies {
         Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
         the over-permissioned-GPO, DC-OU-linked-weak-permissions, and
         unlinked-GPO checks run from Snapshot.GPOs (.Permissions/.LinkedTo).
-        The SYSVOL file-share ACL check has no AD-schema equivalent and
-        always runs live, even when -Snapshot is supplied (consistent with
-        Test-ADCoercionAndRelayExposure's/Test-ADLegacyAuthSurface's
-        live-only sub-checks). Added in v1.19.0.
+        The SYSVOL file-share ACL check has no AD-schema equivalent and is
+        SKIPPED entirely under -Snapshot (with a Write-Warning), consistent
+        with Test-ADCoercionAndRelayExposure's/Test-ADLegacyAuthSurface's
+        live-only sub-checks - it never falls back to live I/O. Added in
+        v1.19.0; the skip-instead-of-live-fallback behavior was corrected
+        in v1.19.1 (it briefly fell back to a live SYSVOL read in v1.19.0,
+        which contradicted -Snapshot's "no live AD access" contract).
     #>
     [CmdletBinding()]
     param(
@@ -121,58 +124,21 @@ function Test-ADGroupPolicies {
             Write-Verbose "Test-ADGroupPolicies: snapshot has no 'GPOs' key; skipping GPO permission/link checks."
         }
 
-        # SYSVOL file-share ACL check has no AD-schema equivalent - it stays
-        # live even under -Snapshot, the same live-only-sub-check pattern
-        # already used by Test-ADCoercionAndRelayExposure/Test-ADLegacyAuthSurface.
-        Write-Warning "Test-ADGroupPolicies: -Snapshot supplied; the SYSVOL file-share ACL check has no AD-schema equivalent and is running live (this is the one live-only sub-check in this module)."
-        try {
-            $domain = Get-ADDomain
-            $sysvolPath = "\\$($domain.DNSRoot)\SYSVOL\$($domain.DNSRoot)"
+        # SYSVOL file-share ACL check has no AD-schema equivalent. Fixed in
+        # v1.19.1: this used to fall back to a live SMB read against SYSVOL,
+        # which contradicted -Snapshot's "no live AD access" contract and
+        # was inconsistent with how every other partially-offline module in
+        # this codebase (Test-ADCoercionAndRelayExposure,
+        # Test-ADLegacyAuthSurface, Test-ADDnsSecurity,
+        # Test-ADKerberosHardening, Test-ADKnownDCVulnerabilities) actually
+        # handles a live-only sub-check under -Snapshot: skip it entirely
+        # and say so, never fall back to live I/O. This check is now
+        # skipped the same way.
+        Write-Warning "Test-ADGroupPolicies: -Snapshot supplied; skipping the SYSVOL file-share ACL check (no AD-schema equivalent; offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'GroupPolicies' -Check 'SYSVOL file-share ACL permissions' `
+            -Reason 'No AD-schema equivalent - a file-share ACL is not an AD attribute. Run this check live (without -Snapshot) if you need this coverage.'
 
-            if (Test-Path $sysvolPath) {
-                try {
-                    $sysvolAcl = Get-Acl $sysvolPath -ErrorAction Stop
-                    foreach ($ace in $sysvolAcl.Access) {
-                        if ($ace.FileSystemRights -match 'Write|Modify|FullControl' -and
-                            $ace.AccessControlType -eq 'Allow' -and
-                            $ace.IdentityReference -notmatch 'SYSTEM' -and
-                            $ace.IdentityReference -notmatch 'Administrators' -and
-                            $ace.IdentityReference -notmatch 'Domain Admins' -and
-                            $ace.IdentityReference -notmatch 'Enterprise Admins' -and
-                            $ace.IdentityReference -notmatch 'CREATOR OWNER') {
-
-                            $finding = [ADSecurityFinding]::new()
-                            $finding.Category = 'Group Policy'
-                            $finding.Issue = 'Insecure SYSVOL Permissions'
-                            $finding.Severity = 'Critical'
-                            $finding.SeverityLevel = 4
-                            $finding.AffectedObject = "SYSVOL - $($ace.IdentityReference)"
-                            $finding.Description = "SYSVOL has write permissions granted to '$($ace.IdentityReference)'."
-                            $finding.Impact = "Attackers can tamper with GPO files, scripts, and policies that apply to all domain members, leading to widespread compromise."
-                            $finding.Remediation = "Restrict SYSVOL permissions. Remove write access for non-admin principals. Only Domain Admins and SYSTEM should have write access."
-                            $finding.Details = @{
-                                Path = $sysvolPath
-                                Identity = $ace.IdentityReference
-                                FileSystemRights = $ace.FileSystemRights
-                                AccessControlType = $ace.AccessControlType
-                            }
-                            $findings += $finding
-                        }
-                    }
-                }
-                catch {
-                    Write-Warning "Could not access SYSVOL ACL: $_"
-                }
-            }
-            else {
-                Write-Warning "SYSVOL path not accessible at expected location: $sysvolPath"
-            }
-        }
-        catch {
-            Write-Warning "Test-ADGroupPolicies: could not run the live-only SYSVOL check under -Snapshot: $_"
-        }
-
-        Write-Verbose "Group Policy audit complete (snapshot mode, SYSVOL check live). Found $($findings.Count) issues."
+        Write-Verbose "Group Policy audit complete (snapshot mode, SYSVOL check skipped). Found $($findings.Count) issues."
         return $findings
     }
 

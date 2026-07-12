@@ -877,10 +877,52 @@ function Get-ADSnapshot {
                 }
             })
         }
+
+        # --- v1.19.1 ---
+        # NTAuth/AIA/Root store cACertificate blobs, for Test-ADCSExtended's
+        # ROCA/weak-signature sweep. Same data shape and risk profile as
+        # CertificateAuthorities.cACertificate above (public certificate
+        # bytes, not a key or secret) - just three more fixed, bounded
+        # targets (a single object plus its handful of immediate children
+        # each), not a domain-wide sweep.
+        function Get-ADSnapshotCertBlobSource {
+            param([string]$ContainerDN)
+            $blobs = [System.Collections.ArrayList]::new()
+            try {
+                $obj = Get-ADObject -Identity $ContainerDN -Properties cACertificate, cn -ErrorAction Stop
+                foreach ($b in @($obj.cACertificate)) {
+                    if ($b) { [void]$blobs.Add([PSCustomObject]@{ Source = $obj.Name; Bytes = $b }) }
+                }
+            }
+            catch {
+                Write-Verbose "Get-ADSnapshot: could not read '$ContainerDN' directly: $_"
+            }
+            try {
+                $children = Get-ADObject -SearchBase $ContainerDN -SearchScope OneLevel -Filter * -Properties cACertificate, cn -ErrorAction Stop
+                foreach ($child in $children) {
+                    foreach ($b in @($child.cACertificate)) {
+                        if ($b) { [void]$blobs.Add([PSCustomObject]@{ Source = $child.Name; Bytes = $b }) }
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Get-ADSnapshot: could not enumerate children of '$ContainerDN': $_"
+            }
+            return @($blobs)
+        }
+
+        if ($snapshot.ADCS.Installed) {
+            $snapshot.ADCS.NTAuthCertificates = @(Get-ADSnapshotCertBlobSource -ContainerDN "CN=NTAuthCertificates,$pkiContainer")
+            $snapshot.ADCS.AIACertificates = @(Get-ADSnapshotCertBlobSource -ContainerDN "CN=AIA,$pkiContainer")
+            $snapshot.ADCS.RootCACertificates = @(Get-ADSnapshotCertBlobSource -ContainerDN "CN=Certification Authorities,$pkiContainer")
+        }
     }
     catch {
         Write-Verbose "Get-ADSnapshot: AD CS not found or not accessible, recording as not installed: $_"
-        $snapshot.ADCS = @{ Installed = $false; CertificateTemplates = @(); CertificateAuthorities = @() }
+        $snapshot.ADCS = @{
+            Installed = $false; CertificateTemplates = @(); CertificateAuthorities = @()
+            NTAuthCertificates = @(); AIACertificates = @(); RootCACertificates = @()
+        }
     }
 
     # --- DNS zones (optional; AD-integrated zones live in an app partition) ---
@@ -1092,6 +1134,8 @@ function Invoke-ADRuleSet {
         }
         else {
             Write-Warning "Invoke-ADRuleSet: '$testKey' ($functionName) has no -Snapshot parameter yet; skipping (no live AD access performed). Pass -AllowLiveFallbackForUnsupportedTests to run it live instead."
+            Add-ADOfflineSkipNote -Test $testKey -Check "Entire test: $functionName" `
+                -Reason 'This test has not yet been retrofitted with -Snapshot support. Pass -AllowLiveFallbackForUnsupportedTests to run it live instead.'
             [void]$skippedTests.Add($testKey)
             continue
         }

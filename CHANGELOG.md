@@ -5,6 +5,170 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.1]
+### Fixed
+This release fixes bugs found immediately after v1.19.0 shipped, all
+centered on one theme: `-FromSnapshot`'s "no live AD access" contract
+wasn't actually being honored everywhere it claimed to be. Investigated
+via a real audit transcript and a full-codebase sweep, and hardened until
+`-Snapshot` performs **literally zero outbound connections**, for
+environments where the Domain Controller genuinely is not reachable from
+the analysis machine - the whole point of re-analysing a JSON snapshot.
+
+- **`Test-ADControlPaths` crash on every run**: `Add-ADControlPathEdge`
+  declared `-EdgeList` as `Mandatory` on an `ArrayList`. PowerShell's
+  parameter binder rejects a `Mandatory` argument that is an *empty*
+  collection, so the very first edge ever added to a freshly-built graph
+  threw `Cannot bind argument to parameter 'EdgeList' because it is an
+  empty collection.` Fixed by adding `[AllowEmptyCollection()]`, matching
+  the `[AllowEmptyString()]` already applied to `-From`/`-To` on the same
+  function. The downstream empty-graph handling in `Test-ADControlPaths`
+  (`if (-not $graph.Edges -or $graph.Edges.Count -eq 0 ...)`) was already
+  correct and needed no change.
+
+- **Two v1.19.0 checks silently contacted live Domain Controllers under
+  `-Snapshot`**: `Test-ADGroupPolicies`' SYSVOL file-share ACL check and
+  `Test-AuditPolicyConfiguration`'s per-DC `auditpol` check fell back to
+  live SMB (`Get-Acl` against `\\<dnsroot>\SYSVOL\...`) and
+  `Invoke-Command -ComputerName <dc>` respectively - identified from a real
+  `-FromSnapshot` run's transcript, where both fired a `WARNING` and went
+  on to produce live findings even though the run was announced as
+  `Offline mode: ... (no live AD access)`. The v1.19.0 doc comments for
+  both claimed this matched "the same live-only-sub-check pattern already
+  used by `Test-ADCoercionAndRelayExposure`/`Test-ADLegacyAuthSurface`" -
+  but that precedent is actually to **skip** an unrepresentable live-only
+  sub-check entirely, never fall back to live I/O. Both now skip with a
+  `Write-Warning` instead.
+
+- **Three more checks had the same problem, once we went looking harder**:
+  - `Test-ADGpoDeployedSecrets` - previously still read SYSVOL file content
+    live even when the GPO list itself came from the snapshot. Now skips
+    entirely under `-Snapshot`. (Its underlying limitation is genuine and
+    unavoidable - it scans SYSVOL file *content*, GPP `cpassword` and
+    deployed scripts, which has no AD attribute or snapshot representation
+    at all - but under `-Snapshot` it must skip, not silently go live.)
+  - `Test-ADRodcSecurity` - previously still performed one live
+    `Get-ADObject` call per RODC even under `-Snapshot`. Now skips
+    entirely. A partial skip (keep the krbtgt_* orphan check, drop just
+    the per-RODC read) was considered and rejected: with no
+    `msDS-KrbTgtLink` data, every krbtgt_* account would be misreported as
+    orphaned - a wrong answer, not just a coverage gap.
+  - `Test-ADStaleObjectDepth` - its DC subnet/site registration check
+    previously still queried `Get-ADReplicationSubnet` live even under
+    `-Snapshot`. Now skipped entirely.
+
+- **A narrower, more insidious variant of the same anti-pattern**, found
+  via a full-codebase sweep: a live cmdlet call gated on whether a
+  *specific snapshot key* was present, rather than on whether `-Snapshot`
+  itself was supplied. This meant a live call could still fire under
+  `-Snapshot` in edge cases (a key missing from an older or malformed
+  snapshot, or - most importantly - any object outside a small fixed set
+  of named ACL targets):
+  - `Test-ADUserSecurity` - an unconditional live `Get-ADGroup 'Protected
+    Users'` call ran regardless of `-Snapshot` (it was simply never inside
+    the snapshot/live branch at all). Now resolved from `Snapshot.Groups`;
+    the finding logic only ever used the group's existence as a boolean
+    gate, so no behaviour changed beyond removing the live call.
+  - `Get-ADTier0Principal` (shared helper in `src/Common.ps1`, used by
+    `Test-ADRodcSecurity`, `Test-ADControlPaths`, and others) - fell back
+    to a live group-membership walk if `-Snapshot` was supplied without a
+    `'Groups'` key. Now returns an empty Tier-0 set instead.
+  - `Test-ADMachineAccountQuota` - fell back to a live `Get-ADDomain`/
+    `Get-ADObject` call if `-Snapshot` was supplied but
+    `MachineAccountQuota` was missing/null. Now skips with no live call.
+  - **`Get-ADControlPathGraph`** (used by `Test-ADControlPaths`) - by far
+    the most significant fix here. Five separate resolution steps could
+    each fall back to a live call under `-Snapshot`: domain resolution
+    (`Get-ADDomain`), DC-list resolution (`Get-ADDomainController`),
+    protected-group DN resolution (`Get-ADGroup`, per missing group),
+    group-membership-edge collection (`Get-ADGroup -Filter '*'`), and -
+    worst of all - **the per-object ACL/ownership-edge sweep**, which
+    previously made one live `Get-ADObject` call for *every*
+    control-relevant object in a privilege-escalation chain that wasn't
+    AdminSDHolder or the domain root. On a real domain with any
+    nested-group escalation paths, this meant `Test-ADControlPaths` could
+    make dozens of live AD calls during a run that was supposed to be
+    fully offline. All five are now hard-gated on `-Snapshot` itself: DNs
+    outside the snapshot's small, fixed set of ACL targets simply
+    contribute `MemberOf` edges (direct membership paths are unaffected),
+    with ACE/Owner edges for those objects now a documented coverage gap -
+    reported as a single offline-mode coverage note, not one per object.
+
+### Fixed - online/offline finding-count parity gaps
+- **`Test-ADCSExtended`'s ESC4 check** (dangerous certificate template
+  ACLs) was documented as "live only - not captured in snapshot" and
+  skipped entirely under `-Snapshot`. It didn't need to be:
+  `Get-ADSnapshot` already collects a flattened per-template `Access` ACL
+  (added for `Test-ADCertificateServices`' ESC7 check) - the exact data
+  ESC4 needs, it just wasn't wired up in this function. Now reads
+  `$template.Access` offline; detection logic is otherwise identical to
+  the live path.
+- **`Test-ADCSExtended`'s NTAuth/AIA/Root store weak-signature sweep** was
+  also documented as live-only. `Get-ADSnapshot` now collects the same
+  `cACertificate` blobs from the `NTAuthCertificates`/`AIA`/`Certification
+  Authorities` containers that the live sweep reads - same data shape and
+  risk profile (public certificate bytes) as the `CertificateAuthorities`
+  `cACertificate` field already in the snapshot. New `Snapshot.ADCS`
+  fields: `NTAuthCertificates`, `AIACertificates`, `RootCACertificates`. A
+  snapshot collected with an older module version simply won't have these
+  fields; `Test-ADCSExtended` detects that and records a coverage note
+  rather than erroring.
+
+### Added
+- **Offline Mode Coverage Notes**: a new shared tracking mechanism
+  (`Add-ADOfflineSkipNote` / `Get-ADOfflineSkipNotes` /
+  `Reset-ADOfflineSkipNotes` in `src/Common.ps1`) records every sub-check
+  that doesn't run under `-Snapshot`, as a structured note - not just a
+  console `Write-Warning`/`Write-Verbose` line that only the transcript
+  sees.
+- The HTML report's offline-run banner no longer unconditionally states
+  "no live Active Directory or Domain Controller connections were made"
+  without evidence - that claim is true for every run as of this release.
+  A new **"Offline Mode Coverage Notes"** table lists every skipped
+  sub-check (Test / Sub-Check / Why), so a reader can see exactly what a
+  given offline report does and doesn't cover without cross-referencing
+  the run log.
+- Wired into all known live-only sub-check sites across the codebase:
+  `GroupPolicies` (SYSVOL ACL), `AuditPolicyConfiguration` (`auditpol`),
+  `ADCSExtended` (ESC8 - genuinely live-only), `CoercionAndRelayExposure`
+  (per-DC service/registry probes), `DnsSecurity` (zone
+  transfer/dynamic-update/ADIDNS), `DomainHardeningFlags` (anonymous-bind
+  probe), `KerberosHardening` (encryption-type policy; FAST/Armoring),
+  `KnownDCVulnerabilities` (entire test), `LegacyAuthSurface` (entire
+  test), `GpoDeployedSecrets` (entire test), `RodcSecurity` (entire test),
+  `StaleObjectDepth` (subnet/site check), plus `Invoke-ADRuleSet`'s generic
+  not-yet-retrofitted-test skip. Each site self-reports, so this list
+  needs no further manual maintenance as new tests are added.
+- `Start-ADSecurityAudit` prints a one-line console summary at the end of
+  a `-FromSnapshot` run, pointing to the HTML report for the full
+  breakdown.
+- `Add-ADOfflineSkipNote`'s `Mode` parameter retains a `'StillLive'` value
+  in the API for any future genuinely unavoidable case, but as of this
+  release **no built-in check uses it** - every registered test is either
+  fully offline-capable under `-Snapshot` or skips a sub-check/entire-test
+  outright. If you ever see a `StillLive` entry in a report, that
+  identifies a specific, narrow exception worth scrutinizing on its own
+  merits, not a normal occurrence.
+
+### Notes
+- Every fix above was verified with a full-codebase sweep for the specific
+  anti-pattern that caused it (a live cmdlet reachable when `-Snapshot` is
+  truthy) - not just the sites originally reported. As of this release, no
+  built-in test performs any live AD/network access when invoked with
+  `-Snapshot`.
+- If you rely on any of the now-hard-skipped coverage
+  (`Test-ADGroupPolicies`' SYSVOL ACL, `Test-AuditPolicyConfiguration`'s
+  `auditpol`, `Test-ADGpoDeployedSecrets`, `Test-ADRodcSecurity`,
+  `Test-ADStaleObjectDepth`'s subnet check, or `Test-ADControlPaths`' full
+  ACL/ownership edge set beyond AdminSDHolder/domain root), run those
+  tests live (without `-Snapshot`) as a supplement to an otherwise fully
+  offline `-FromSnapshot` audit.
+- Re-collect your snapshot with this version if you want ESC4/NTAuth/AIA/
+  Root coverage from a `-FromSnapshot` run - snapshots collected with
+  v1.19.0 predate the schema fields those checks now read. Everything
+  else in this release is a pure behavioral fix with no other new
+  `Snapshot.*` schema fields.
+
 ## [1.19.0]
 ### Added
 - **Offline/`-Snapshot` parity for the remaining 12 live-only modules**

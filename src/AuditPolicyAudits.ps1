@@ -11,8 +11,12 @@ function Test-AuditPolicyConfiguration {
         .DomainRoot's HasAuditRules field (tri-state: $true/$false/$null -
         $null, meaning undetermined, never produces a finding). The per-DC
         auditpol check is real-time machine audit-subsystem state with no
-        AD-schema equivalent and always runs live, even under -Snapshot.
-        Added in v1.19.0.
+        AD-schema equivalent and is SKIPPED entirely under -Snapshot (with
+        a Write-Warning) - it never falls back to live Invoke-Command
+        remoting. Added in v1.19.0; the skip-instead-of-live-fallback
+        behavior was corrected in v1.19.1 (it briefly fell back to a live
+        per-DC auditpol read in v1.19.0, which contradicted -Snapshot's
+        "no live AD access" contract).
     #>
     [CmdletBinding()]
     param(
@@ -82,102 +86,21 @@ Configure SACL on AdminSDHolder to audit modifications:
             Write-Verbose "Test-AuditPolicyConfiguration: snapshot has no ACLs.DomainRoot entry; skipping that check."
         }
 
-        # Per-DC auditpol check: real-time machine audit-subsystem state,
-        # no AD-schema equivalent. Stays live even under -Snapshot, the
-        # same live-only-sub-check pattern used elsewhere in this module set.
-        Write-Warning "Test-AuditPolicyConfiguration: -Snapshot supplied; the per-DC auditpol check has no AD-schema equivalent and is running live."
-        try {
-            $domainControllers = Get-ADDomainController -Filter *
-            $criticalAuditCategories = @{
-                'Credential Validation' = @{ Category = 'Account Logon'; MinimumSetting = 'Success and Failure' }
-                'Kerberos Authentication Service' = @{ Category = 'Account Logon'; MinimumSetting = 'Success and Failure' }
-                'Kerberos Service Ticket Operations' = @{ Category = 'Account Logon'; MinimumSetting = 'Success and Failure' }
-                'User Account Management' = @{ Category = 'Account Management'; MinimumSetting = 'Success and Failure' }
-                'Security Group Management' = @{ Category = 'Account Management'; MinimumSetting = 'Success and Failure' }
-                'Computer Account Management' = @{ Category = 'Account Management'; MinimumSetting = 'Success and Failure' }
-                'Directory Service Access' = @{ Category = 'DS Access'; MinimumSetting = 'Success and Failure' }
-                'Directory Service Changes' = @{ Category = 'DS Access'; MinimumSetting = 'Success and Failure' }
-                'Logon' = @{ Category = 'Logon/Logoff'; MinimumSetting = 'Success and Failure' }
-                'Logoff' = @{ Category = 'Logon/Logoff'; MinimumSetting = 'Success' }
-                'Account Lockout' = @{ Category = 'Logon/Logoff'; MinimumSetting = 'Failure' }
-                'Special Logon' = @{ Category = 'Logon/Logoff'; MinimumSetting = 'Success' }
-                'Audit Policy Change' = @{ Category = 'Policy Change'; MinimumSetting = 'Success and Failure' }
-                'Authentication Policy Change' = @{ Category = 'Policy Change'; MinimumSetting = 'Success' }
-                'Sensitive Privilege Use' = @{ Category = 'Privilege Use'; MinimumSetting = 'Success and Failure' }
-                'Security State Change' = @{ Category = 'System'; MinimumSetting = 'Success' }
-                'Security System Extension' = @{ Category = 'System'; MinimumSetting = 'Success and Failure' }
-            }
+        # Per-DC auditpol check: real-time machine audit-subsystem state, no
+        # AD-schema equivalent. Fixed in v1.19.1: this used to fall back to
+        # a live Invoke-Command -ComputerName call against every DC, which
+        # contradicted -Snapshot's "no live AD access" contract and was
+        # inconsistent with how every other partially-offline module in this
+        # codebase (Test-ADCoercionAndRelayExposure, Test-ADLegacyAuthSurface,
+        # Test-ADDnsSecurity, Test-ADKerberosHardening,
+        # Test-ADKnownDCVulnerabilities) actually handles a live-only
+        # sub-check under -Snapshot: skip it entirely and say so, never fall
+        # back to live remoting. This check is now skipped the same way.
+        Write-Warning "Test-AuditPolicyConfiguration: -Snapshot supplied; skipping the per-DC auditpol check (no AD-schema equivalent; offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'AuditPolicyConfiguration' -Check 'Per-DC advanced audit policy (auditpol) configuration' `
+            -Reason 'Real-time machine audit-subsystem state with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
 
-            foreach ($dc in $domainControllers) {
-                $dcName = $dc.HostName
-                $missingPolicies = @()
-                try {
-                    $auditpolOutput = Invoke-Command -ComputerName $dcName -ScriptBlock {
-                        $output = auditpol /get /category:* 2>&1
-                        return $output
-                    } -ErrorAction Stop
-
-                    foreach ($line in $auditpolOutput) {
-                        $lineStr = $line.ToString().Trim()
-                        foreach ($subcategory in $criticalAuditCategories.Keys) {
-                            if ($lineStr -match "^\s*$([regex]::Escape($subcategory))\s+(.+)$") {
-                                $setting = $Matches[1].Trim()
-                                $required = $criticalAuditCategories[$subcategory].MinimumSetting
-                                if ($setting -notmatch 'Success and Failure' -and $setting -notmatch $required) {
-                                    $missingPolicies += @{
-                                        Subcategory = $subcategory
-                                        Category = $criticalAuditCategories[$subcategory].Category
-                                        CurrentSetting = $setting
-                                        RequiredSetting = $required
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if ($missingPolicies.Count -gt 0) {
-                        $finding = [ADSecurityFinding]::new()
-                        $finding.Category = 'Audit Policy'
-                        $finding.Issue = 'Insufficient Audit Policy Configuration'
-                        $finding.Severity = 'High'
-                        $finding.SeverityLevel = 3
-                        $finding.AffectedObject = $dcName
-                        $finding.Description = "Domain Controller '$dcName' has $($missingPolicies.Count) audit subcategories not configured to recommended settings."
-                        $finding.Impact = "Without proper audit policies, security incidents cannot be detected or investigated effectively. Critical events may go unlogged."
-                        $finding.Remediation = ($missingPolicies | ForEach-Object { "auditpol /set /subcategory:`"$($_.Subcategory)`" /success:enable /failure:enable" }) -join "`n"
-                        $finding.Details = @{
-                            DomainController = $dcName
-                            MissingPolicies = $missingPolicies
-                            TotalMissing = $missingPolicies.Count
-                        }
-                        $findings += $finding
-                    }
-                }
-                catch {
-                    Write-Verbose "Could not remotely check audit policy on $dcName : $_"
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'Audit Policy'
-                    $finding.Issue = 'Advanced Audit Policy Verification Required'
-                    $finding.Severity = 'High'
-                    $finding.SeverityLevel = 3
-                    $finding.AffectedObject = $dcName
-                    $finding.Description = "Could not remotely verify audit policies on domain controller '$dcName'. Manual verification is required."
-                    $finding.Impact = "Without proper audit policies, security incidents cannot be detected or investigated effectively. Critical events may go unlogged."
-                    $finding.Remediation = "Verify audit policies manually via: auditpol /get /category:*"
-                    $finding.Details = @{
-                        DomainController = $dcName
-                        Error = $_.Exception.Message
-                        RemoteCheckFailed = $true
-                    }
-                    $findings += $finding
-                }
-            }
-        }
-        catch {
-            Write-Warning "Test-AuditPolicyConfiguration: could not run the live-only auditpol check under -Snapshot: $_"
-        }
-
-        Write-Verbose "Audit policy configuration audit complete (snapshot mode, auditpol check live). Found $($findings.Count) issues."
+        Write-Verbose "Audit policy configuration audit complete (snapshot mode, auditpol check skipped). Found $($findings.Count) issues."
         return $findings
     }
 
