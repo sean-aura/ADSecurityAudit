@@ -55,6 +55,16 @@ function Test-ADMachineAccountQuota {
                 $domainDN = $Snapshot.Domain.DistinguishedName
             }
         }
+        elseif ($Snapshot) {
+            # Fixed in v1.19.1: a -Snapshot was supplied but MachineAccountQuota
+            # was missing/null (e.g. a malformed or very old snapshot file, or
+            # a collection-time failure recorded as $null). This used to fall
+            # through to a live Get-ADDomain/Get-ADObject call - not
+            # acceptable under -Snapshot. $quota simply stays $null, and the
+            # existing "could not determine quota; skipping" path below
+            # handles it with no live call.
+            Write-Verbose "Test-ADMachineAccountQuota: -Snapshot supplied but MachineAccountQuota is missing/null; skipping (no live AD access performed)."
+        }
         else {
             $domain = Get-ADDomain -ErrorAction Stop
             $domainDN = $domain.DistinguishedName

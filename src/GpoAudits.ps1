@@ -1,12 +1,147 @@
 #region GPO Audit
 
 function Test-ADGroupPolicies {
+    <#
+    .SYNOPSIS
+        Audits GPO permissions, link scope, and SYSVOL file-share permissions.
+    .PARAMETER Snapshot
+        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
+        the over-permissioned-GPO, DC-OU-linked-weak-permissions, and
+        unlinked-GPO checks run from Snapshot.GPOs (.Permissions/.LinkedTo).
+        The SYSVOL file-share ACL check has no AD-schema equivalent and is
+        SKIPPED entirely under -Snapshot (with a Write-Warning), consistent
+        with Test-ADCoercionAndRelayExposure's/Test-ADLegacyAuthSurface's
+        live-only sub-checks - it never falls back to live I/O. Added in
+        v1.19.0; the skip-instead-of-live-fallback behavior was corrected
+        in v1.19.1 (it briefly fell back to a live SYSVOL read in v1.19.0,
+        which contradicted -Snapshot's "no live AD access" contract).
+    #>
     [CmdletBinding()]
-    param()
-    
+    param(
+        [Parameter()]
+        [hashtable]$Snapshot
+    )
+
     Write-Verbose "Starting Group Policy audit..."
     $findings = @()
-    
+
+    if ($Snapshot) {
+        Write-Verbose "Test-ADGroupPolicies: running GPO permission/link checks from snapshot (no live AD access for those checks)."
+
+        if ($Snapshot.ContainsKey('GPOs')) {
+            foreach ($gpo in @($Snapshot.GPOs)) {
+                $gpoPermissions = @($gpo.Permissions)
+                $linkedTo = @($gpo.LinkedTo)
+
+                foreach ($permission in $gpoPermissions) {
+                    $isDangerous = $false
+                    $dangerousRight = ""
+                    if ($permission.Permission -match 'GpoEditDeleteModifySecurity') {
+                        $isDangerous = $true
+                        $dangerousRight = "Full Control (GpoEditDeleteModifySecurity)"
+                    }
+                    elseif ($permission.Permission -match 'GpoEdit') {
+                        $isDangerous = $true
+                        $dangerousRight = "Edit Settings (GpoEdit)"
+                    }
+
+                    if ($isDangerous) {
+                        $trustee = $permission.Trustee
+                        $isPrivilegedTrustee = $Script:ProtectedGroups | Where-Object { $trustee -match $_ }
+
+                        if (-not $isPrivilegedTrustee -and
+                            $trustee -notmatch 'SYSTEM' -and
+                            $trustee -notmatch 'Domain Admins' -and
+                            $trustee -notmatch 'Enterprise Admins') {
+
+                            $finding = [ADSecurityFinding]::new()
+                            $finding.Category = 'Group Policy'
+                            $finding.Issue = 'Over-Permissioned GPO'
+                            $finding.Severity = 'High'
+                            $finding.SeverityLevel = 3
+                            $finding.AffectedObject = $gpo.DisplayName
+                            $finding.Description = "GPO '$($gpo.DisplayName)' grants '$dangerousRight' to non-privileged principal '$trustee'."
+                            $finding.Impact = "Low-privileged users or groups can modify the GPO, leading to privilege escalation, malware deployment, or persistence mechanisms."
+                            $finding.Remediation = "Remove dangerous permission: Set-GPPermission -Guid $($gpo.Id) -TargetName '$trustee' -TargetType User -PermissionLevel None"
+                            $finding.Details = @{
+                                GPOID = $gpo.Id
+                                Trustee = $trustee
+                                Permission = $permission.Permission
+                            }
+                            $findings += $finding
+                        }
+                    }
+                }
+
+                $dcOuLinks = @($linkedTo | Where-Object { $_ -match 'OU=Domain Controllers' })
+                if ($dcOuLinks.Count -gt 0) {
+                    $nonAdminEditRights = @($gpoPermissions | Where-Object {
+                        $_.Permission -match 'Edit' -and
+                        $_.Trustee -notmatch 'Domain Admins' -and
+                        $_.Trustee -notmatch 'Enterprise Admins' -and
+                        $_.Trustee -notmatch 'SYSTEM'
+                    })
+
+                    if ($nonAdminEditRights.Count -gt 0) {
+                        $finding = [ADSecurityFinding]::new()
+                        $finding.Category = 'Group Policy'
+                        $finding.Issue = 'GPO Linked to Domain Controllers with Weak Permissions'
+                        $finding.Severity = 'Critical'
+                        $finding.SeverityLevel = 4
+                        $finding.AffectedObject = $gpo.DisplayName
+                        $finding.Description = "GPO '$($gpo.DisplayName)' is linked to Domain Controllers OU but has edit rights granted to non-admin principals."
+                        $finding.Impact = "Attackers can deploy malicious packages or configurations to Domain Controllers with SYSTEM-level rights, leading to full domain compromise."
+                        $finding.Remediation = "Restrict GPO permissions to only Domain Admins and Enterprise Admins. Remove all non-admin edit rights immediately."
+                        $finding.Details = @{
+                            GPOID = $gpo.Id
+                            LinkedOU = ($dcOuLinks -join '; ')
+                            NonAdminTrustees = ($nonAdminEditRights.Trustee -join '; ')
+                        }
+                        $findings += $finding
+                    }
+                }
+
+                if ($linkedTo.Count -eq 0) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Group Policy'
+                    $finding.Issue = 'Unlinked GPO'
+                    $finding.Severity = 'Low'
+                    $finding.SeverityLevel = 1
+                    $finding.AffectedObject = $gpo.DisplayName
+                    $finding.Description = "GPO '$($gpo.DisplayName)' is not linked to any OU or domain."
+                    $finding.Impact = "Unlinked GPOs create clutter and may contain misconfigurations that could cause issues if accidentally linked."
+                    $finding.Remediation = "Review the GPO and delete if no longer needed: Remove-GPO -Guid $($gpo.Id)"
+                    $finding.Details = @{
+                        GPOID = $gpo.Id
+                        CreatedDate = $gpo.CreationTime
+                        ModifiedDate = $gpo.ModificationTime
+                    }
+                    $findings += $finding
+                }
+            }
+        }
+        else {
+            Write-Verbose "Test-ADGroupPolicies: snapshot has no 'GPOs' key; skipping GPO permission/link checks."
+        }
+
+        # SYSVOL file-share ACL check has no AD-schema equivalent. Fixed in
+        # v1.19.1: this used to fall back to a live SMB read against SYSVOL,
+        # which contradicted -Snapshot's "no live AD access" contract and
+        # was inconsistent with how every other partially-offline module in
+        # this codebase (Test-ADCoercionAndRelayExposure,
+        # Test-ADLegacyAuthSurface, Test-ADDnsSecurity,
+        # Test-ADKerberosHardening, Test-ADKnownDCVulnerabilities) actually
+        # handles a live-only sub-check under -Snapshot: skip it entirely
+        # and say so, never fall back to live I/O. This check is now
+        # skipped the same way.
+        Write-Warning "Test-ADGroupPolicies: -Snapshot supplied; skipping the SYSVOL file-share ACL check (no AD-schema equivalent; offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'GroupPolicies' -Check 'SYSVOL file-share ACL permissions' `
+            -Reason 'No AD-schema equivalent - a file-share ACL is not an AD attribute. Run this check live (without -Snapshot) if you need this coverage.'
+
+        Write-Verbose "Group Policy audit complete (snapshot mode, SYSVOL check skipped). Found $($findings.Count) issues."
+        return $findings
+    }
+
     try {
         Import-Module GroupPolicy -ErrorAction Stop
         

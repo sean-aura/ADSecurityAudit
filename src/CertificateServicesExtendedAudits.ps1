@@ -283,12 +283,16 @@ function Test-ADCSExtended {
         certificate, and sends no coercion/PoC traffic.
     .PARAMETER Snapshot
         Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        certificate template/CA enumeration and the approval-gate /
-        CA-certificate weak-crypto checks are read from
-        Snapshot.ADCS. ESC4 (per-template ACL), ESC8 (live CA-host probe),
-        and the NTAuth/AIA/Root store sweep have no snapshot representation
-        and are skipped entirely in that case (offline mode performs no
-        live AD/network access), consistent with Test-ADCoercionAndRelayExposure.
+        certificate template/CA enumeration, ESC4 (per-template ACL), the
+        approval-gate/CA-certificate weak-crypto checks, and the NTAuth/AIA/
+        Root store sweep are all read from Snapshot.ADCS - no live AD access
+        is performed for any of them (ESC4 and the NTAuth/AIA/Root sweep
+        gained snapshot support in v1.19.1; a snapshot collected with an
+        older module version won't have the NTAuth/AIA/Root fields, in
+        which case that one sweep is skipped with a note rather than
+        erroring). ESC8 (a live HTTP probe against the CA host itself) has
+        no possible snapshot representation and is always skipped entirely
+        under -Snapshot, consistent with Test-ADCoercionAndRelayExposure.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
@@ -364,64 +368,66 @@ function Test-ADCSExtended {
     }
 
     # -------------------------------------------------------------------
-    # ESC4: dangerous template ACLs (live only - not captured in snapshot)
+    # ESC4: dangerous template ACLs
     # -------------------------------------------------------------------
-    if ($Snapshot) {
-        Write-Verbose "Test-ADCSExtended: -Snapshot supplied; skipping live per-template ACL read for ESC4 (offline mode performs no live AD access)."
-    }
-    else {
-        foreach ($template in $certTemplates) {
-            $templateName = if ($template.displayName) { $template.displayName } else { $template.Name }
+    # Fixed in v1.19.1: this was documented as "live only - not captured in
+    # snapshot" and skipped entirely under -Snapshot, but Get-ADSnapshot has
+    # collected a flattened per-template Access ACL since v1.19.0 (added for
+    # Test-ADCertificateServices' ESC7 check) - the same data this check
+    # needs was already sitting in the snapshot, just never wired up here.
+    # Offline path below reads $template.Access (already-flattened ACEs,
+    # IdentityReference as a plain string) instead of a live Get-Acl call;
+    # detection logic is otherwise identical to the live path.
+    foreach ($template in $certTemplates) {
+        $templateName = if ($template.displayName) { $template.displayName } else { $template.Name }
 
-            $templateAcl = $null
-            try {
-                $templateAcl = Get-Acl -Path "AD:$($template.DistinguishedName)" -ErrorAction Stop
-            }
+        $templateAces = if ($Snapshot) { @($template.Access) } else {
+            try { @((Get-Acl -Path "AD:$($template.DistinguishedName)" -ErrorAction Stop).Access) }
             catch {
                 Write-Verbose "Test-ADCSExtended: could not get ACL for template '$templateName': $_"
-                continue
+                @()
             }
+        }
 
-            $dangerousAces = @()
-            foreach ($ace in $templateAcl.Access) {
-                $principal = $ace.IdentityReference.Value
-                $isLowPriv = $false
-                foreach ($lowPriv in $lowPrivilegedPrincipals) {
-                    if ($principal -match [regex]::Escape($lowPriv)) { $isLowPriv = $true; break }
-                }
-                if (-not $isLowPriv) { continue }
+        $dangerousAces = @()
+        foreach ($ace in $templateAces) {
+            $principal = if ($Snapshot) { $ace.IdentityReference } else { $ace.IdentityReference.Value }
+            $isLowPriv = $false
+            foreach ($lowPriv in $lowPrivilegedPrincipals) {
+                if ($principal -match [regex]::Escape($lowPriv)) { $isLowPriv = $true; break }
+            }
+            if (-not $isLowPriv) { continue }
 
-                $isTrusted = $false
-                foreach ($trusted in $trustedAclPrincipals) {
-                    if ($principal -match [regex]::Escape($trusted)) { $isTrusted = $true; break }
-                }
-                if ($isTrusted) { continue }
+            $isTrusted = $false
+            foreach ($trusted in $trustedAclPrincipals) {
+                if ($principal -match [regex]::Escape($trusted)) { $isTrusted = $true; break }
+            }
+            if ($isTrusted) { continue }
 
-                foreach ($right in $Script:DangerousStandardRights) {
-                    if ($ace.ActiveDirectoryRights -match $right) {
-                        $dangerousAces += "$principal ($($ace.ActiveDirectoryRights))"
-                        break
-                    }
+            foreach ($right in $Script:DangerousStandardRights) {
+                if ($ace.ActiveDirectoryRights -match $right) {
+                    $dangerousAces += "$principal ($($ace.ActiveDirectoryRights))"
+                    break
                 }
             }
+        }
 
-            if ($dangerousAces.Count -gt 0) {
-                $finding = [ADSecurityFinding]::new()
-                $finding.Category = 'Certificate Services'
-                $finding.Issue = 'Certificate Template with Weak ACL (ESC4)'
-                $finding.Severity = 'High'
-                $finding.SeverityLevel = 3
-                $finding.AffectedObject = $templateName
-                $finding.Description = "Certificate template '$templateName' grants Write/WriteDacl/WriteOwner/GenericAll/GenericWrite rights to low-privileged principal(s): $($dangerousAces -join '; ')."
-                $finding.Impact = "A principal with write access to a certificate template can reconfigure it into an ESC1-style template (enable SAN, remove approval, weaken EKUs) and then enroll for a certificate impersonating any account, including Domain Admins."
-                $finding.Remediation = "Remove Write/WriteDacl/WriteOwner/GenericAll/GenericWrite permissions on the template from any principal other than PKI/Domain administrators."
-                $finding.Details = @{
-                    DistinguishedName = $template.DistinguishedName
-                    DangerousAces     = $dangerousAces -join '; '
-                    ESCType           = 'ESC4'
-                }
-                $findings += $finding
+        if ($dangerousAces.Count -gt 0) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Certificate Services'
+            $finding.Issue = 'Certificate Template with Weak ACL (ESC4)'
+            $finding.Severity = 'High'
+            $finding.SeverityLevel = 3
+            $finding.AffectedObject = $templateName
+            $finding.Description = "Certificate template '$templateName' grants Write/WriteDacl/WriteOwner/GenericAll/GenericWrite rights to low-privileged principal(s): $($dangerousAces -join '; ')."
+            $finding.Impact = "A principal with write access to a certificate template can reconfigure it into an ESC1-style template (enable SAN, remove approval, weaken EKUs) and then enroll for a certificate impersonating any account, including Domain Admins."
+            $finding.Remediation = "Remove Write/WriteDacl/WriteOwner/GenericAll/GenericWrite permissions on the template from any principal other than PKI/Domain administrators."
+            $finding.Details = @{
+                DistinguishedName = $template.DistinguishedName
+                DangerousAces     = $dangerousAces -join '; '
+                ESCType           = 'ESC4'
             }
+            $findings += $finding
         }
     }
 
@@ -468,6 +474,8 @@ function Test-ADCSExtended {
     # -------------------------------------------------------------------
     if ($Snapshot) {
         Write-Verbose "Test-ADCSExtended: -Snapshot supplied; skipping live ESC8 web-enrollment probe (offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'ADCSExtended' -Check 'ESC8: CA web enrollment over HTTP without EPA' `
+            -Reason 'This is a live HTTP probe against the CA host itself, not an AD attribute - there is no snapshot representation possible. Run this check live (without -Snapshot) if you need this coverage.'
     }
     else {
         foreach ($ca in $certAuthorities) {
@@ -556,10 +564,33 @@ function Test-ADCSExtended {
     }
 
     # -------------------------------------------------------------------
-    # NTAuth / AIA / Root store sweep (live only - not captured in snapshot)
+    # NTAuth / AIA / Root store sweep
     # -------------------------------------------------------------------
+    # Fixed in v1.19.1: this was documented as "live only - not captured in
+    # snapshot" and skipped entirely under -Snapshot, but Get-ADSnapshot now
+    # collects these same cACertificate blobs (same data shape/risk profile
+    # as the CA objects' cACertificate, already in the snapshot since
+    # v1.19.0) - so this can run fully offline too.
     if ($Snapshot) {
-        Write-Verbose "Test-ADCSExtended: -Snapshot supplied; skipping live NTAuth/AIA/Root store read (offline mode performs no live AD access)."
+        if ($Snapshot.ADCS.ContainsKey('NTAuthCertificates')) {
+            foreach ($blob in @($Snapshot.ADCS.NTAuthCertificates)) {
+                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "NTAuth`:$($blob.Source)"
+                if ($result) { [void]$weakCertResults.Add($result) }
+            }
+            foreach ($blob in @($Snapshot.ADCS.AIACertificates)) {
+                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "AIA`:$($blob.Source)"
+                if ($result) { [void]$weakCertResults.Add($result) }
+            }
+            foreach ($blob in @($Snapshot.ADCS.RootCACertificates)) {
+                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "Root`:$($blob.Source)"
+                if ($result) { [void]$weakCertResults.Add($result) }
+            }
+        }
+        else {
+            Write-Verbose "Test-ADCSExtended: snapshot predates v1.19.1's NTAuth/AIA/Root collection; skipping that sweep for this older snapshot."
+            Add-ADOfflineSkipNote -Test 'ADCSExtended' -Check 'NTAuth/AIA/Root store weak-signature sweep' `
+                -Reason 'This snapshot was collected with a version older than v1.19.1 and does not contain NTAuth/AIA/Root certificate data. Re-collect the snapshot with the current module version for this coverage.'
+        }
     }
     else {
         try {

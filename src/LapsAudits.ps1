@@ -1,12 +1,130 @@
 #region LAPS Deployment Audits
 
 function Test-LAPSDeployment {
+    <#
+    .SYNOPSIS
+        Audits LAPS schema presence, computer coverage, and password expiration.
+    .PARAMETER Snapshot
+        Optional snapshot hashtable (from Get-ADSnapshot). When supplied, the
+        schema-presence gate reads Snapshot.LapsSchema and the coverage/
+        expiration analysis reads Snapshot.Computers - no live AD access is
+        performed. Added in v1.19.0.
+    #>
     [CmdletBinding()]
-    param()
-    
+    param(
+        [Parameter()]
+        [hashtable]$Snapshot
+    )
+
     Write-Verbose "Starting LAPS deployment audit..."
     $findings = @()
-    
+
+    if ($Snapshot) {
+        Write-Verbose "Test-LAPSDeployment: running from snapshot (no live AD access)."
+
+        $domainName = if ($Snapshot.Domain) { $Snapshot.Domain.DNSRoot } else { $null }
+        $lapsInstalled = $false
+        if ($Snapshot.ContainsKey('LapsSchema') -and $Snapshot.LapsSchema) {
+            $lapsInstalled = [bool]($Snapshot.LapsSchema.LegacyLapsPresent -or $Snapshot.LapsSchema.WindowsLapsPresent)
+        }
+
+        if (-not $lapsInstalled) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'LAPS Deployment'
+            $finding.Issue = 'LAPS Not Deployed'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = 'Domain'
+            $finding.Description = "Local Administrator Password Solution (LAPS) is not deployed in the domain. LAPS schema extensions are missing."
+            $finding.Impact = "Without LAPS, local administrator passwords across workstations and servers are likely identical or predictable, facilitating lateral movement."
+            $finding.Remediation = "Deploy LAPS to randomize and manage local administrator passwords across all domain computers. For legacy LAPS: Update-AdmPwdADSchema. For Windows LAPS (Server 2019+): Update-LapsADSchema"
+            $finding.Details = @{
+                Domain = $domainName
+            }
+            $findings += $finding
+
+            Write-Verbose "LAPS not deployed (snapshot mode). Skipping computer-level checks."
+            return $findings
+        }
+
+        if ($Snapshot.ContainsKey('Computers')) {
+            $computers = @($Snapshot.Computers)
+            $computersWithLAPS = @($computers | Where-Object {
+                $_.'ms-Mcs-AdmPwdExpirationTime' -or $_.'msLAPS-PasswordExpirationTime'
+            })
+            $computersWithoutLAPS = @($computers | Where-Object {
+                -not $_.'ms-Mcs-AdmPwdExpirationTime' -and -not $_.'msLAPS-PasswordExpirationTime'
+            })
+
+            $totalComputers = $computers.Count
+            $coveragePercent = if ($totalComputers -gt 0) {
+                [math]::Round(($computersWithLAPS.Count / $totalComputers) * 100, 2)
+            } else { 0 }
+
+            Write-Verbose "LAPS coverage (snapshot mode): $coveragePercent% ($($computersWithLAPS.Count)/$totalComputers computers)"
+
+            if ($coveragePercent -lt 100) {
+                $severity = if ($coveragePercent -lt 50) { 'Critical' }
+                           elseif ($coveragePercent -lt 80) { 'High' }
+                           else { 'Medium' }
+                $severityLevel = if ($coveragePercent -lt 50) { 4 }
+                                elseif ($coveragePercent -lt 80) { 3 }
+                                else { 2 }
+
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'LAPS Deployment'
+                $finding.Issue = 'Incomplete LAPS Coverage'
+                $finding.Severity = $severity
+                $finding.SeverityLevel = $severityLevel
+                $finding.AffectedObject = "$($computersWithoutLAPS.Count) Computers"
+                $finding.Description = "Only $coveragePercent% of domain computers have LAPS passwords set. $($computersWithoutLAPS.Count) computers are missing LAPS coverage."
+                $finding.Impact = "Computers without LAPS retain static local administrator passwords, creating lateral movement opportunities for attackers."
+                $finding.Remediation = "Deploy LAPS Group Policy to all OUs containing computers. Verify LAPS client is installed and GPO is applied. Check: gpresult /r"
+                $finding.Details = @{
+                    TotalComputers = $totalComputers
+                    ComputersWithLAPS = $computersWithLAPS.Count
+                    ComputersWithoutLAPS = $computersWithoutLAPS.Count
+                    CoveragePercent = $coveragePercent
+                    SampleComputersWithoutLAPS = ($computersWithoutLAPS | Select-Object -First 10 -ExpandProperty Name) -join ', '
+                }
+                $findings += $finding
+            }
+
+            $now = [DateTime]::UtcNow
+            $expiredLAPSComputers = @($computersWithLAPS | Where-Object {
+                if ($_.'ms-Mcs-AdmPwdExpirationTime') {
+                    try { return ([DateTime]::FromFileTimeUtc($_.'ms-Mcs-AdmPwdExpirationTime')) -lt $now }
+                    catch { return $false }
+                }
+                elseif ($_.'msLAPS-PasswordExpirationTime') {
+                    try { return ([DateTime]::FromFileTimeUtc($_.'msLAPS-PasswordExpirationTime')) -lt $now }
+                    catch { return $false }
+                }
+                return $false
+            })
+
+            if ($expiredLAPSComputers.Count -gt 0) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'LAPS Deployment'
+                $finding.Issue = 'Expired LAPS Passwords'
+                $finding.Severity = 'Medium'
+                $finding.SeverityLevel = 2
+                $finding.AffectedObject = "$($expiredLAPSComputers.Count) Computers"
+                $finding.Description = "$($expiredLAPSComputers.Count) computers have expired LAPS passwords that have not been rotated."
+                $finding.Impact = "Expired passwords may indicate computers that are offline, not receiving GPO updates, or have LAPS client issues."
+                $finding.Remediation = "Investigate why LAPS passwords are not rotating. Ensure computers are online and receiving Group Policy updates."
+                $finding.Details = @{
+                    ExpiredCount = $expiredLAPSComputers.Count
+                    SampleComputers = ($expiredLAPSComputers | Select-Object -First 10 -ExpandProperty Name) -join ', '
+                }
+                $findings += $finding
+            }
+        }
+
+        Write-Verbose "LAPS deployment audit complete (snapshot mode). Found $($findings.Count) issues."
+        return $findings
+    }
+
     try {
         $domain = Get-ADDomain
         

@@ -1,12 +1,109 @@
 #region Audit Policy Configuration Audits
 
 function Test-AuditPolicyConfiguration {
+    <#
+    .SYNOPSIS
+        Audits per-DC audit policy configuration and SACL presence on
+        AdminSDHolder / the domain root.
+    .PARAMETER Snapshot
+        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
+        the two SACL-presence checks read Snapshot.ACLs.AdminSDHolder/
+        .DomainRoot's HasAuditRules field (tri-state: $true/$false/$null -
+        $null, meaning undetermined, never produces a finding). The per-DC
+        auditpol check is real-time machine audit-subsystem state with no
+        AD-schema equivalent and is SKIPPED entirely under -Snapshot (with
+        a Write-Warning) - it never falls back to live Invoke-Command
+        remoting. Added in v1.19.0; the skip-instead-of-live-fallback
+        behavior was corrected in v1.19.1 (it briefly fell back to a live
+        per-DC auditpol read in v1.19.0, which contradicted -Snapshot's
+        "no live AD access" contract).
+    #>
     [CmdletBinding()]
-    param()
-    
+    param(
+        [Parameter()]
+        [hashtable]$Snapshot
+    )
+
     Write-Verbose "Starting audit policy configuration audit..."
     $findings = @()
-    
+
+    if ($Snapshot) {
+        Write-Verbose "Test-AuditPolicyConfiguration: running SACL-presence checks from snapshot; auditpol check remains live."
+
+        if ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('AdminSDHolder')) {
+            $hasAuditRules = $Snapshot.ACLs['AdminSDHolder'].HasAuditRules
+            if ($hasAuditRules -eq $false) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Audit Policy'
+                $finding.Issue = 'No Auditing on AdminSDHolder Object'
+                $finding.Severity = 'High'
+                $finding.SeverityLevel = 3
+                $finding.AffectedObject = 'AdminSDHolder'
+                $finding.Description = "The AdminSDHolder object does not have audit rules (SACL) configured to log access attempts."
+                $finding.Impact = "Changes to privileged group permissions and access attempts to critical AD objects will not be logged, hindering incident detection."
+                $finding.Remediation = @"
+Configure SACL on AdminSDHolder to audit modifications:
+1. Open ADSI Edit
+2. Navigate to CN=AdminSDHolder,CN=System,DC=domain,DC=com
+3. Right-click > Properties > Security > Advanced > Auditing
+4. Add: Everyone | Success/Failure | Write all properties, Modify permissions
+"@
+                $finding.Details = @{
+                    DistinguishedName = $Snapshot.ACLs['AdminSDHolder'].DistinguishedName
+                }
+                $findings += $finding
+            }
+            elseif ($null -eq $hasAuditRules) {
+                Write-Verbose "Test-AuditPolicyConfiguration: AdminSDHolder HasAuditRules is undetermined (collection-time privilege limitation); no finding raised."
+            }
+        }
+        else {
+            Write-Verbose "Test-AuditPolicyConfiguration: snapshot has no ACLs.AdminSDHolder entry; skipping that check."
+        }
+
+        if ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('DomainRoot')) {
+            $hasDomainAuditRules = $Snapshot.ACLs['DomainRoot'].HasAuditRules
+            if ($hasDomainAuditRules -eq $false) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Audit Policy'
+                $finding.Issue = 'No Auditing on Domain Root Object'
+                $finding.Severity = 'Medium'
+                $finding.SeverityLevel = 2
+                $finding.AffectedObject = 'Domain Root'
+                $finding.Description = "The domain root object does not have audit rules (SACL) configured."
+                $finding.Impact = "Critical changes to domain-level permissions and replication rights will not be logged."
+                $finding.Remediation = "Configure SACL on the domain root to audit Write Property, Modify Permissions, and Extended Rights for Everyone."
+                $finding.Details = @{
+                    DistinguishedName = $Snapshot.ACLs['DomainRoot'].DistinguishedName
+                }
+                $findings += $finding
+            }
+            elseif ($null -eq $hasDomainAuditRules) {
+                Write-Verbose "Test-AuditPolicyConfiguration: DomainRoot HasAuditRules is undetermined (collection-time privilege limitation); no finding raised."
+            }
+        }
+        else {
+            Write-Verbose "Test-AuditPolicyConfiguration: snapshot has no ACLs.DomainRoot entry; skipping that check."
+        }
+
+        # Per-DC auditpol check: real-time machine audit-subsystem state, no
+        # AD-schema equivalent. Fixed in v1.19.1: this used to fall back to
+        # a live Invoke-Command -ComputerName call against every DC, which
+        # contradicted -Snapshot's "no live AD access" contract and was
+        # inconsistent with how every other partially-offline module in this
+        # codebase (Test-ADCoercionAndRelayExposure, Test-ADLegacyAuthSurface,
+        # Test-ADDnsSecurity, Test-ADKerberosHardening,
+        # Test-ADKnownDCVulnerabilities) actually handles a live-only
+        # sub-check under -Snapshot: skip it entirely and say so, never fall
+        # back to live remoting. This check is now skipped the same way.
+        Write-Warning "Test-AuditPolicyConfiguration: -Snapshot supplied; skipping the per-DC auditpol check (no AD-schema equivalent; offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'AuditPolicyConfiguration' -Check 'Per-DC advanced audit policy (auditpol) configuration' `
+            -Reason 'Real-time machine audit-subsystem state with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
+
+        Write-Verbose "Audit policy configuration audit complete (snapshot mode, auditpol check skipped). Found $($findings.Count) issues."
+        return $findings
+    }
+
     try {
         # Get domain controllers to check audit policies
         $domainControllers = Get-ADDomainController -Filter *

@@ -67,12 +67,24 @@ function Test-ADUserSecurity {
 
         Write-Verbose "Analyzing $($users.Count) user accounts..."
 
+        # Fixed in v1.19.1: this was an unconditional live Get-ADGroup call,
+        # outside the $Snapshot/live branch above - it ran even under
+        # -Snapshot, which is not acceptable for a genuinely offline
+        # analysis. Only the group's *existence* is actually used below
+        # (as a boolean gate; the finding logic itself only reads from
+        # $user.MemberOf, already present in the snapshot), so this can be
+        # answered entirely from Snapshot.Groups with no live call at all.
         $protectedUsersGroup = $null
-        try {
-            $protectedUsersGroup = Get-ADGroup -Filter "Name -eq 'Protected Users'" -ErrorAction Stop
+        if ($Snapshot -and $Snapshot.ContainsKey('Groups')) {
+            $protectedUsersGroup = @($Snapshot.Groups | Where-Object { $_.Name -eq 'Protected Users' }) | Select-Object -First 1
         }
-        catch {
-            Write-Verbose "Failed to get Protected Users group: $_"
+        else {
+            try {
+                $protectedUsersGroup = Get-ADGroup -Filter "Name -eq 'Protected Users'" -ErrorAction Stop
+            }
+            catch {
+                Write-Verbose "Failed to get Protected Users group: $_"
+            }
         }
         
         $userCount = $users.Count

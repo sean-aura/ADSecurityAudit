@@ -164,6 +164,8 @@ function Test-ADLegacyAuthSurface {
 
     if ($Snapshot) {
         Write-Verbose "Test-ADLegacyAuthSurface: -Snapshot supplied; GPO-linked registry policy state and live per-DC registry reads are not part of the snapshot schema, so this audit is skipped entirely (offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'LegacyAuthSurface' -Check 'Entire test: GPO-linked and per-DC registry policy state' `
+            -Reason 'Live GPO-linked registry policy and per-DC registry reads with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
         return $findings
     }
 

@@ -1,12 +1,182 @@
 #region Domain Security Settings
 
 function Test-ADDomainSecurity {
+    <#
+    .SYNOPSIS
+        Audits domain-wide password policy, functional level, Recycle Bin,
+        legacy OS presence, and AzureADSSOACC key rotation.
+    .PARAMETER Snapshot
+        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
+        reads Snapshot.PasswordPolicy/.Forest/.RecycleBinEnabled/
+        Domain.DomainMode and Snapshot.Computers - no live AD access is
+        performed. Added in v1.19.0.
+    #>
     [CmdletBinding()]
-    param()
-    
+    param(
+        [Parameter()]
+        [hashtable]$Snapshot
+    )
+
     Write-Verbose "Starting domain security settings audit..."
     $findings = @()
-    
+
+    if ($Snapshot) {
+        Write-Verbose "Test-ADDomainSecurity: running from snapshot (no live AD access)."
+
+        if ($Snapshot.ContainsKey('PasswordPolicy') -and $Snapshot.PasswordPolicy) {
+            $pwdPolicy = $Snapshot.PasswordPolicy
+
+            if ($pwdPolicy.MinPasswordLength -lt 14) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Domain Security'
+                $finding.Issue = 'Weak Minimum Password Length'
+                $finding.Severity = 'High'
+                $finding.SeverityLevel = 3
+                $finding.AffectedObject = 'Default Domain Password Policy'
+                $finding.Description = "Minimum password length is set to $($pwdPolicy.MinPasswordLength) characters."
+                $finding.Impact = "Short passwords are easier to crack through brute-force and dictionary attacks."
+                $finding.Remediation = "Increase minimum password length to at least 14 characters: Set-ADDefaultDomainPasswordPolicy -MinPasswordLength 14"
+                $finding.Details = @{
+                    CurrentLength = $pwdPolicy.MinPasswordLength
+                    RecommendedLength = 14
+                }
+                $findings += $finding
+            }
+
+            if ($pwdPolicy.ComplexityEnabled -eq $false) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Domain Security'
+                $finding.Issue = 'Password Complexity Disabled'
+                $finding.Severity = 'Critical'
+                $finding.SeverityLevel = 4
+                $finding.AffectedObject = 'Default Domain Password Policy'
+                $finding.Description = "Password complexity requirements are disabled."
+                $finding.Impact = "Users can set simple, easily guessable passwords, significantly increasing the risk of compromise."
+                $finding.Remediation = "Enable password complexity: Set-ADDefaultDomainPasswordPolicy -ComplexityEnabled `$true"
+                $finding.Details = @{
+                    ComplexityEnabled = $pwdPolicy.ComplexityEnabled
+                }
+                $findings += $finding
+            }
+
+            if ($pwdPolicy.ReversibleEncryptionEnabled -eq $true) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Domain Security'
+                $finding.Issue = 'Reversible Encryption Enabled Domain-Wide'
+                $finding.Severity = 'Critical'
+                $finding.SeverityLevel = 4
+                $finding.AffectedObject = 'Default Domain Password Policy'
+                $finding.Description = "Reversible password encryption is enabled at the domain level."
+                $finding.Impact = "All passwords are stored in a format equivalent to plaintext, making them easily retrievable by attackers."
+                $finding.Remediation = "Disable reversible encryption immediately: Set-ADDefaultDomainPasswordPolicy -ReversibleEncryptionEnabled `$false"
+                $finding.Details = @{
+                    ReversibleEncryptionEnabled = $pwdPolicy.ReversibleEncryptionEnabled
+                }
+                $findings += $finding
+            }
+        }
+        else {
+            Write-Verbose "Test-ADDomainSecurity: snapshot has no PasswordPolicy entry; skipping password policy checks."
+        }
+
+        $domainLevel = if ($Snapshot.Domain) { $Snapshot.Domain.DomainMode } else { $null }
+        $forestLevel = if ($Snapshot.ContainsKey('Forest') -and $Snapshot.Forest) { $Snapshot.Forest.ForestMode } else { $null }
+        $deprecatedLevels = @('Windows2000Domain', 'Windows2003Domain', 'Windows2008Domain', 'Windows2008R2Domain', 'Windows2012Domain')
+
+        if ($domainLevel -and $domainLevel -in $deprecatedLevels) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Security'
+            $finding.Issue = 'Outdated Domain Functional Level'
+            $finding.Severity = 'Medium'
+            $finding.SeverityLevel = 2
+            $finding.AffectedObject = 'Domain Functional Level'
+            $finding.Description = "Domain functional level is set to '$domainLevel', which is outdated."
+            $finding.Impact = "Older functional levels lack modern security features and may support deprecated authentication protocols."
+            $finding.Remediation = "Raise domain functional level after ensuring all DCs are running a supported OS: Set-ADDomainMode -DomainMode Windows2016Domain (or higher)"
+            $finding.Details = @{
+                CurrentLevel = $domainLevel
+                ForestLevel = $forestLevel
+                RecommendedLevel = 'Windows2016Domain or higher'
+            }
+            $findings += $finding
+        }
+
+        if ($Snapshot.ContainsKey('RecycleBinEnabled') -and $Snapshot.RecycleBinEnabled -eq $false) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Security'
+            $finding.Issue = 'AD Recycle Bin Not Enabled'
+            $finding.Severity = 'Low'
+            $finding.SeverityLevel = 1
+            $finding.AffectedObject = 'AD Recycle Bin Feature'
+            $finding.Description = "Active Directory Recycle Bin is not enabled."
+            $finding.Impact = "Deleted AD objects cannot be easily restored, making recovery from accidental deletions or attacks more difficult."
+            $finding.Remediation = "Enable AD Recycle Bin: Enable-ADOptionalFeature -Identity 'Recycle Bin Feature' -Scope ForestOrConfigurationSet -Target <forest>"
+            $finding.Details = @{
+                Feature = 'Recycle Bin'
+                Status = 'Disabled'
+            }
+            $findings += $finding
+        }
+
+        if ($Snapshot.ContainsKey('Computers')) {
+            $legacyOS = @(
+                'Windows XP', 'Windows Vista', 'Windows 7', 'Windows 8', 'Windows 8.1',
+                'Windows Server 2003', 'Windows Server 2008', 'Windows Server 2012', 'Windows Server 2012 R2'
+            )
+            $legacyComputers = @(@($Snapshot.Computers) | Where-Object {
+                $os = $_.OperatingSystem
+                if ($os) {
+                    foreach ($legacyPattern in $legacyOS) {
+                        if ($os -match [regex]::Escape($legacyPattern)) { return $true }
+                    }
+                }
+                return $false
+            })
+
+            if ($legacyComputers.Count -gt 0) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Domain Security'
+                $finding.Issue = 'Legacy Operating Systems in Domain'
+                $finding.Severity = 'High'
+                $finding.SeverityLevel = 3
+                $finding.AffectedObject = 'Domain Computers'
+                $finding.Description = "Found $($legacyComputers.Count) computer(s) running unsupported/legacy operating systems."
+                $finding.Impact = "Legacy systems lack security updates and are vulnerable to known exploits, providing easy entry points for attackers."
+                $finding.Remediation = "Upgrade or isolate legacy systems. Remove computer accounts for decommissioned systems."
+                $finding.Details = @{
+                    Count = $legacyComputers.Count
+                    Computers = ($legacyComputers | Select-Object Name, OperatingSystem, LastLogonDate -First 50)
+                }
+                $findings += $finding
+            }
+
+            $azureSsoAccounts = @(@($Snapshot.Computers) | Where-Object { $_.SamAccountName -eq 'AZUREADSSOACC$' })
+            foreach ($account in $azureSsoAccounts) {
+                $passwordAge = if ($account.PasswordLastSet) { (Get-Date) - $account.PasswordLastSet } else { [TimeSpan]::MaxValue }
+                if ($passwordAge.TotalDays -gt 30) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Domain Security'
+                    $finding.Issue = 'Stale AzureADSSOACC Kerberos Key'
+                    $finding.Severity = 'High'
+                    $finding.SeverityLevel = 3
+                    $finding.AffectedObject = $account.SamAccountName
+                    $finding.Description = "Azure AD Seamless SSO computer account password has not been rotated within the last 30 days."
+                    $finding.Impact = "Stale Kerberos decryption keys increase the risk of credential compromise for Seamless SSO."
+                    $finding.Remediation = "Roll over the Azure AD Seamless SSO Kerberos decryption key using Azure AD Connect or the Update-AzureADSSOForest PowerShell cmdlet. Reference: https://learn.microsoft.com/azure/active-directory/hybrid/tshoot-connect-sso#roll-over-the-kerberos-decryption-key"
+                    $finding.Details = @{
+                        PasswordLastSet = $account.PasswordLastSet
+                        PasswordAgeDays = if ($passwordAge -ne [TimeSpan]::MaxValue) { [int]$passwordAge.TotalDays } else { 'Unknown' }
+                        Reference = 'https://learn.microsoft.com/azure/active-directory/hybrid/tshoot-connect-sso#roll-over-the-kerberos-decryption-key'
+                    }
+                    $findings += $finding
+                }
+            }
+        }
+
+        Write-Verbose "Domain security settings audit complete (snapshot mode). Found $($findings.Count) issues."
+        return $findings
+    }
+
     try {
         $domain = Get-ADDomain
         

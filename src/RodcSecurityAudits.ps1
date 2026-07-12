@@ -110,14 +110,19 @@ function Test-ADRodcSecurity {
     .PARAMETER Snapshot
         Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
         the RODC list is taken from Snapshot.DomainControllers (filtered to
-        IsReadOnly) and the krbtgt_* account inventory is taken from
-        Snapshot.Users, avoiding a live DC/user enumeration pass. The
-        per-RODC msDS-RevealedUsers / msDS-RevealOnDemandGroup /
-        msDS-NeverRevealGroup / msDS-KrbTgtLink reads are not part of the
-        current snapshot schema and are always performed live, consistent
-        with the other live-only sub-checks elsewhere in this module (e.g.
-        Test-ADGpoDeployedSecrets' SYSVOL reads, Test-ADDnsSecurity's
-        zone-level reads).
+        IsReadOnly). Every finding this test can produce depends on the
+        per-RODC msDS-RevealedUsers/msDS-RevealOnDemandGroup/
+        msDS-NeverRevealGroup/msDS-KrbTgtLink attributes, which are not
+        part of the current snapshot schema - so as of v1.19.1, this
+        entire test is SKIPPED (with a Write-Warning) under -Snapshot,
+        performing zero live AD/network access. Prior to v1.19.1 it still
+        performed one live Get-ADObject call per RODC even with -Snapshot
+        supplied, which is not acceptable for a genuinely offline analysis;
+        partially skipping just that read (keeping the krbtgt_* orphan
+        check running from Snapshot.Users) was also considered and
+        rejected, since it would misreport every krbtgt_* account as
+        orphaned rather than just being a coverage gap. Run this test live
+        (without -Snapshot) if you need this coverage.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
@@ -140,6 +145,10 @@ function Test-ADRodcSecurity {
         Write-Verbose "Test-ADRodcSecurity: using RODC list from snapshot DomainControllers."
         $rodcs = @($Snapshot.DomainControllers | Where-Object { $_.IsReadOnly -eq $true -or "$($_.IsReadOnly)" -eq 'True' })
     }
+    elseif ($Snapshot) {
+        Write-Verbose "Test-ADRodcSecurity: snapshot has no 'DomainControllers' key; no RODCs to evaluate."
+        return $findings
+    }
     else {
         try {
             $rodcs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController RODCs' -Query {
@@ -158,6 +167,26 @@ function Test-ADRodcSecurity {
     }
 
     Write-Verbose "Test-ADRodcSecurity: found $($rodcs.Count) RODC(s)."
+
+    # Fixed in v1.19.1: every finding this test can produce (revealed
+    # Tier-0 accounts, PRP misconfiguration, orphaned krbtgt_* accounts)
+    # depends on the per-RODC msDS-RevealedUsers/RevealOnDemandGroup/
+    # NeverRevealGroup/KrbTgtLink attributes, which are not part of the
+    # current snapshot schema. This used to still perform a live
+    # Get-ADObject call per RODC even under -Snapshot, which is not
+    # acceptable for a genuinely offline analysis (e.g. re-analysing a
+    # JSON snapshot with no network path to any DC at all). Rather than
+    # partially skip just the attribute read (which would leave
+    # $linkedKrbtgtDNs empty and misreport every krbtgt_* account as
+    # "orphaned" - a false positive, not just a coverage gap), this test
+    # now skips entirely under -Snapshot: zero live AD/network access,
+    # zero findings, with a clear note instead of a wrong answer.
+    if ($Snapshot) {
+        Write-Warning "Test-ADRodcSecurity: -Snapshot supplied; skipping entirely ($($rodcs.Count) RODC(s) found, but the per-RODC msDS-RevealedUsers/RevealOnDemandGroup/NeverRevealGroup/KrbTgtLink attributes this test depends on have no AD-schema/snapshot equivalent; offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'RodcSecurity' -Check 'Entire test: per-RODC msDS-RevealedUsers/RevealOnDemandGroup/NeverRevealGroup/KrbTgtLink attributes' `
+            -Reason 'Not part of the current snapshot schema, and partially skipping would misreport every krbtgt_* account as orphaned. Run this test live (without -Snapshot) if you need this coverage.'
+        return $findings
+    }
 
     # Tier-0/privileged principal set, for cross-referencing revealed/
     # allowed principals. Works with or without -Snapshot.
@@ -178,8 +207,8 @@ function Test-ADRodcSecurity {
 
     # -------------------------------------------------------------------
     # Per-RODC live attribute reads (not part of the current snapshot
-    # schema, so always live regardless of -Snapshot - consistent with
-    # other live-only sub-checks in this module).
+    # schema; this whole function already returned above when -Snapshot
+    # was supplied, so this path is live-mode only).
     # -------------------------------------------------------------------
     $rodcDetails = [System.Collections.ArrayList]::new()
     $linkedKrbtgtDNs = New-Object System.Collections.Generic.HashSet[string]

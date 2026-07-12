@@ -311,6 +311,8 @@ function Test-ADKerberosHardening {
         }
         else {
             Write-Verbose "Test-ADKerberosHardening: -Snapshot supplied; domain-wide encryption-type GPO/registry policy is live-only and is skipped."
+            Add-ADOfflineSkipNote -Test 'KerberosHardening' -Check 'Domain-wide Kerberos encryption-type GPO/registry policy' `
+                -Reason 'Live GPO/registry policy read with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
             $domainPolicyDetail = @{ Enforced = $null; Source = 'Skipped in -Snapshot mode (live-only GPO/registry check)'; PermitsRC4OrDES = $null }
         }
 
@@ -351,6 +353,8 @@ function Test-ADKerberosHardening {
     # =====================================================================
     if ($Snapshot) {
         Write-Verbose "Test-ADKerberosHardening: -Snapshot supplied; Kerberos Armoring (FAST) GPO/registry policy state is not part of the snapshot schema, so this check is skipped entirely (offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'KerberosHardening' -Check 'Kerberos Armoring (FAST) GPO/registry policy' `
+            -Reason 'Live GPO/registry policy read with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
     }
     else {
         try {

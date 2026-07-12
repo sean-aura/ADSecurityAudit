@@ -119,12 +119,13 @@ function Test-ADStaleObjectDepth {
         the PASSWD_NOTREQD, primaryGroupID, and duplicate-SPN checks read
         from Snapshot.Users / Snapshot.Computers, and the DC-count check
         reads from Snapshot.DomainControllers, instead of live AD queries.
-        The DC subnet/site registration check reads Snapshot.DomainControllers
-        for the DC list but always queries Get-ADReplicationSubnet live
-        (subnet objects are not part of the current snapshot schema), so it
-        still performs one live, read-only call even when -Snapshot is
-        supplied; consistent with the other live-only sub-checks elsewhere
-        in the module (e.g. Test-ADDnsSecurity's zone-level checks).
+        The DC subnet/site registration check has no snapshot equivalent
+        (AD Sites & Services subnet objects are not part of the current
+        snapshot schema) and is SKIPPED entirely under -Snapshot as of
+        v1.19.1 (with a Write-Warning) - it no longer falls back to a live
+        Get-ADReplicationSubnet call, consistent with the other live-only
+        sub-checks elsewhere in the module (e.g. Test-ADDnsSecurity's
+        zone-level checks).
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
@@ -375,58 +376,66 @@ function Test-ADStaleObjectDepth {
     # -------------------------------------------------------------------
     # Check 4: DC Subnet/Site Registration Gap
     # -------------------------------------------------------------------
-    # Live-only: AD Sites & Services subnet objects are not part of the
-    # current snapshot schema, so this always performs one live,
-    # read-only Get-ADReplicationSubnet call even when -Snapshot is
-    # supplied for the DC list itself, consistent with the other
-    # live-only sub-checks elsewhere in the module.
-    try {
-        Write-Verbose "Test-ADStaleObjectDepth: checking DC subnet/site registration..."
+    # Fixed in v1.19.1: AD Sites & Services subnet objects are not part of
+    # the current snapshot schema. This used to still perform a live
+    # Get-ADReplicationSubnet call even under -Snapshot, which is not
+    # acceptable for a genuinely offline analysis (e.g. re-analysing a
+    # JSON snapshot with no network path to any DC at all). Now skipped
+    # entirely under -Snapshot: zero live AD/network access.
+    if ($Snapshot) {
+        Write-Verbose "Test-ADStaleObjectDepth: -Snapshot supplied; skipping DC subnet/site registration check (offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'StaleObjectDepth' -Check 'DC subnet/site registration (AD Sites & Services)' `
+            -Reason 'Subnet objects are not part of the current snapshot schema. Run this check live (without -Snapshot) if you need this coverage.'
+    }
+    else {
+        try {
+            Write-Verbose "Test-ADStaleObjectDepth: checking DC subnet/site registration..."
 
-        $subnets = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADReplicationSubnet (stale-object depth)' -Query {
-            Get-ADReplicationSubnet -Filter * -Properties Name, Site -ErrorAction Stop
-        })
+            $subnets = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADReplicationSubnet (stale-object depth)' -Query {
+                Get-ADReplicationSubnet -Filter * -Properties Name, Site -ErrorAction Stop
+            })
 
-        foreach ($dc in $domainControllers) {
-            $dcIp = $null
-            if ($dc.PSObject.Properties['IPv4Address']) { $dcIp = $dc.IPv4Address }
-            elseif ($dc -is [hashtable] -and $dc.ContainsKey('IPv4Address')) { $dcIp = $dc.IPv4Address }
+            foreach ($dc in $domainControllers) {
+                $dcIp = $null
+                if ($dc.PSObject.Properties['IPv4Address']) { $dcIp = $dc.IPv4Address }
+                elseif ($dc -is [hashtable] -and $dc.ContainsKey('IPv4Address')) { $dcIp = $dc.IPv4Address }
 
-            if ([string]::IsNullOrWhiteSpace($dcIp)) {
-                Write-Verbose "Test-ADStaleObjectDepth: no IPv4Address available for a DC; skipping subnet check for that DC."
-                continue
-            }
-
-            $dcName = $dc.Name
-            $covered = $false
-            foreach ($subnet in $subnets) {
-                if (Test-ADIpInCidrRange -IpAddress $dcIp -CidrRange $subnet.Name) {
-                    $covered = $true
-                    break
+                if ([string]::IsNullOrWhiteSpace($dcIp)) {
+                    Write-Verbose "Test-ADStaleObjectDepth: no IPv4Address available for a DC; skipping subnet check for that DC."
+                    continue
                 }
-            }
 
-            if (-not $covered) {
-                $finding = [ADSecurityFinding]::new()
-                $finding.Category = 'Stale-Object & Hygiene Depth'
-                $finding.Issue = 'DC Subnet/Site Registration Gap'
-                $finding.Severity = 'Low'
-                $finding.SeverityLevel = 1
-                $finding.AffectedObject = $dcName
-                $finding.Description = "Domain Controller '$dcName' ($dcIp) is not covered by any AD Sites & Services subnet object, so it cannot be mapped to a site."
-                $finding.Impact = "Clients and other Domain Controllers that fall outside a defined subnet fall back to slower, less predictable site-selection and replication behaviour, which can cause clients to authenticate against a distant DC and can mask real network-topology issues."
-                $finding.Remediation = "Create or extend an AD Sites & Services subnet object covering $dcIp and associate it with the correct site (Get-ADReplicationSite / New-ADReplicationSubnet)."
-                $finding.Details = @{
-                    DomainController = $dcName
-                    IPv4Address      = $dcIp
-                    KnownSubnets     = @($subnets | ForEach-Object { $_.Name })
+                $dcName = $dc.Name
+                $covered = $false
+                foreach ($subnet in $subnets) {
+                    if (Test-ADIpInCidrRange -IpAddress $dcIp -CidrRange $subnet.Name) {
+                        $covered = $true
+                        break
+                    }
                 }
-                $findings += $finding
+
+                if (-not $covered) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Stale-Object & Hygiene Depth'
+                    $finding.Issue = 'DC Subnet/Site Registration Gap'
+                    $finding.Severity = 'Low'
+                    $finding.SeverityLevel = 1
+                    $finding.AffectedObject = $dcName
+                    $finding.Description = "Domain Controller '$dcName' ($dcIp) is not covered by any AD Sites & Services subnet object, so it cannot be mapped to a site."
+                    $finding.Impact = "Clients and other Domain Controllers that fall outside a defined subnet fall back to slower, less predictable site-selection and replication behaviour, which can cause clients to authenticate against a distant DC and can mask real network-topology issues."
+                    $finding.Remediation = "Create or extend an AD Sites & Services subnet object covering $dcIp and associate it with the correct site (Get-ADReplicationSite / New-ADReplicationSubnet)."
+                    $finding.Details = @{
+                        DomainController = $dcName
+                        IPv4Address      = $dcIp
+                        KnownSubnets     = @($subnets | ForEach-Object { $_.Name })
+                    }
+                    $findings += $finding
+                }
             }
         }
-    }
-    catch {
-        Write-Warning "Test-ADStaleObjectDepth: DC subnet/site registration check failed: $_"
+        catch {
+            Write-Warning "Test-ADStaleObjectDepth: DC subnet/site registration check failed: $_"
+        }
     }
 
     # -------------------------------------------------------------------

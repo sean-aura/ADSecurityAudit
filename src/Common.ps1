@@ -195,6 +195,15 @@ function Get-ADTier0Principal {
         }
         return @($tier0 | ForEach-Object { $_.PrivilegedGroupsString = ($_.PrivilegedGroups -join '; '); $_ })
     }
+    elseif ($Snapshot) {
+        # Fixed in v1.19.1: a -Snapshot was supplied but has no 'Groups' key
+        # (e.g. a malformed or very old snapshot file). This used to fall
+        # through to the live loop below unconditionally - not acceptable
+        # for a genuinely offline analysis. Return an empty Tier-0 set
+        # instead of making any live call.
+        Write-Verbose "Get-ADTier0Principal: -Snapshot supplied but has no 'Groups' key; returning an empty Tier-0 set (no live AD access performed)."
+        return @()
+    }
 
     foreach ($groupName in $Script:ProtectedGroups) {
         try {
@@ -237,6 +246,243 @@ function Get-ADTier0Principal {
 
     Write-Verbose "Get-ADTier0Principal: resolved $($tier0.Count) unique Tier-0 principals."
     return @($tier0 | ForEach-Object { $_.PrivilegedGroupsString = ($_.PrivilegedGroups -join '; '); $_ })
+}
+
+# Recursively resolve group membership entirely in-memory against a
+# Get-ADSnapshot snapshot (introduced in v1.19.0 for the offline-parity
+# backlog, steps 18-29). This is the offline equivalent of
+# Get-ADGroupMember [-Recursive] - it never touches AD; it only walks
+# already-collected Snapshot.Groups/.Users/.Computers data.
+#
+# Detection only: in-memory graph traversal of already-collected snapshot
+# data. No exploitation, coercion, relay, or PoC code.
+function Resolve-ADSnapshotGroupMember {
+    <#
+    .SYNOPSIS
+        Resolves group membership from an in-memory Get-ADSnapshot snapshot,
+        mirroring Get-ADGroupMember [-Recursive] with no live AD access.
+    .DESCRIPTION
+        Walks $Snapshot.Groups[].Members starting from the group identified
+        by -GroupDistinguishedName. Each member DN is cross-referenced
+        against Snapshot.Groups (a nested group - recursed into unless
+        -DirectOnly is set), Snapshot.Users, and Snapshot.Computers (leaf
+        members - emitted directly; computer accounts, gMSAs, etc. can be
+        direct group members just like users).
+
+        Cycle-safe: a $seen hashtable of visited group DNs guards against a
+        group nested inside itself (directly or transitively) - AD does not
+        prevent this. A cycle simply stops recursing back into a group
+        already on the current path; it never hangs or overflows the stack.
+    .PARAMETER Snapshot
+        The snapshot hashtable (from Get-ADSnapshot / ConvertTo-ADHashtable).
+    .PARAMETER GroupDistinguishedName
+        The DistinguishedName of the group to resolve members for.
+    .PARAMETER DirectOnly
+        When set, mirrors plain Get-ADGroupMember (no -Recursive): nested
+        groups are returned as members themselves, and their own members are
+        not walked into.
+    .OUTPUTS
+        PSCustomObject[] with SamAccountName, DistinguishedName, objectClass -
+        the same useful surface Get-ADGroupMember's live output exposes to
+        every consumer in this module.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Snapshot,
+
+        [Parameter(Mandatory)]
+        [string]$GroupDistinguishedName,
+
+        [switch]$DirectOnly
+    )
+
+    $results = [System.Collections.ArrayList]::new()
+
+    if (-not $Snapshot.ContainsKey('Groups')) {
+        Write-Verbose "Resolve-ADSnapshotGroupMember: snapshot has no 'Groups' key; returning no members."
+        return @()
+    }
+
+    # Build lookup tables once per call. Groups/Users/Computers are already
+    # fully materialised in memory, so this is cheap even for a large
+    # domain - it's just a dictionary index, not a new AD query.
+    $groupsByDN = @{}
+    foreach ($g in @($Snapshot.Groups)) {
+        if ($g -and $g.DistinguishedName) {
+            $groupsByDN[$g.DistinguishedName] = $g
+        }
+    }
+    $usersByDN = @{}
+    if ($Snapshot.ContainsKey('Users')) {
+        foreach ($u in @($Snapshot.Users)) {
+            if ($u -and $u.DistinguishedName) {
+                $usersByDN[$u.DistinguishedName] = $u
+            }
+        }
+    }
+    $computersByDN = @{}
+    if ($Snapshot.ContainsKey('Computers')) {
+        foreach ($c in @($Snapshot.Computers)) {
+            if ($c -and $c.DistinguishedName) {
+                $computersByDN[$c.DistinguishedName] = $c
+            }
+        }
+    }
+
+    $seen = @{}
+
+    function Resolve-Members {
+        param([string]$GroupDN)
+
+        if ($seen.ContainsKey($GroupDN)) {
+            # Cycle detected (group nested inside itself, directly or
+            # transitively) - stop recursing into this branch rather than
+            # hang or stack-overflow. The non-cyclic members already
+            # collected on other branches are unaffected.
+            Write-Verbose "Resolve-ADSnapshotGroupMember: membership cycle detected at '$GroupDN'; not recursing further."
+            return
+        }
+        $seen[$GroupDN] = $true
+
+        $group = $groupsByDN[$GroupDN]
+        if (-not $group) {
+            return
+        }
+
+        foreach ($memberDN in @($group.Members)) {
+            if (-not $memberDN) { continue }
+
+            if ($groupsByDN.ContainsKey($memberDN)) {
+                $nestedGroup = $groupsByDN[$memberDN]
+                if ($DirectOnly) {
+                    [void]$results.Add([PSCustomObject]@{
+                        SamAccountName    = $nestedGroup.Name
+                        DistinguishedName = $nestedGroup.DistinguishedName
+                        objectClass       = 'group'
+                    })
+                }
+                else {
+                    [void]$results.Add([PSCustomObject]@{
+                        SamAccountName    = $nestedGroup.Name
+                        DistinguishedName = $nestedGroup.DistinguishedName
+                        objectClass       = 'group'
+                    })
+                    Resolve-Members -GroupDN $memberDN
+                }
+            }
+            elseif ($usersByDN.ContainsKey($memberDN)) {
+                $u = $usersByDN[$memberDN]
+                [void]$results.Add([PSCustomObject]@{
+                    SamAccountName    = $u.SamAccountName
+                    DistinguishedName = $u.DistinguishedName
+                    objectClass       = 'user'
+                })
+            }
+            elseif ($computersByDN.ContainsKey($memberDN)) {
+                $c = $computersByDN[$memberDN]
+                [void]$results.Add([PSCustomObject]@{
+                    SamAccountName    = $c.SamAccountName
+                    DistinguishedName = $c.DistinguishedName
+                    objectClass       = 'computer'
+                })
+            }
+            else {
+                # Member DN doesn't resolve against any collected
+                # collection (e.g. a foreign-security-principal or an
+                # object class this snapshot doesn't carry). Emit a
+                # best-effort record rather than silently dropping it, the
+                # same "unknown, not a hard failure" posture used elsewhere
+                # in this backlog (see step 20's ObjectClass fallback).
+                [void]$results.Add([PSCustomObject]@{
+                    SamAccountName    = $null
+                    DistinguishedName = $memberDN
+                    objectClass       = 'unknown'
+                })
+            }
+        }
+    }
+
+    Resolve-Members -GroupDN $GroupDistinguishedName
+
+    return @($results)
+}
+
+# --- v1.19.1: offline-analysis skip tracking ---
+# When a test running under -Snapshot skips a sub-check that has no
+# AD-schema/snapshot equivalent (SYSVOL content, live network probes,
+# per-DC remoting, etc.), it records that fact here instead of just
+# writing a Write-Warning that only shows up in the console transcript.
+# Start-ADSecurityAudit resets this list at the start of every run and
+# threads it through to Export-ADSecurityReportHTML so the HTML report
+# itself can show "what wasn't scanned and why", not just the log.
+$Script:ADOfflineSkipNotes = [System.Collections.ArrayList]::new()
+
+function Reset-ADOfflineSkipNotes {
+    <#
+    .SYNOPSIS
+        Clears the offline-skip-note list. Called once at the start of
+        every Start-ADSecurityAudit run (both live and -FromSnapshot) so
+        notes never leak between runs in the same PowerShell session.
+    #>
+    [CmdletBinding()]
+    param()
+    $Script:ADOfflineSkipNotes = [System.Collections.ArrayList]::new()
+}
+
+function Add-ADOfflineSkipNote {
+    <#
+    .SYNOPSIS
+        Records one live-only sub-check for the HTML report's "Offline
+        Mode Coverage Notes" section.
+    .PARAMETER Test
+        The registry name of the test (e.g. 'GroupPolicies'), matching
+        $Script:ADTestFunctionRegistry's keys / Invoke-ADRuleSet's -IncludeTests.
+    .PARAMETER Check
+        Short name of the specific sub-check (e.g. 'SYSVOL file-share ACL').
+    .PARAMETER Reason
+        Why it can't run offline (no AD-schema/snapshot equivalent, live
+        network probe, etc.) - shown verbatim in the report.
+    .PARAMETER Mode
+        'Skipped' (default) - the sub-check did not run at all under
+        -Snapshot, so this coverage is simply missing from the results.
+        'StillLive' - the sub-check ran anyway, over a live network/AD
+        connection, because it has no representation in a snapshot at all
+        (e.g. reading file content). Distinguished from 'Skipped' because
+        it's the opposite finding-coverage story: coverage IS present, but
+        -Snapshot did not actually avoid contacting a DC for this one check.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Test,
+
+        [Parameter(Mandatory)]
+        [string]$Check,
+
+        [Parameter(Mandatory)]
+        [string]$Reason,
+
+        [Parameter()]
+        [ValidateSet('Skipped', 'StillLive')]
+        [string]$Mode = 'Skipped'
+    )
+    [void]$Script:ADOfflineSkipNotes.Add([PSCustomObject]@{
+        Test   = $Test
+        Check  = $Check
+        Reason = $Reason
+        Mode   = $Mode
+    })
+}
+
+function Get-ADOfflineSkipNotes {
+    <#
+    .SYNOPSIS
+        Returns the skip notes recorded so far in this run.
+    #>
+    [CmdletBinding()]
+    param()
+    return @($Script:ADOfflineSkipNotes)
 }
 
 # Sanitize values for CSV export to prevent formula injection

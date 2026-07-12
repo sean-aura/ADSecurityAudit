@@ -1,12 +1,145 @@
 #region Dangerous Permissions Audit
 
 function Test-ADDangerousPermissions {
+    <#
+    .SYNOPSIS
+        Audits Enterprise Key Admins scoping and dangerous rights on
+        critical OUs (Domain Controllers, Users, Computers).
+    .PARAMETER Snapshot
+        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
+        reads Snapshot.ACLs.DomainRoot/.DomainControllersOU/.UsersContainer/
+        .ComputersContainer and Snapshot.Groups instead of live queries -
+        no live AD access is performed. Added in v1.19.0.
+    #>
     [CmdletBinding()]
-    param()
-    
+    param(
+        [Parameter()]
+        [hashtable]$Snapshot
+    )
+
     Write-Verbose "Starting dangerous permissions audit..."
     $findings = @()
-    
+
+    if ($Snapshot) {
+        Write-Verbose "Test-ADDangerousPermissions: running from snapshot (no live AD access)."
+
+        # Enterprise Key Admins over-privilege / scoping checks
+        if ($Snapshot.ContainsKey('Groups')) {
+            $ekaGroup = @($Snapshot.Groups | Where-Object { $_.Name -eq 'Enterprise Key Admins' }) | Select-Object -First 1
+            if ($ekaGroup -and $Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('DomainRoot')) {
+                Write-Verbose "Test-ADDangerousPermissions: found Enterprise Key Admins group in snapshot, checking ACEs..."
+                $keyCredentialLinkGuid = '5b47d60f-6090-40b2-9f37-2a4de88f3063'
+
+                foreach ($ace in @($Snapshot.ACLs['DomainRoot'].Access)) {
+                    if ($ace.IdentityReference -match 'Enterprise Key Admins') {
+                        if ($ace.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite') {
+                            $finding = [ADSecurityFinding]::new()
+                            $finding.Category = 'Dangerous Permissions'
+                            $finding.Issue = 'Enterprise Key Admins Over-Privileged (Misconfiguration Bug)'
+                            $finding.Severity = 'Critical'
+                            $finding.SeverityLevel = 4
+                            $finding.AffectedObject = 'Enterprise Key Admins - Domain Naming Context'
+                            $finding.Description = "Enterprise Key Admins group has excessive permissions '$($ace.ActiveDirectoryRights)' on the Domain Naming Context. This is a known misconfiguration bug where EKA was granted full access instead of just ReadProperty/WriteProperty for msDS-KeyCredentialLink."
+                            $finding.Impact = "This misconfiguration can unintentionally grant DCSync permissions, allowing members of Enterprise Key Admins to extract password hashes for all domain accounts. Attackers can exploit this for full domain compromise."
+                            $finding.Remediation = @"
+Remove the over-privileged ACE and grant only the required permissions:
+1. Remove the current ACE: Use ADSIEdit or dsacls.exe to remove the ACE for Enterprise Key Admins
+2. Grant only required rights: Ensure EKA only has ReadProperty and WriteProperty for msDS-KeyCredentialLink (GUID: $keyCredentialLinkGuid)
+3. Verify no GenericAll or WriteDacl rights remain
+4. Monitor for DCSync attempts: Check Event ID 4662 for DS-Replication-Get-Changes operations
+"@
+                            $finding.Details = @{
+                                GroupDN = $ekaGroup.DistinguishedName
+                                DomainDN = $Snapshot.ACLs['DomainRoot'].DistinguishedName
+                                ActiveDirectoryRights = $ace.ActiveDirectoryRights
+                                AccessControlType = $ace.AccessControlType
+                                ObjectType = $ace.ObjectType
+                                IsInherited = $ace.IsInherited
+                                ExpectedRights = 'ReadProperty, WriteProperty for msDS-KeyCredentialLink only'
+                            }
+                            $findings += $finding
+                        }
+                        elseif ($ace.ObjectType -eq '00000000-0000-0000-0000-000000000000' -or
+                                ($ace.ObjectType -ne $keyCredentialLinkGuid -and $ace.ActiveDirectoryRights -match 'WriteProperty')) {
+                            $finding = [ADSecurityFinding]::new()
+                            $finding.Category = 'Dangerous Permissions'
+                            $finding.Issue = 'Enterprise Key Admins Permissions Not Scoped to msDS-KeyCredentialLink'
+                            $finding.Severity = 'High'
+                            $finding.SeverityLevel = 3
+                            $finding.AffectedObject = 'Enterprise Key Admins - Domain Naming Context'
+                            $finding.Description = "Enterprise Key Admins has WriteProperty rights that are not scoped to the msDS-KeyCredentialLink attribute only."
+                            $finding.Impact = "Excessive property write permissions may allow unintended modifications to domain objects beyond the intended key credential management scope."
+                            $finding.Remediation = "Scope Enterprise Key Admins permissions specifically to msDS-KeyCredentialLink attribute (GUID: $keyCredentialLinkGuid) only."
+                            $finding.Details = @{
+                                GroupDN = $ekaGroup.DistinguishedName
+                                DomainDN = $Snapshot.ACLs['DomainRoot'].DistinguishedName
+                                ActiveDirectoryRights = $ace.ActiveDirectoryRights
+                                ObjectType = $ace.ObjectType
+                                ExpectedObjectType = $keyCredentialLinkGuid
+                            }
+                            $findings += $finding
+                        }
+                    }
+                }
+            }
+        }
+
+        # Critical-OU sweep: each target checked independently (ContainsKey
+        # only) so a renamed/moved container simply skips that one target,
+        # matching the live code's own per-OU try/catch behavior.
+        $criticalOuTargets = @{
+            'DomainControllersOU' = 'Domain Controllers OU'
+            'UsersContainer'      = 'Users container'
+            'ComputersContainer'  = 'Computers container'
+        }
+        foreach ($aclKey in $criticalOuTargets.Keys) {
+            if (-not ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey($aclKey))) {
+                Write-Verbose "Test-ADDangerousPermissions: snapshot has no ACLs.$aclKey entry; skipping that target."
+                continue
+            }
+            $ouAcl = $Snapshot.ACLs[$aclKey]
+            foreach ($ace in @($ouAcl.Access)) {
+                if ($ace.IsInherited -or
+                    $ace.IdentityReference -match 'SYSTEM' -or
+                    $ace.IdentityReference -match 'Domain Admins' -or
+                    $ace.IdentityReference -match 'Enterprise Admins') {
+                    continue
+                }
+
+                $dangerousRights = @('GenericAll', 'WriteDacl', 'WriteOwner', 'GenericWrite')
+                $hasDangerousRight = $false
+                foreach ($right in $dangerousRights) {
+                    if ($ace.ActiveDirectoryRights -match $right) {
+                        $hasDangerousRight = $true
+                        break
+                    }
+                }
+
+                if ($hasDangerousRight) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Dangerous Permissions'
+                    $finding.Issue = 'Dangerous Rights on Critical OU'
+                    $finding.Severity = 'High'
+                    $finding.SeverityLevel = 3
+                    $finding.AffectedObject = "$($ouAcl.DistinguishedName) - $($ace.IdentityReference)"
+                    $finding.Description = "Principal '$($ace.IdentityReference)' has dangerous rights '$($ace.ActiveDirectoryRights)' on critical OU."
+                    $finding.Impact = "Attackers who compromise this principal can create/modify objects in this OU, potentially adding rogue Domain Controllers or admin accounts."
+                    $finding.Remediation = "Review and restrict permissions. Remove unnecessary rights using Active Directory Users and Computers > Advanced Security Settings."
+                    $finding.Details = @{
+                        OU = $ouAcl.DistinguishedName
+                        Identity = $ace.IdentityReference
+                        ActiveDirectoryRights = $ace.ActiveDirectoryRights
+                        AccessControlType = $ace.AccessControlType
+                    }
+                    $findings += $finding
+                }
+            }
+        }
+
+        Write-Verbose "Dangerous permissions audit complete (snapshot mode). Found $($findings.Count) issues."
+        return $findings
+    }
+
     try {
         $domain = Get-ADDomain
         $domainDN = $domain.DistinguishedName

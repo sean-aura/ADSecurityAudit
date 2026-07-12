@@ -233,6 +233,8 @@ function Test-ADDnsSecurity {
     # -------------------------------------------------------------------
     if ($Snapshot) {
         Write-Verbose "Test-ADDnsSecurity: -Snapshot supplied; skipping live zone transfer/dynamic-update/ADIDNS checks (offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'DnsSecurity' -Check 'Zone transfer, dynamic-update, and ADIDNS CreateChild permissions' `
+            -Reason 'Zone-level attributes/ACLs not present in the current snapshot schema. Run this check live (without -Snapshot) if you need this coverage.'
         Write-Verbose "AD-integrated DNS security audit complete. Found $($findings.Count) issue(s)."
         return $findings
     }
