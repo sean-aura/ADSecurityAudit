@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.3]
+### Fixed
+- **Dashboard: the finding-detail modal showed up empty on every page load, and its close
+  button appeared to do nothing.** `.modal` sets `display: grid` unconditionally, which has
+  the exact same CSS specificity as the browser's built-in `[hidden] { display: none }` rule -
+  as an author-stylesheet rule, `.modal`'s `display: grid` won the cascade, so the modal
+  rendered on every load regardless of its `hidden` attribute, with nothing in it (`openModal()`
+  is only ever called from a click handler, never during boot). Clicking the close button
+  correctly set `hidden` back to `true` in the DOM, but CSS was still forcing it visible, so
+  nothing appeared to happen. Added an explicit `.modal[hidden] { display: none; }` override,
+  which has higher specificity and restores `hidden` as the actual authority. This bug predates
+  v1.20.0 - the dark-theme rewrite carried the same broken rule forward unnoticed since nothing
+  in earlier testing opened the modal without deliberately clicking something first. Every other
+  `hidden` element in the dashboard (`#priority-panel`, `#risk-score-panel`,
+  `#control-paths-panel`, `#mitre-section`, `.tab-panel`) was checked and does not have this
+  problem - none of them set `display` at a competing specificity.
+
 ## [1.20.2]
 ### Fixed
 - **The "Risk by Category" chart rendered with oversized text.** Its SVG had no `max-width`

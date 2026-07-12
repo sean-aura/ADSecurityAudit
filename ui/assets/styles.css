@@ -659,6 +659,16 @@ h3 {
   z-index: 999;
 }
 
+/* v1.20.3: .modal's `display: grid` above has the same CSS specificity as
+   the browser's built-in `[hidden] { display: none }` rule, and (being an
+   author rule) wins the cascade - so without this override the modal
+   rendered on every page load regardless of the `hidden` attribute, always
+   empty since openModal() was never actually called. This rule restores
+   `hidden` as the authority. */
+.modal[hidden] {
+  display: none;
+}
+
 .modal-content {
   background: var(--panel);
   border: 1px solid var(--border);
