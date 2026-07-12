@@ -5,6 +5,87 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.3]
+### Fixed
+- **Dashboard: the finding-detail modal showed up empty on every page load, and its close
+  button appeared to do nothing.** `.modal` sets `display: grid` unconditionally, which has
+  the exact same CSS specificity as the browser's built-in `[hidden] { display: none }` rule -
+  as an author-stylesheet rule, `.modal`'s `display: grid` won the cascade, so the modal
+  rendered on every load regardless of its `hidden` attribute, with nothing in it (`openModal()`
+  is only ever called from a click handler, never during boot). Clicking the close button
+  correctly set `hidden` back to `true` in the DOM, but CSS was still forcing it visible, so
+  nothing appeared to happen. Added an explicit `.modal[hidden] { display: none; }` override,
+  which has higher specificity and restores `hidden` as the actual authority. This bug predates
+  v1.20.0 - the dark-theme rewrite carried the same broken rule forward unnoticed since nothing
+  in earlier testing opened the modal without deliberately clicking something first. Every other
+  `hidden` element in the dashboard (`#priority-panel`, `#risk-score-panel`,
+  `#control-paths-panel`, `#mitre-section`, `.tab-panel`) was checked and does not have this
+  problem - none of them set `display` at a competing specificity.
+
+## [1.20.2]
+### Fixed
+- **The "Risk by Category" chart rendered with oversized text.** Its SVG had no `max-width`
+  CSS rule, so it stretched to fill the full container width (~1300px+) instead of its
+  authored 700px design width - inflating every font-size and stroke in it by roughly 1.9x.
+  Fixed in both the static report and the dashboard by capping the chart at `max-width: 700px`
+  (matching its viewBox), the same pattern already used correctly for the score gauge and the
+  control-path diagram. This was caught from a real generated report, not caught during v1.20.0/
+  v1.20.1 development since no PowerShell runtime was available to render a live test report.
+- **Unaligned code/monospace styling.** The control-path hop-chain text was a bare
+  inline-styled paragraph (not using any shared class), while affected-object values were
+  shown in monospace in some places (the multi-object finding list) and plain text in others
+  (the single-object finding view, the dashboard's finding cards) for the same kind of content.
+  Introduced a single `--font-mono` token and two shared classes - `.code-block` for
+  path/command-style block content, `.meta-code` for inline object-name references - and
+  applied them everywhere monospace content appears, in both the static report and the
+  dashboard, so all "code-like" content now reads consistently at the same fixed 13px/12px
+  scale rather than a mix of relative `em` sizes and ad-hoc inline styles.
+
+## [1.20.1]
+### Changed
+- Removed all decorative emoji from both HTML surfaces (section headings, summary/admin
+  cards, the upload label) - they render inconsistently across platforms/print and read too
+  casually for a report shown alongside leadership material. Severity is now indicated with a
+  small solid-color square ("severity dot") using the same palette as the severity badges,
+  rather than an emoji glyph.
+- Added a sticky mini table-of-contents to the static report, linking only to sections that
+  actually rendered for that run (Executive Summary, Prioritized Remediation, Risk Score &
+  Maturity, Control Paths, and whichever severity sections have findings), plus an in-page
+  "Print / Save as PDF" button. The dashboard gained an equivalent print button for its active
+  tab.
+- Added a "Technical Findings - Full Detail" divider in the static report, separating the
+  leadership-facing front section (Executive Summary through Control Paths) from the full
+  finding-by-finding technical detail that follows.
+### Fixed
+- Category names and control-path source/target object names could overflow their fixed-width
+  SVG boxes for long values with no truncation. Long labels are now truncated to fit (with a
+  full-text hover tooltip via SVG `<title>`) in both the static report and the dashboard.
+
+## [1.20.0]
+### Changed
+- Unified the static HTML report and the JSON-upload dashboard onto one shared, professional
+  visual design - a single light theme (no dark/light toggle), consistent severity coloring,
+  and a system font stack (removes the dashboard's Google Fonts CDN dependency).
+- Reordered the static report so the executive risk picture and a new prioritized remediation
+  list appear before technical detail: Executive Summary -> Prioritized Remediation Order ->
+  Risk Score & Maturity -> Control Paths -> severity-grouped Findings.
+- Removed every `linear-gradient` from status/summary cards and the score gauge in favor of
+  flat color + accent border, for reliable grayscale/print legibility.
+### Added
+- Inline hand-built SVG visuals in the static report: a risk-score ring gauge, per-category
+  risk bars, and a simplified source-to-Tier-0 control-path diagram. No 3rd-party chart
+  library or CDN asset is used anywhere in the report.
+- A "Prioritized Remediation Order" section: the top findings ranked worst-first by severity
+  then by category risk score, each linking straight to its full evidence further down the
+  report. Presentation-only - it sorts existing fields and adds no new scoring logic.
+- The dashboard (`ui/`) now renders Risk Score, ANSSI maturity, and MITRE ATT&CK summary,
+  none of which it previously displayed.
+### Fixed
+- The dashboard's sample data and rendering code were out of sync with the current
+  `ADSecurityFinding`/`Get-ADRiskScore` contract (a stale pre-AD-only-scope Entra field,
+  and missing severity-level/ANSSI/MITRE fields); both are now aligned with the current,
+  AD-only schema.
+
 ## [1.19.1]
 ### Fixed
 This release fixes bugs found immediately after v1.19.0 shipped, all
