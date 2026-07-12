@@ -279,7 +279,7 @@ function renderFindings(findings) {
     meta.className = 'meta-row';
     meta.innerHTML = `
       <span class="meta-chip">Category: ${escapeHtml(finding.Category || 'Unknown')}</span>
-      <span class="meta-chip">Affected: ${escapeHtml(finding.AffectedObject || 'Unknown')}</span>
+      <span class="meta-chip">Affected: <span class="meta-code">${escapeHtml(finding.AffectedObject || 'Unknown')}</span></span>
       <span class="meta-chip">Detected: ${formatDate(finding.DetectedDate)}</span>
     `;
 
@@ -336,7 +336,7 @@ function renderRiskCallouts(findings) {
         <strong>${escapeHtml(finding.Issue || 'Unknown Issue')}</strong>
         <div class="meta-row">
           <span>${escapeHtml(finding.Category || 'Uncategorized')}</span>
-          <span>• Affected: ${escapeHtml(finding.AffectedObject || 'Unknown')}</span>
+          <span>• Affected: <span class="meta-code">${escapeHtml(finding.AffectedObject || 'Unknown')}</span></span>
         </div>
       `;
 
@@ -568,10 +568,7 @@ function renderControlPaths(findings) {
       }
 
       const hopChainEl = document.createElement('p');
-      hopChainEl.style.fontFamily = 'Consolas, monospace';
-      hopChainEl.style.fontSize = '0.9em';
-      hopChainEl.style.wordBreak = 'break-word';
-      hopChainEl.style.color = 'var(--ink)';
+      hopChainEl.className = 'code-block';
       hopChainEl.textContent = hopChain;
       card.appendChild(hopChainEl);
 
@@ -847,7 +844,7 @@ function buildModalFinding(finding) {
   meta.className = 'meta-row';
   meta.innerHTML = `
     <span class="meta-chip">Category: ${escapeHtml(finding.Category || 'Unknown')}</span>
-    <span class="meta-chip">Affected: ${escapeHtml(finding.AffectedObject || 'Unknown')}</span>
+    <span class="meta-chip">Affected: <span class="meta-code">${escapeHtml(finding.AffectedObject || 'Unknown')}</span></span>
     <span class="meta-chip">Detected: ${formatDate(finding.DetectedDate)}</span>
   `;
 

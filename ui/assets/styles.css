@@ -3,6 +3,7 @@
    no Google Fonts / CDN dependency. */
 :root {
   --font-sans: -apple-system, "Segoe UI", system-ui, Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'Consolas', 'SFMono-Regular', Menlo, Monaco, monospace;
   --bg: #f4f6f8;
   --surface: #ffffff;
   --card: #ffffff;
@@ -837,9 +838,32 @@ h3 {
 .mitre-table tr:nth-child(even) { background: var(--bg); }
 
 .mitre-id {
-  font-family: 'Consolas', monospace;
+  font-family: var(--font-mono);
+  font-size: 13px;
   color: var(--brand);
   font-weight: 600;
+}
+
+/* v1.20.2: shared code/mono type scale - matches the static report so a
+   reader sees the same treatment for path/identifier-style content in
+   either surface. */
+.code-block {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  word-break: break-word;
+}
+
+.meta-code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+  word-break: break-word;
 }
 
 .mitre-bar-cell {
@@ -865,7 +889,13 @@ h3 {
   border-radius: 5px;
 }
 
-.category-bars-svg svg,
+.category-bars-svg svg {
+  width: 100%;
+  height: auto;
+  max-width: 700px;
+  display: block;
+}
+
 .control-path-svg svg {
   width: 100%;
   height: auto;

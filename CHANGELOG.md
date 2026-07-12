@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.2]
+### Fixed
+- **The "Risk by Category" chart rendered with oversized text.** Its SVG had no `max-width`
+  CSS rule, so it stretched to fill the full container width (~1300px+) instead of its
+  authored 700px design width - inflating every font-size and stroke in it by roughly 1.9x.
+  Fixed in both the static report and the dashboard by capping the chart at `max-width: 700px`
+  (matching its viewBox), the same pattern already used correctly for the score gauge and the
+  control-path diagram. This was caught from a real generated report, not caught during v1.20.0/
+  v1.20.1 development since no PowerShell runtime was available to render a live test report.
+- **Unaligned code/monospace styling.** The control-path hop-chain text was a bare
+  inline-styled paragraph (not using any shared class), while affected-object values were
+  shown in monospace in some places (the multi-object finding list) and plain text in others
+  (the single-object finding view, the dashboard's finding cards) for the same kind of content.
+  Introduced a single `--font-mono` token and two shared classes - `.code-block` for
+  path/command-style block content, `.meta-code` for inline object-name references - and
+  applied them everywhere monospace content appears, in both the static report and the
+  dashboard, so all "code-like" content now reads consistently at the same fixed 13px/12px
+  scale rather than a mix of relative `em` sizes and ad-hoc inline styles.
+
 ## [1.20.1]
 ### Changed
 - Removed all decorative emoji from both HTML surfaces (section headings, summary/admin

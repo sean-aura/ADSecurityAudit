@@ -96,6 +96,7 @@ function Export-ADSecurityReportHTML {
     <style>
         :root {
             --font-sans: -apple-system, "Segoe UI", system-ui, Roboto, Helvetica, Arial, sans-serif;
+            --font-mono: 'Consolas', 'SFMono-Regular', Menlo, Monaco, monospace;
             --bg: #f4f6f8;
             --surface: #ffffff;
             --ink: #1f2937;
@@ -157,7 +158,8 @@ function Export-ADSecurityReportHTML {
         .finding-instance-list { list-style: none; border-top: 1px solid var(--border); margin-top: 5px; max-height: 420px; overflow-y: auto; }
         .finding-instance { padding: 10px 0; border-bottom: 1px solid var(--border); }
         .finding-instance:last-child { border-bottom: none; }
-        .finding-instance-object { font-weight: 600; color: var(--ink); font-family: 'Consolas', monospace; font-size: 0.9em; word-break: break-word; }
+        .finding-instance-object { font-weight: 600; color: var(--ink); font-family: var(--font-mono); font-size: 13px; word-break: break-word; }
+        .meta-code { font-family: var(--font-mono); font-size: 13px; color: var(--ink); word-break: break-word; }
         .finding-instance-desc { color: var(--ink-muted); margin-top: 4px; line-height: 1.5; }
         .finding-instance-date { color: var(--ink-muted); font-size: 0.8em; margin-top: 4px; }
         .severity-badge { padding: 6px 15px; border-radius: 20px; font-weight: 700; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.5px; color: #fff; }
@@ -205,12 +207,19 @@ function Export-ADSecurityReportHTML {
         .mitre-table th { background: var(--brand); color: #fff; padding: 10px; text-align: left; }
         .mitre-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
         .mitre-table tr:nth-child(even) { background: var(--bg); }
-        .mitre-id { font-family: 'Consolas', monospace; color: var(--brand); font-weight: 600; }
+        .mitre-id { font-family: var(--font-mono); font-size: 13px; color: var(--brand); font-weight: 600; }
         .mitre-bar-cell { display: flex; align-items: center; gap: 8px; }
         .mitre-bar-track { display: block; width: 100px; height: 10px; background: var(--border); border-radius: 5px; overflow: hidden; flex: none; }
         .mitre-bar-fill { display: block; height: 100%; background: var(--brand); border-radius: 5px; }
-        .tag-mitre { font-family: 'Consolas', monospace; background: #eaf2f8; color: #2471a3; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; }
-        .tag-anssi { font-family: 'Consolas', monospace; background: #f4ecf7; color: #6c3483; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; }
+        .tag-mitre { font-family: var(--font-mono); font-size: 12px; background: #eaf2f8; color: #2471a3; padding: 2px 6px; border-radius: 3px; }
+        .tag-anssi { font-family: var(--font-mono); font-size: 12px; background: #f4ecf7; color: #6c3483; padding: 2px 6px; border-radius: 3px; }
+
+        /* v1.20.2: one shared style for path/command-style code content
+           (currently just the control-path hop chain), so it reads as a
+           distinct "code block" rather than a plain paragraph that happens
+           to use a monospace font. Same --font-mono/size as the inline
+           mono elements above, for a consistent code type scale throughout. */
+        .code-block { font-family: var(--font-mono); font-size: 13px; line-height: 1.6; color: var(--ink); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; word-break: break-word; }
 
         /* Prioritized remediation order */
         .priority-list { list-style: none; margin: 15px 0; }
@@ -223,6 +232,14 @@ function Export-ADSecurityReportHTML {
         /* Control path diagram */
         .control-path-diagram { margin: 10px 0 4px; }
         .control-path-diagram svg { width: 100%; height: auto; max-width: 640px; display: block; }
+
+        /* v1.20.2: without an explicit max-width, this SVG's viewBox
+           (700 units wide) stretched to fill the full container width
+           (~1300px+), inflating every font-size/stroke in it by ~1.9x -
+           this is why "Risk by Category" text rendered oversized relative
+           to the rest of the report. Capping at 700px keeps 1 viewBox unit
+           equal to 1 real pixel, matching the size the text was authored at. */
+        .category-bars-svg svg { width: 100%; height: auto; max-width: 700px; display: block; }
 
         @media print {
             body { background: white; padding: 0; }
@@ -419,7 +436,7 @@ $priorityListHtml
             $categoryBarsSvg = Get-ADSvgCategoryBars -CategoryScores $RiskScore.CategoryScores
             $html += @"
         <h3>Risk by Category</h3>
-        <div style="margin: 10px 0 20px;">
+        <div class="category-bars-svg" style="margin: 10px 0 20px;">
 $categoryBarsSvg
         </div>
 "@
@@ -532,7 +549,7 @@ $categoryBarsSvg
 $diagramSvg
             <div class="finding-section">
                 <h4>Hop Chain</h4>
-                <p style="font-family: Consolas, monospace; font-size: 0.9em; word-break: break-word;">$hopChain</p>
+                <p class="code-block">$hopChain</p>
             </div>
         </div>
 "@
@@ -977,7 +994,7 @@ function Get-FindingHTML {
             <div class="finding-body">
                 <div class="finding-meta">
                     <span><strong>Category:</strong> $category</span>
-                    <span><strong>Affected Object:</strong> $affectedObject</span>
+                    <span><strong>Affected Object:</strong> <span class="meta-code">$affectedObject</span></span>
                     <span><strong>Detected:</strong> $($first.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</span>
                     $metaTags
                 </div>
