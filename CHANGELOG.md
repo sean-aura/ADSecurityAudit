@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.1]
+### Changed
+- Removed all decorative emoji from both HTML surfaces (section headings, summary/admin
+  cards, the upload label) - they render inconsistently across platforms/print and read too
+  casually for a report shown alongside leadership material. Severity is now indicated with a
+  small solid-color square ("severity dot") using the same palette as the severity badges,
+  rather than an emoji glyph.
+- Added a sticky mini table-of-contents to the static report, linking only to sections that
+  actually rendered for that run (Executive Summary, Prioritized Remediation, Risk Score &
+  Maturity, Control Paths, and whichever severity sections have findings), plus an in-page
+  "Print / Save as PDF" button. The dashboard gained an equivalent print button for its active
+  tab.
+- Added a "Technical Findings - Full Detail" divider in the static report, separating the
+  leadership-facing front section (Executive Summary through Control Paths) from the full
+  finding-by-finding technical detail that follows.
+### Fixed
+- Category names and control-path source/target object names could overflow their fixed-width
+  SVG boxes for long values with no truncation. Long labels are now truncated to fit (with a
+  full-text hover tooltip via SVG `<title>`) in both the static report and the dashboard.
+
 ## [1.20.0]
 ### Changed
 - Unified the static HTML report and the JSON-upload dashboard onto one shared, professional

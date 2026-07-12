@@ -60,6 +60,11 @@ function Export-ADSecurityReportHTML {
     $highFindings = $Findings | Where-Object { $_.Severity -eq 'High' } | Sort-Object Category
     $mediumFindings = $Findings | Where-Object { $_.Severity -eq 'Medium' } | Sort-Object Category
     $lowFindings = $Findings | Where-Object { $_.Severity -eq 'Low' } | Sort-Object Category
+
+    # Computed early (rather than where it's rendered, further down) so the
+    # v1.20.1 sticky nav bar can know up front whether a Control Paths link
+    # is warranted.
+    $controlPathFindings = @($Findings | Where-Object { $_.Category -eq 'Attack Paths' } | Sort-Object -Property @{Expression = { $_.SeverityLevel }; Descending = $true })
     
     function HtmlEncode($text) {
         if ($text) {
@@ -67,7 +72,20 @@ function Export-ADSecurityReportHTML {
         }
         return $text
     }
-    
+
+    # v1.20.1: sticky mini table-of-contents - only link to sections that
+    # will actually render for this run, so it's never a dead link.
+    $navLinks = New-Object System.Collections.ArrayList
+    [void]$navLinks.Add(@{ Href = '#'; Label = 'Executive Summary' })
+    if ($Findings.Count -gt 0) { [void]$navLinks.Add(@{ Href = '#priority-remediation'; Label = 'Prioritized Remediation' }) }
+    if ($RiskScore) { [void]$navLinks.Add(@{ Href = '#risk-score'; Label = 'Risk Score &amp; Maturity' }) }
+    if ($controlPathFindings.Count -gt 0) { [void]$navLinks.Add(@{ Href = '#control-paths'; Label = 'Control Paths' }) }
+    if ($criticalFindings) { [void]$navLinks.Add(@{ Href = '#critical-findings'; Label = 'Critical' }) }
+    if ($highFindings) { [void]$navLinks.Add(@{ Href = '#high-findings'; Label = 'High' }) }
+    if ($mediumFindings) { [void]$navLinks.Add(@{ Href = '#medium-findings'; Label = 'Medium' }) }
+    if ($lowFindings) { [void]$navLinks.Add(@{ Href = '#low-findings'; Label = 'Low' }) }
+    $navLinksHtml = ($navLinks | ForEach-Object { "<a href=`"$($_.Href)`">$($_.Label)</a>" }) -join "`n            "
+
     $html = @"
 <!DOCTYPE html>
 <html lang="en">
@@ -210,15 +228,43 @@ function Export-ADSecurityReportHTML {
             body { background: white; padding: 0; }
             .container { box-shadow: none; border: none; }
             .toggle-all-btn { display: none; }
+            .no-print { display: none !important; }
+            .report-nav { position: static !important; }
         }
+
+        /* v1.20.1: severity dots replacing emoji on section headings - a
+           solid color square carries the same at-a-glance severity cue
+           without relying on emoji glyph support/rendering consistency. */
+        .sev-dot { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 10px; vertical-align: middle; }
+        .sev-dot-critical { background: var(--critical); }
+        .sev-dot-high { background: var(--high); }
+        .sev-dot-medium { background: var(--medium); }
+        .sev-dot-low { background: var(--low); }
+
+        /* v1.20.1: sticky mini table-of-contents so a leadership reader can
+           jump straight to the risk picture and an IT reader can jump
+           straight to evidence, without scrolling or using find-in-page. */
+        .report-nav { position: sticky; top: 0; z-index: 10; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; margin-bottom: 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+        .report-nav-links { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; }
+        .report-nav a { color: var(--ink); text-decoration: none; font-size: 0.85em; font-weight: 600; padding: 6px 10px; border-radius: 4px; }
+        .report-nav a:hover { background: var(--bg); }
+        .print-btn { background: var(--brand); color: #fff; border: none; padding: 8px 14px; border-radius: 4px; font-size: 0.85em; font-weight: 600; cursor: pointer; flex: none; }
+        .print-btn:hover { background: #163d5f; }
+
+        /* v1.20.1: divider between the leadership-facing front section
+           (Executive Summary through Control Paths) and the full technical
+           finding-by-finding detail that follows. */
+        .section-divider { margin: 40px 0 10px; border: none; border-top: 2px solid var(--border); }
+        .section-divider-label { text-align: center; margin-top: -13px; }
+        .section-divider-label span { background: var(--surface); padding: 0 16px; color: var(--ink-muted); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>&#128737; Active Directory Security Assessment Report <span style="display:inline-block; vertical-align:middle; font-size:0.4em; font-weight:bold; letter-spacing:0.05em; text-transform:uppercase; color:#fff; background:$runModeBadgeColor; padding:4px 10px; border-radius:12px; margin-left:10px;">$(HtmlEncode $RunMode)</span></h1>
+        <h1>Active Directory Security Assessment Report <span style="display:inline-block; vertical-align:middle; font-size:0.4em; font-weight:bold; letter-spacing:0.05em; text-transform:uppercase; color:#fff; background:$runModeBadgeColor; padding:4px 10px; border-radius:12px; margin-left:10px;">$(HtmlEncode $RunMode)</span></h1>
         
         <div class="warning-box">
-            <p><strong>&#9888; CONFIDENTIAL SECURITY REPORT</strong></p>
+            <p><strong>CONFIDENTIAL SECURITY REPORT</strong></p>
             <p>This report contains sensitive security information about your Active Directory environment. Handle with care and share only with authorized personnel.</p>
         </div>
 $(if ($isOfflineRun) {
@@ -231,13 +277,13 @@ $(if ($isOfflineRun) {
     }
 @"
         <div class="warning-box" style="background:#fdf5ec; border-color:#c8590b;">
-            <p><strong>&#128190; OFFLINE / SNAPSHOT-BASED REPORT</strong></p>
+            <p><strong>OFFLINE / SNAPSHOT-BASED REPORT</strong></p>
             <p>This report was generated with <code>-FromSnapshot</code> from a previously collected snapshot - $liveConnectionClaim$(if ($snapshotCollectedDateText) { " The underlying snapshot data was collected on <strong>$snapshotCollectedDateText</strong>." }) Findings reflect the environment's state at collection time and may not include changes made since then.</p>
         </div>
 $(if (@($OfflineSkipNotes).Count -gt 0) {
 @"
         <div class="warning-box" style="background:#fdf8ec; border-color:#8a6200;">
-            <p><strong>&#128269; OFFLINE MODE COVERAGE NOTES</strong> - $(@($OfflineSkipNotes).Count) sub-check(s) below were not evaluated from the snapshot, or ran live anyway. This is why an offline report can show different findings than a live run of the same audit against the same domain state.</p>
+            <p><strong>OFFLINE MODE COVERAGE NOTES</strong> - $(@($OfflineSkipNotes).Count) sub-check(s) below were not evaluated from the snapshot, or ran live anyway. This is why an offline report can show different findings than a live run of the same audit against the same domain state.</p>
             <table class="mitre-table">
                 <tr><th>Test</th><th>Sub-Check Not Covered From Snapshot</th><th>Status</th><th>Why</th></tr>
 $(($OfflineSkipNotes | Sort-Object Test, Check | ForEach-Object {
@@ -267,8 +313,15 @@ $(if ($isOfflineRun -and $snapshotCollectedDateText) {
 "            <div><strong>SNAPSHOT COLLECTED</strong><span style=`"font-size: 1.2em; color: #1f2937;`">$snapshotCollectedDateText</span></div>"
 })
         </div>
-        
-        <h2>&#128202; Executive Summary</h2>
+
+        <nav class="report-nav no-print" aria-label="Report sections">
+            <div class="report-nav-links">
+            $navLinksHtml
+            </div>
+            <button type="button" class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+        </nav>
+
+        <h2 id="executive-summary">Executive Summary</h2>
         <div class="summary-cards">
             <a class="summary-card critical-card$(if (-not $criticalFindings) { ' summary-card-empty' })" href="$(if ($criticalFindings) { '#critical-findings' } else { '#' })">
                 <div class="count">$($Summary.Critical)</div>
@@ -299,7 +352,7 @@ $(if ($isOfflineRun -and $snapshotCollectedDateText) {
     $priorityListHtml = Get-ADPriorityListHTML -Findings $Findings -CategoryScores $priorityCategoryScores -Top 10
     if ($priorityListHtml) {
         $html += @"
-        <h2>&#128204; Prioritized Remediation Order</h2>
+        <h2 id="priority-remediation">Prioritized Remediation Order</h2>
         <p style="color:#5b6472; margin-bottom: 10px;">The findings below are ranked worst-first - by severity, then by how risky their category is overall - as a starting work order. This is a starting point for planning, not a replacement for reviewing every finding.</p>
 $priorityListHtml
 "@
@@ -319,7 +372,7 @@ $priorityListHtml
         $gaugeSvg = Get-ADSvgGauge -Score $score -Color $gaugeColor
 
         $html += @"
-        <h2>&#127919; Risk Score &amp; Maturity</h2>
+        <h2 id="risk-score">Risk Score &amp; Maturity</h2>
         <div class="scoring-grid">
             <div class="score-panel">
                 <h3>Global Risk Score</h3>
@@ -377,7 +430,7 @@ $categoryBarsSvg
             $mitreMaxCount = ($RiskScore.MitreSummary | Measure-Object -Property Count -Maximum).Maximum
             if ($mitreMaxCount -le 0) { $mitreMaxCount = 1 }
             $html += @"
-        <h3>&#128506; MITRE ATT&amp;CK Technique Summary</h3>
+        <h3>MITRE ATT&amp;CK Technique Summary</h3>
         <div style="overflow-x: auto;">
             <table class="mitre-table">
                 <thead><tr><th>Technique</th><th>Name</th><th>Findings</th></tr></thead>
@@ -403,7 +456,7 @@ $categoryBarsSvg
 
     if ($PrivilegedUsers -and $PrivilegedUsers.Count -gt 0) {
         $html += @"
-        <h2>&#128101; Privileged Users Summary</h2>
+        <h2>Privileged Users Summary</h2>
         <p style="margin-bottom: 15px; color: #5b6472;">The following $($PrivilegedUsers.Count) user accounts have membership in one or more privileged groups. Review these accounts regularly to ensure appropriate access levels.</p>
         <div style="overflow-x: auto;">
             <table class="privileged-users-table">
@@ -456,10 +509,9 @@ $categoryBarsSvg
     }
 
     # --- Control paths to Tier-0 (v1.16.0) ---
-    $controlPathFindings = @($Findings | Where-Object { $_.Category -eq 'Attack Paths' } | Sort-Object -Property @{Expression = { $_.SeverityLevel }; Descending = $true })
     if ($controlPathFindings.Count -gt 0) {
         $html += @"
-        <h2>&#128504; Control Paths to Tier-0</h2>
+        <h2 id="control-paths">Control Paths to Tier-0</h2>
         <p style="color:#5b6472; margin-bottom: 15px;">Chained group-membership, ACL, and ownership relationships that let a non-privileged principal reach a Tier-0 object (Domain Admins/DCs/AdminSDHolder/domain head). No single hop here need look critical on its own - see each finding below for full remediation guidance.</p>
 "@
         foreach ($cp in $controlPathFindings) {
@@ -479,7 +531,7 @@ $categoryBarsSvg
             </div>
 $diagramSvg
             <div class="finding-section">
-                <h4>&#128279; Hop Chain</h4>
+                <h4>Hop Chain</h4>
                 <p style="font-family: Consolas, monospace; font-size: 0.9em; word-break: break-word;">$hopChain</p>
             </div>
         </div>
@@ -488,9 +540,15 @@ $diagramSvg
     }
 
     # Add findings by severity
+    if ($criticalFindings -or $highFindings -or $mediumFindings -or $lowFindings) {
+        $html += @"
+        <hr class="section-divider">
+        <div class="section-divider-label"><span>Technical Findings - Full Detail</span></div>
+"@
+    }
     if ($criticalFindings) {
         $html += @"
-    <h2 id="critical-findings">&#128308; Critical Severity Findings</h2>
+    <h2 id="critical-findings"><span class="sev-dot sev-dot-critical"></span>Critical Severity Findings</h2>
     <div class="section-toolbar">
         <button type="button" class="toggle-all-btn" onclick="setSectionFindings('critical-findings', true)">Expand All</button>
         <button type="button" class="toggle-all-btn" onclick="setSectionFindings('critical-findings', false)">Collapse All</button>
@@ -506,7 +564,7 @@ $diagramSvg
     
     if ($highFindings) {
         $html += @"
-    <h2 id="high-findings">&#128992; High Severity Findings</h2>
+    <h2 id="high-findings"><span class="sev-dot sev-dot-high"></span>High Severity Findings</h2>
     <div class="section-toolbar">
         <button type="button" class="toggle-all-btn" onclick="setSectionFindings('high-findings', true)">Expand All</button>
         <button type="button" class="toggle-all-btn" onclick="setSectionFindings('high-findings', false)">Collapse All</button>
@@ -522,7 +580,7 @@ $diagramSvg
     
     if ($mediumFindings) {
         $html += @"
-    <h2 id="medium-findings">&#128993; Medium Severity Findings</h2>
+    <h2 id="medium-findings"><span class="sev-dot sev-dot-medium"></span>Medium Severity Findings</h2>
     <div class="section-toolbar">
         <button type="button" class="toggle-all-btn" onclick="setSectionFindings('medium-findings', true)">Expand All</button>
         <button type="button" class="toggle-all-btn" onclick="setSectionFindings('medium-findings', false)">Collapse All</button>
@@ -538,7 +596,7 @@ $diagramSvg
     
     if ($lowFindings) {
         $html += @"
-    <h2 id="low-findings">&#9898; Low Severity Findings</h2>
+    <h2 id="low-findings"><span class="sev-dot sev-dot-low"></span>Low Severity Findings</h2>
     <div class="section-toolbar">
         <button type="button" class="toggle-all-btn" onclick="setSectionFindings('low-findings', true)">Expand All</button>
         <button type="button" class="toggle-all-btn" onclick="setSectionFindings('low-findings', false)">Collapse All</button>
@@ -603,6 +661,25 @@ function Get-ADFindingAnchorId {
     $slug = $slug.Trim('-')
     if ([string]::IsNullOrEmpty($slug)) { $slug = 'finding' }
     return "finding-$slug"
+}
+
+function Get-ADTruncateLabel {
+    <#
+    .SYNOPSIS
+        Truncates a label to approximately fit a fixed-width SVG <text>
+        element (which doesn't wrap or measure itself). A character-count
+        approximation, not exact - intended to stop egregious overflow, not
+        guarantee pixel-perfect fit for every font/browser.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][int]$MaxChars
+    )
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    if ($Text.Length -le $MaxChars) { return $Text }
+    if ($MaxChars -le 1) { return $Text.Substring(0, [Math]::Max($MaxChars, 0)) }
+    return $Text.Substring(0, $MaxChars - 1).TrimEnd() + [char]0x2026
 }
 
 function Get-ADSvgGauge {
@@ -680,14 +757,21 @@ function Get-ADSvgCategoryBars {
         $barW  = [math]::Round(($score / 100.0) * $barAreaW, 1)
         if ($barW -lt 2 -and $score -gt 0) { $barW = 2 }
         $color = Get-BandColor $score
-        $label = HtmlEncode "$($cat.Category) ($($cat.Findings))"
+        # ~7.2px/char at this font-size; reserve room for the " (NN)" suffix
+        # so the finding count is never the part that gets truncated.
+        $maxCategoryChars = [math]::Max(8, [math]::Floor($labelWidth / 7.2) - 6)
+        $categoryLabel = Get-ADTruncateLabel -Text "$($cat.Category)" -MaxChars $maxCategoryChars
+        $fullLabelForTitle = HtmlEncode "$($cat.Category) ($($cat.Findings) finding$(if ($cat.Findings -ne 1) { 's' }))"
+        $label = HtmlEncode "$categoryLabel ($($cat.Findings))"
         $textY = $y + 20
         $numX  = $labelWidth + $barAreaW + 10
         $rowsSvg += @"
+    <g><title>$fullLabelForTitle</title>
     <text x="0" y="$textY" font-size="12.5" fill="#1f2937" font-family="-apple-system,Segoe UI,sans-serif">$label</text>
     <rect x="$labelWidth" y="$y" width="$barAreaW" height="22" rx="4" fill="#e2e6ea" />
     <rect x="$labelWidth" y="$y" width="$barW" height="22" rx="4" fill="$color" />
     <text x="$numX" y="$textY" font-size="13" font-weight="700" fill="#1f2937" font-family="-apple-system,Segoe UI,sans-serif">$score</text>
+    </g>
 
 "@
         $y += $rowHeight
@@ -726,20 +810,28 @@ function Get-ADSvgControlPathDiagram {
         }
         return $text
     }
-    $srcLabel = HtmlEncode $Source
-    $tgtLabel = HtmlEncode $Target
+    # ~7.5px/char at this font-size against a ~200px usable box width.
+    $maxNodeChars = 26
+    $srcFull = HtmlEncode $Source
+    $tgtFull = HtmlEncode $Target
+    $srcLabel = HtmlEncode (Get-ADTruncateLabel -Text $Source -MaxChars $maxNodeChars)
+    $tgtLabel = HtmlEncode (Get-ADTruncateLabel -Text $Target -MaxChars $maxNodeChars)
     $hopLabel = if ($HopCount -eq 1) { '1 hop' } else { "$HopCount hops" }
 
     return @"
         <div class="control-path-diagram">
-        <svg viewBox="0 0 640 90" role="img" aria-label="$srcLabel to $tgtLabel via $hopLabel">
+        <svg viewBox="0 0 640 90" role="img" aria-label="$srcFull to $tgtFull via $hopLabel">
+            <g><title>$srcFull</title>
             <rect x="4" y="24" width="220" height="42" rx="6" fill="#f4f6f8" stroke="#e2e6ea" />
             <text x="114" y="50" font-size="13" text-anchor="middle" fill="#1f2937" font-family="-apple-system,Segoe UI,sans-serif">$srcLabel</text>
+            </g>
             <line x1="228" y1="45" x2="404" y2="45" stroke="$Color" stroke-width="3" />
             <polygon points="404,38 418,45 404,52" fill="$Color" />
             <text x="316" y="34" font-size="12" text-anchor="middle" fill="$Color" font-weight="700" font-family="-apple-system,Segoe UI,sans-serif">$hopLabel</text>
+            <g><title>$tgtFull</title>
             <rect x="418" y="24" width="218" height="42" rx="6" fill="#fdf1f0" stroke="$Color" />
             <text x="527" y="50" font-size="13" text-anchor="middle" fill="#1f2937" font-weight="700" font-family="-apple-system,Segoe UI,sans-serif">$tgtLabel</text>
+            </g>
         </svg>
         </div>
 "@
@@ -890,15 +982,15 @@ function Get-FindingHTML {
                     $metaTags
                 </div>
                 <div class="finding-section">
-                    <h4>&#128221; Description</h4>
+                    <h4>Description</h4>
                     <p>$description</p>
                 </div>
                 <div class="finding-section">
-                    <h4>&#9888; Impact</h4>
+                    <h4>Impact</h4>
                     <p>$impact</p>
                 </div>
                 <div class="finding-section">
-                    <h4>&#9989; Remediation</h4>
+                    <h4>Remediation</h4>
                     <p>$remediation</p>
                 </div>
             </div>
@@ -941,15 +1033,15 @@ function Get-FindingHTML {
                     $metaTags
                 </div>
                 <div class="finding-section">
-                    <h4>&#9888; Impact</h4>
+                    <h4>Impact</h4>
                     <p>$impact</p>
                 </div>
                 <div class="finding-section">
-                    <h4>&#9989; Remediation</h4>
+                    <h4>Remediation</h4>
                     <p>$remediation</p>
                 </div>
                 <div class="finding-section">
-                    <h4>&#128221; Affected Objects ($count)</h4>
+                    <h4>Affected Objects ($count)</h4>
                     <ul class="finding-instance-list">
 $instanceItemsHtml
                     </ul>

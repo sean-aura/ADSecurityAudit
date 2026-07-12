@@ -931,6 +931,14 @@ h3 {
   margin-top: 2px;
 }
 
+/* v1.20.1: severity dots replacing emoji icons on summary cards - same
+   treatment as the static report, for a consistent, print-safe cue. */
+.sev-dot { display: inline-block; width: 14px; height: 14px; border-radius: 3px; flex: none; }
+.sev-dot-critical { background: var(--critical); }
+.sev-dot-high { background: var(--high); }
+.sev-dot-medium { background: var(--medium); }
+.sev-dot-low { background: var(--low); }
+
 @media (max-width: 900px) {
   .hero {
     flex-direction: column;
@@ -940,4 +948,12 @@ h3 {
   body {
     padding: 18px 14px 40px;
   }
+}
+
+/* v1.20.1: print affordance - only the active tab panel prints (inactive
+   ones are already [hidden]); interactive chrome is hidden. */
+@media print {
+  body { background: white; padding: 0; }
+  .no-print, .tab-bar, .file-upload, .input-row, .paste-area, .helper-text { display: none !important; }
+  .panel { box-shadow: none; }
 }

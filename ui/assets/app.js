@@ -25,31 +25,10 @@
 // a stale AzureAdSsoExpiredKeys field was removed from the sample data).
 
 const SEVERITY_WEIGHTS = { Critical: 4, High: 3, Medium: 2, Low: 1 };
-const CATEGORY_ICONS = {
-  'Computer Account Delegation': '🖥️',
-  'Fine-Grained Password Policies': '🔑',
-  'DNS Security Configuration': '🌐',
-  'Authentication Policies': '🔒',
-  'Audit Configuration': '📑',
-  'LAPS Coverage': '🛡️',
-  'User Account': '👤',
-  'Privileged Groups': '👥',
-  'AdminSDHolder': '🔐',
-  'Group Policy': '📋',
-  'Replication Security': '🔄',
-  'Domain Security': '🏛️',
-  'Dangerous Permissions': '⚠️',
-  'Certificate Services': '📜',
-  'Kerberos Security': '🎫',
-  'Domain Trusts': '🤝',
-  'LAPS Deployment': '🔑',
-  'Audit Policy': '📊',
-  'Kerberos Delegation': '🎭',
-  'Admin Equivalence': '👑',
-  'Domain Admin Equivalence': '👑',
-  'Legacy Attack Vector': '⚡',
-  default: '📂',
-};
+// v1.20.1: category emoji icons removed - they rendered inconsistently
+// across platforms/print and read too casually for a report shown next to
+// leadership. Category cards/finding titles now use text only, consistent
+// with the static report's plain-text section headings.
 
 const state = {
   findings: [],
@@ -135,9 +114,7 @@ function groupByCategory(findings) {
   }, {});
 }
 
-function getCategoryIcon(name) {
-  return CATEGORY_ICONS[name] || CATEGORY_ICONS.default;
-}
+
 
 function renderSummary(findings) {
   const summary = computeSummary(findings);
@@ -221,7 +198,7 @@ function renderCategoryGrid(findings) {
     header.className = 'category-header';
     const title = document.createElement('div');
     title.className = 'category-title';
-    title.innerHTML = `<span class="icon">${getCategoryIcon(group.category)}</span><span>${escapeHtml(group.category)}</span>`;
+    title.innerHTML = `<span>${escapeHtml(group.category)}</span>`;
     const chip = document.createElement('span');
     chip.className = `status-chip ${severityClass}`;
     chip.textContent = `${severity} risk`;
@@ -289,7 +266,7 @@ function renderFindings(findings) {
 
     const title = document.createElement('div');
     title.className = 'finding-title';
-    title.innerHTML = `${getCategoryIcon(finding.Category)} <span>${escapeHtml(finding.Issue || 'Unknown Issue')}</span>`;
+    title.innerHTML = `<span>${escapeHtml(finding.Issue || 'Unknown Issue')}</span>`;
 
     const severityValue = normalizeSeverity(finding.Severity);
     const severity = document.createElement('span');
@@ -376,6 +353,13 @@ function renderRiskCallouts(findings) {
   });
 }
 
+function truncateLabel(text, maxChars) {
+  if (!text) return text;
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 1) return text.slice(0, Math.max(maxChars, 0));
+  return `${text.slice(0, maxChars - 1).trimEnd()}\u2026`;
+}
+
 function bandColorForScore(score) {
   if (score >= 75) return '#b3261e';
   if (score >= 50) return '#c8590b';
@@ -419,14 +403,21 @@ function buildCategoryBarsSvg(categoryScores) {
     let barW = (score / 100) * barAreaW;
     if (barW < 2 && score > 0) barW = 2;
     const color = bandColorForScore(score);
-    const label = escapeHtml(`${cat.Category} (${cat.Findings})`);
+    // ~7.2px/char at this font-size; reserve room for the " (NN)" suffix.
+    const maxCategoryChars = Math.max(8, Math.floor(labelWidth / 7.2) - 6);
+    const categoryLabel = truncateLabel(String(cat.Category ?? ''), maxCategoryChars);
+    const findingsCount = cat.Findings ?? 0;
+    const fullTitle = escapeHtml(`${cat.Category} (${findingsCount} finding${findingsCount === 1 ? '' : 's'})`);
+    const label = escapeHtml(`${categoryLabel} (${findingsCount})`);
     const textY = y + 20;
     const numX = labelWidth + barAreaW + 10;
     rowsSvg += `
+      <g><title>${fullTitle}</title>
       <text x="0" y="${textY}" font-size="12.5" fill="#1f2937" font-family="-apple-system,Segoe UI,sans-serif">${label}</text>
       <rect x="${labelWidth}" y="${y}" width="${barAreaW}" height="22" rx="4" fill="#e2e6ea" />
       <rect x="${labelWidth}" y="${y}" width="${barW}" height="22" rx="4" fill="${color}" />
       <text x="${numX}" y="${textY}" font-size="13" font-weight="700" fill="#1f2937" font-family="-apple-system,Segoe UI,sans-serif">${score}</text>
+      </g>
     `;
     y += rowHeight;
   });
@@ -435,19 +426,26 @@ function buildCategoryBarsSvg(categoryScores) {
 }
 
 function buildControlPathSvg(source, target, hopCount, color) {
-  const srcLabel = escapeHtml(source);
-  const tgtLabel = escapeHtml(target);
+  const maxNodeChars = 26;
+  const srcFull = escapeHtml(source);
+  const tgtFull = escapeHtml(target);
+  const srcLabel = escapeHtml(truncateLabel(source, maxNodeChars));
+  const tgtLabel = escapeHtml(truncateLabel(target, maxNodeChars));
   const hopLabel = hopCount === 1 ? '1 hop' : `${hopCount} hops`;
   return `
     <div class="control-path-svg">
-      <svg viewBox="0 0 640 90" role="img" aria-label="${srcLabel} to ${tgtLabel} via ${hopLabel}">
+      <svg viewBox="0 0 640 90" role="img" aria-label="${srcFull} to ${tgtFull} via ${hopLabel}">
+        <g><title>${srcFull}</title>
         <rect x="4" y="24" width="220" height="42" rx="6" fill="#f4f6f8" stroke="#e2e6ea" />
         <text x="114" y="50" font-size="13" text-anchor="middle" fill="#1f2937" font-family="-apple-system,Segoe UI,sans-serif">${srcLabel}</text>
+        </g>
         <line x1="228" y1="45" x2="404" y2="45" stroke="${color}" stroke-width="3" />
         <polygon points="404,38 418,45 404,52" fill="${color}" />
         <text x="316" y="34" font-size="12" text-anchor="middle" fill="${color}" font-weight="700" font-family="-apple-system,Segoe UI,sans-serif">${hopLabel}</text>
+        <g><title>${tgtFull}</title>
         <rect x="418" y="24" width="218" height="42" rx="6" fill="#fdf1f0" stroke="${color}" />
         <text x="527" y="50" font-size="13" text-anchor="middle" fill="#1f2937" font-weight="700" font-family="-apple-system,Segoe UI,sans-serif">${tgtLabel}</text>
+        </g>
       </svg>
     </div>
   `;
@@ -836,7 +834,7 @@ function buildModalFinding(finding) {
 
   const header = document.createElement('div');
   header.className = 'finding-header';
-  header.innerHTML = `${getCategoryIcon(finding.Category)} <strong>${escapeHtml(finding.Issue || 'Unknown Issue')}</strong>`;
+  header.innerHTML = `<strong>${escapeHtml(finding.Issue || 'Unknown Issue')}</strong>`;
 
   const severityValue = normalizeSeverity(finding.Severity);
   const severity = document.createElement('span');
@@ -1001,6 +999,9 @@ function boot() {
   const loadPasted = document.getElementById('load-pasted');
   const closeModalBtn = document.getElementById('close-modal');
   const modal = document.getElementById('modal');
+  const printBtn = document.getElementById('print-view');
+
+  if (printBtn) printBtn.addEventListener('click', () => window.print());
   
   if (fileInput) fileInput.addEventListener('change', handleFileUpload);
   if (loadSample) loadSample.addEventListener('click', () => loadRemoteJson('./sample-data/audit-report.json'));
