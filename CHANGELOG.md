@@ -5,6 +5,44 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.6]
+### Fixed
+- **`DnsSecurityAudits.ps1`'s header comment had claimed `P-DNSDelegation`-comparable
+  coverage since this file was written, but no delegation/NS-record logic existed anywhere
+  in the codebase** - only zone-transfer, dynamic-update, and ADIDNS CreateChild-ACL checks
+  were implemented (three of the six PingCastle-comparable ids the header claimed, not four).
+  Found via the same header-vs-code audit that closed the GPO (`A-AnonymousAuthorizedGPO`,
+  v1.20.4) and null-session (`A-NullSession`, v1.20.5) gaps. Added a fifth check to
+  `Test-ADDnsSecurity`: for every AD-integrated zone this function already enumerates, it
+  calls the read-only `Get-DnsServerZoneDelegation` cmdlet to list delegated child zones and
+  their NS/glue records, then issues an ordinary SOA query against each glue IP to confirm the
+  delegation is still live. A glue server that no longer answers authoritatively for the child
+  zone is flagged as a stale/dangling delegation - the well-documented DNS delegation/
+  subdomain-takeover risk where whoever can now claim that hostname or reclaim that IP can
+  serve authoritative-looking answers for the sub-zone. Delegations that merely point outside
+  this module's known AD Sites & Services subnets (`Get-ADReplicationSubnet`, reusing the same
+  read-only cmdlet `StaleObjectDepthAudits.ps1` already uses) but still answer correctly are
+  explicitly NOT flagged, to avoid false positives against legitimate delegations to non-AD
+  infrastructure (e.g. a cloud DNS provider) - that check is recorded only as weak,
+  informational context alongside a real finding, never as its own trigger. Severity is
+  conditional (`Medium`/`High`) on whether any unresponsive glue IP is a public address
+  (externally re-claimable by anyone) versus simply unreachable internal infrastructure,
+  following the same conditional-severity pattern already used for "Excessive Privileged Group
+  Membership" in `GroupAudits.ps1`. New "Stale/Dangling DNS Zone Delegation" finding, reported
+  once per zone-security audit across all affected zones (consistent with how the neighboring
+  zone-transfer/dynamic-update/ADIDNS findings in this file already aggregate). New
+  `Scoring.ps1` mapping entry (MITRE `T1590.002` - reused from the existing "DNS Zone Transfer
+  Allowed" entry in this same file rather than introducing a new technique independently, ANSSI
+  `vuln2_dns_stale_delegation`).
+- Delegation/NS records have no `dNSProperty`-based fallback representation (unlike the
+  transfer/dynamic-update checks), so this new check is skipped entirely when the DnsServer
+  RSAT module is unavailable, and - like this file's other three per-zone checks - is skipped
+  entirely under `-Snapshot` with an `Add-ADOfflineSkipNote` entry, since delegation records
+  are not part of the current `Snapshot.DnsZones` schema. No `ADSecurityFinding` schema
+  changes. No exploitation code: this reads already-published glue records and issues ordinary
+  DNS queries against them - it never registers a hostname, claims an IP address, or otherwise
+  attempts an actual takeover to confirm exploitability.
+
 ## [1.20.5]
 ### Fixed
 - **`DomainHardeningAudits.ps1`'s header comment had claimed `A-NullSession`-comparable

@@ -4,31 +4,38 @@
 # generic AD reviews miss: DnsAdmins group membership (a well-known
 # Domain-Controller code-execution path via the DNS server's
 # ServerLevelPluginDll mechanism), zone transfer exposure, insecure dynamic
-# updates, and overly broad child-object creation rights on zone objects
-# (the "ADIDNS" spoofing/MITM surface). PingCastle-comparable check(s): P-DNSAdmin,
-# P-DNSDelegation, A-DnsZoneTransfert, A-DnsZoneUpdate1, A-DnsZoneUpdate2,
+# updates, overly broad child-object creation rights on zone objects
+# (the "ADIDNS" spoofing/MITM surface), and stale/dangling DNS zone
+# delegations. PingCastle-comparable check(s): P-DNSAdmin, P-DNSDelegation,
+# A-DnsZoneTransfert, A-DnsZoneUpdate1, A-DnsZoneUpdate2,
 # A-DnsZoneAUCreateChild.
 #
 # Snapshot-aware for the DnsAdmins membership check only: it reads the
 # 'DnsAdmins' entry from Snapshot.Groups (Members flattened to DNs, same
 # shape used by the Pre-Windows 2000 check in DomainHardeningAudits.ps1)
 # when a snapshot is supplied. The per-zone checks (zone transfer, dynamic
-# update, and ADIDNS CreateChild ACL) read zone-level attributes
-# (dNSProperty) and ACLs (nTSecurityDescriptor) that are not part of the
-# existing Snapshot.DnsZones shape (Name/DistinguishedName only), so - per
-# the established -FromSnapshot contract of performing NO live AD/network
-# access (see Test-ADCoercionAndRelayExposure, the anonymous-bind probe in
+# update, ADIDNS CreateChild ACL, and delegation staleness) read zone-level
+# attributes (dNSProperty), ACLs (nTSecurityDescriptor), and delegation/NS
+# records that are not part of the existing Snapshot.DnsZones shape
+# (Name/DistinguishedName only), so - per the established -FromSnapshot
+# contract of performing NO live AD/network access (see
+# Test-ADCoercionAndRelayExposure, the anonymous-bind probe in
 # Test-ADDomainHardeningFlags, and the ESC4/ESC8 checks in
 # Test-ADCSExtended) - they are live-only and are skipped entirely when
 # this function is invoked with -Snapshot.
 #
 # DETECTION ONLY: this module reads group membership, AD-integrated zone
 # object attributes/ACLs, and (optionally) the read-only DNS Server
-# PowerShell cmdlet `Get-DnsServerZone` (transfer settings are read from its
+# PowerShell cmdlets `Get-DnsServerZone` (transfer settings are read from its
 # SecureSecondaries/SecondaryServers properties - there is no separate
-# "Get-DnsServerZoneTransfer" cmdlet). It never creates, deletes, or
-# modifies a DNS record or zone, never registers a plugin DLL, and performs
-# no exploitation, coercion, relay, or PoC traffic.
+# "Get-DnsServerZoneTransfer" cmdlet) and `Get-DnsServerZoneDelegation`
+# (delegation NS/glue enumeration). The delegation-staleness check also
+# issues ordinary DNS SOA queries against already-published glue IP
+# addresses, and optionally reads AD Sites & Services subnet objects
+# (`Get-ADReplicationSubnet`) for an informational-only signal. It never
+# creates, deletes, or modifies a DNS record or zone, never registers a
+# plugin DLL or hostname, never claims an IP address, and performs no
+# exploitation, coercion, relay, takeover, or PoC traffic.
 
 # Well-known/service SIDs that legitimately end up referenced from DnsAdmins
 # in some environments and should not be flagged as "non-default" human/
@@ -93,14 +100,54 @@ function Get-ADDnsZonePropertyValue {
     return $null
 }
 
+# Best-effort classifier for whether an IPv4 address falls in a private/
+# reserved range (RFC1918, loopback, link-local). Used only as a severity
+# signal for stale DNS delegations: a delegation whose unresponsive glue
+# server sits on a public address is externally re-claimable by anyone (a
+# classic subdomain-takeover setup) and is treated as higher severity than
+# one whose glue address is simply unreachable on internal infrastructure.
+# Returns $null (rather than guessing) for anything it cannot parse as an
+# IPv4 address, consistent with Get-ADDnsZonePropertyValue's "degrade to
+# skip, don't guess" convention in this file.
+function Test-ADIsPrivateIpAddress {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$IpAddress
+    )
+
+    try {
+        $parsed = [System.Net.IPAddress]::Parse($IpAddress)
+        if ($parsed.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            # IPv6 or otherwise not something this best-effort check reasons about.
+            return $null
+        }
+
+        $b = $parsed.GetAddressBytes()
+
+        if ($b[0] -eq 10) { return $true }                                   # 10.0.0.0/8
+        if ($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31) { return $true } # 172.16.0.0/12
+        if ($b[0] -eq 192 -and $b[1] -eq 168) { return $true }               # 192.168.0.0/16
+        if ($b[0] -eq 127) { return $true }                                  # 127.0.0.0/8 (loopback)
+        if ($b[0] -eq 169 -and $b[1] -eq 254) { return $true }               # 169.254.0.0/16 (link-local)
+
+        return $false
+    }
+    catch {
+        Write-Verbose "Test-ADIsPrivateIpAddress: could not parse '$IpAddress' as an IPv4 address: $_"
+        return $null
+    }
+}
+
 function Test-ADDnsSecurity {
     <#
     .SYNOPSIS
         Audits AD-integrated DNS security: DnsAdmins membership, zone
-        transfer exposure, insecure dynamic updates, and ADIDNS
-        (broad child-object creation) on AD-integrated zones.
+        transfer exposure, insecure dynamic updates, ADIDNS
+        (broad child-object creation), and stale/dangling zone delegations
+        on AD-integrated zones.
     .DESCRIPTION
-        Four checks:
+        Five checks:
           1. DnsAdmins group membership - any member outside a short list of
              well-known service SIDs is flagged (DnsAdmins is empty by
              default; membership grants a well-known DC code-execution path
@@ -116,22 +163,39 @@ function Test-ADDnsSecurity {
              (or an equivalently broad right) to Authenticated Users,
              Everyone, or ANONYMOUS LOGON, enabling arbitrary DNS record
              registration/spoofing.
+          5. Stale/Dangling DNS Zone Delegation - for each AD-integrated
+             zone's delegated child zones (`Get-DnsServerZoneDelegation`),
+             confirms each delegation NS's glue IP still answers an
+             authoritative SOA query for the child zone. A glue IP that no
+             longer responds is the stale/dangling signal (per PingCastle's
+             P-DNSDelegation): whoever can now claim that hostname or
+             reclaim that IP can serve authoritative-looking answers for the
+             sub-zone. Delegations that simply point outside this module's
+             known AD Sites & Services subnets, but still answer correctly,
+             are NOT flagged - that is common for legitimate delegations to
+             non-AD infrastructure (e.g. a cloud DNS provider) and is
+             recorded only as weak, informational context, never as the
+             basis for a finding.
 
         Checks 2-4 prefer the read-only `Get-DnsServerZone` cmdlet (DnsServer
         RSAT module, reading its DynamicUpdate/SecureSecondaries properties)
         when available, and fall back to a best-effort read of the zone AD
         object's `dNSProperty` attribute when that module is not installed.
         If neither source yields a confident answer for a zone, that check
-        is skipped for that zone (Verbose only) rather than guessing.
+        is skipped for that zone (Verbose only) rather than guessing. Check
+        5 has no `dNSProperty`-based fallback (delegation/NS records have no
+        such representation) and is skipped entirely when the DnsServer
+        module is unavailable.
     .PARAMETER Snapshot
         Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
         the DnsAdmins membership check is derived from `Snapshot.Groups`
         instead of a live query. The zone-level checks (transfer, dynamic
-        update, ADIDNS CreateChild) read zone attributes/ACLs that are not
-        part of the current snapshot schema and are live-only network/AD
-        operations, so - consistent with the -FromSnapshot contract of
-        performing no live AD/network access - they are skipped entirely
-        when -Snapshot is supplied.
+        update, ADIDNS CreateChild, delegation staleness) read zone
+        attributes/ACLs/delegation records that are not part of the current
+        snapshot schema and are live-only network/AD operations, so -
+        consistent with the -FromSnapshot contract of performing no live
+        AD/network access - they are skipped entirely when -Snapshot is
+        supplied.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
@@ -225,16 +289,16 @@ function Test-ADDnsSecurity {
     }
 
     # -------------------------------------------------------------------
-    # Checks 2-4: per-zone transfer / dynamic update / ADIDNS CreateChild.
-    # These read zone-level attributes/ACLs that are not part of the
-    # current snapshot schema and require live AD/network access, so they
-    # are skipped entirely when -Snapshot is supplied (offline mode
-    # performs no live AD/network access).
+    # Checks 2-5: per-zone transfer / dynamic update / ADIDNS CreateChild /
+    # delegation staleness. These read zone-level attributes/ACLs/delegation
+    # records that are not part of the current snapshot schema and require
+    # live AD/network access, so they are skipped entirely when -Snapshot is
+    # supplied (offline mode performs no live AD/network access).
     # -------------------------------------------------------------------
     if ($Snapshot) {
-        Write-Verbose "Test-ADDnsSecurity: -Snapshot supplied; skipping live zone transfer/dynamic-update/ADIDNS checks (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'DnsSecurity' -Check 'Zone transfer, dynamic-update, and ADIDNS CreateChild permissions' `
-            -Reason 'Zone-level attributes/ACLs not present in the current snapshot schema. Run this check live (without -Snapshot) if you need this coverage.'
+        Write-Verbose "Test-ADDnsSecurity: -Snapshot supplied; skipping live zone transfer/dynamic-update/ADIDNS/delegation-staleness checks (offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'DnsSecurity' -Check 'Zone transfer, dynamic-update, ADIDNS CreateChild, and delegation-staleness permissions/records' `
+            -Reason 'Zone-level attributes/ACLs/delegation records not present in the current snapshot schema. Run this check live (without -Snapshot) if you need this coverage.'
         Write-Verbose "AD-integrated DNS security audit complete. Found $($findings.Count) issue(s)."
         return $findings
     }
@@ -294,9 +358,30 @@ function Test-ADDnsSecurity {
             Write-Verbose "Test-ADDnsSecurity: DnsServer RSAT module not available; falling back to AD attribute (dNSProperty) reads for zone transfer/dynamic update."
         }
 
+        # Best-effort, informational-only context for the delegation-
+        # staleness check: known AD Sites & Services subnet ranges. A glue
+        # IP falling outside all of these is NOT itself a finding (a
+        # legitimate delegation to non-AD infrastructure, e.g. a cloud DNS
+        # provider, is common) - it is only ever recorded as weak supporting
+        # context alongside the actual (glue-unresponsive) stale-delegation
+        # signal. Read-only; absence of this data does not block the check.
+        $knownSubnetRanges = @()
+        if ($useDnsCmdlets) {
+            try {
+                $knownSubnetRanges = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADReplicationSubnet (DNS delegation staleness)' -Query {
+                    Get-ADReplicationSubnet -Filter * -Properties Name -ErrorAction Stop
+                } | ForEach-Object { $_.Name })
+            }
+            catch {
+                Write-Verbose "Test-ADDnsSecurity: could not read AD Sites & Services subnets for the delegation-staleness informational signal (non-fatal): $_"
+                $knownSubnetRanges = @()
+            }
+        }
+
         $broadTransferZones  = [System.Collections.ArrayList]::new()
         $insecureUpdateZones = [System.Collections.ArrayList]::new()
         $adidnsZones         = [System.Collections.ArrayList]::new()
+        $staleDelegations    = [System.Collections.ArrayList]::new()
         $zoneDetailLookup    = @{}
 
         foreach ($zone in $zoneObjects) {
@@ -414,6 +499,112 @@ function Test-ADDnsSecurity {
             catch {
                 Write-Verbose "Test-ADDnsSecurity: could not evaluate ACL for zone '$zoneName': $_"
             }
+
+            # --- Stale/Dangling DNS Zone Delegation ---
+            # Only possible via the DnsServer cmdlet path: delegation/NS
+            # records have no dNSProperty-based fallback representation.
+            if ($useDnsCmdlets) {
+                $delegations = @()
+                try {
+                    $delegations = @(Invoke-ADQueryWithRetry -OperationName "Get-DnsServerZoneDelegation '$zoneName'" -Query {
+                        Get-DnsServerZoneDelegation -ZoneName $zoneName -ComputerName $dnsCmdletTargetDC -ErrorAction Stop
+                    })
+                }
+                catch {
+                    Write-Verbose "Test-ADDnsSecurity: Get-DnsServerZoneDelegation failed for '$zoneName' (zone may have no delegations): $_"
+                    $delegations = @()
+                }
+
+                foreach ($delegation in @($delegations)) {
+                    # Cmdlet output shape can vary slightly by Windows Server
+                    # version; read defensively and skip (Verbose only)
+                    # rather than guess at a property that isn't there.
+                    $childZoneName = $null
+                    if ($delegation.PSObject.Properties['ChildZoneName'] -and $delegation.ChildZoneName) {
+                        $childZoneName = "$($delegation.ChildZoneName)"
+                    }
+                    elseif ($delegation.PSObject.Properties['Name'] -and $delegation.Name) {
+                        $childZoneName = "$($delegation.Name)"
+                    }
+
+                    if ([string]::IsNullOrWhiteSpace($childZoneName)) {
+                        Write-Verbose "Test-ADDnsSecurity: could not determine the delegated child zone name for a delegation under '$zoneName'; skipping."
+                        continue
+                    }
+
+                    $fullChildZoneName = if ($childZoneName -match ('\.' + [regex]::Escape($zoneName) + '$') -or $childZoneName -eq $zoneName) {
+                        $childZoneName
+                    }
+                    else {
+                        "$childZoneName.$zoneName"
+                    }
+
+                    $nameServers = @()
+                    if ($delegation.PSObject.Properties['NameServer'] -and $delegation.NameServer) {
+                        $nameServers = @($delegation.NameServer)
+                    }
+
+                    foreach ($ns in $nameServers) {
+                        $nsHost = $null
+                        if ($ns.PSObject.Properties['Name'] -and $ns.Name) { $nsHost = "$($ns.Name)" }
+                        elseif ($ns.PSObject.Properties['NameServer'] -and $ns.NameServer) { $nsHost = "$($ns.NameServer)" }
+
+                        $glueIps = @()
+                        if ($ns.PSObject.Properties['IPAddress'] -and $ns.IPAddress) {
+                            $glueIps = @($ns.IPAddress | ForEach-Object { "$_" } | Where-Object { $_ })
+                        }
+
+                        if ($glueIps.Count -eq 0) {
+                            Write-Verbose "Test-ADDnsSecurity: delegation NS '$nsHost' under '$zoneName' -> '$fullChildZoneName' has no glue IP recorded; cannot test responsiveness, skipping."
+                            continue
+                        }
+
+                        foreach ($glueIp in $glueIps) {
+                            # Primary signal: does this glue IP still answer
+                            # an authoritative SOA query for the delegated
+                            # child zone? A delegation that doesn't actually
+                            # answer is unambiguously stale.
+                            $responds = $false
+                            try {
+                                $soaAnswer = Resolve-DnsName -Name $fullChildZoneName -Server $glueIp -Type SOA -DnsOnly -ErrorAction Stop
+                                if ($soaAnswer) { $responds = $true }
+                            }
+                            catch {
+                                Write-Verbose "Test-ADDnsSecurity: glue IP '$glueIp' for delegated zone '$fullChildZoneName' (NS '$nsHost') did not answer an SOA query: $_"
+                                $responds = $false
+                            }
+
+                            if ($responds) { continue }
+
+                            # Secondary, informational-only signal: is this
+                            # glue IP outside every known AD Sites & Services
+                            # subnet? This does NOT gate the finding - a
+                            # legitimate delegation to non-AD infrastructure
+                            # is common - it is only ever extra context.
+                            $outsideKnownSubnets = $null
+                            if ($knownSubnetRanges.Count -gt 0) {
+                                $withinKnownSubnet = $false
+                                foreach ($subnetRange in $knownSubnetRanges) {
+                                    if (Test-ADIpInCidrRange -IpAddress $glueIp -CidrRange $subnetRange) {
+                                        $withinKnownSubnet = $true
+                                        break
+                                    }
+                                }
+                                $outsideKnownSubnets = -not $withinKnownSubnet
+                            }
+
+                            [void]$staleDelegations.Add(@{
+                                ParentZone          = $zoneName
+                                ChildZone           = $fullChildZoneName
+                                NameServer          = $nsHost
+                                GlueIpAddress       = $glueIp
+                                IsPublicIpAddress   = ((Test-ADIsPrivateIpAddress -IpAddress $glueIp) -eq $false)
+                                OutsideKnownSubnets = $outsideKnownSubnets
+                            })
+                        }
+                    }
+                }
+            }
         }
 
         # -------------------------------------------------------------------
@@ -485,6 +676,35 @@ function Test-ADDnsSecurity {
         }
         else {
             Write-Verbose "Test-ADDnsSecurity: no zones with broad ADIDNS CreateChild rights found."
+        }
+
+        # -------------------------------------------------------------------
+        # Finding: Stale/Dangling DNS Zone Delegation
+        # -------------------------------------------------------------------
+        if ($staleDelegations.Count -gt 0) {
+            $affectedChildZones = @($staleDelegations | ForEach-Object { $_.ChildZone } | Select-Object -Unique)
+            $anyPublicGlue = @($staleDelegations | Where-Object { $_.IsPublicIpAddress }).Count -gt 0
+
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'DNS Security'
+            $finding.Issue = 'Stale/Dangling DNS Zone Delegation'
+            # Conditional severity: an unresponsive glue server on a public
+            # IP address is externally re-claimable by anyone (classic
+            # subdomain-takeover setup) and is rated higher than a glue
+            # server that is simply unreachable on internal infrastructure.
+            $finding.Severity = if ($anyPublicGlue) { 'High' } else { 'Medium' }
+            $finding.SeverityLevel = if ($anyPublicGlue) { 3 } else { 2 }
+            $finding.AffectedObject = ($affectedChildZones -join ', ')
+            $finding.Description = "$($staleDelegations.Count) DNS delegation name-server record(s) across $($affectedChildZones.Count) delegated child zone(s) point at glue IP addresses that no longer answer authoritatively for the delegated zone: $($affectedChildZones -join ', ')."
+            $finding.Impact = "A delegation whose glue nameservers no longer respond is stale/dangling: the parent zone's NS/glue records still hand authority for the sub-zone to infrastructure that appears retired or reassigned. Whoever can now claim that hostname or reclaim that IP address can serve authoritative-looking answers for the sub-zone - a well-documented DNS delegation/subdomain-takeover risk."
+            $finding.Remediation = "Confirm whether each delegated child zone is still in use. If it is not, remove the stale NS/glue records from the parent zone (`Remove-DnsServerZoneDelegation`). If the child zone is still needed, repoint the delegation at the nameservers actually serving it today."
+            $finding.Details = @{
+                StaleDelegations = @($staleDelegations)
+            }
+            $findings += $finding
+        }
+        else {
+            Write-Verbose "Test-ADDnsSecurity: no stale/dangling DNS zone delegations found."
         }
     }
     catch {
