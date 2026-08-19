@@ -419,7 +419,11 @@ function Test-ADCSExtended {
             $finding.Severity = 'High'
             $finding.SeverityLevel = 3
             $finding.AffectedObject = $templateName
-            $finding.Description = "Certificate template '$templateName' grants Write/WriteDacl/WriteOwner/GenericAll/GenericWrite rights to low-privileged principal(s): $($dangerousAces -join '; ')."
+            # BUGFIX: was a single semicolon-joined run-on sentence; rendered
+            # as one bullet per ACE instead for readability once there's more
+            # than a couple of principals.
+            $dangerousAceBullets = ($dangerousAces | ForEach-Object { "- $_" }) -join "`n"
+            $finding.Description = "Certificate template '$templateName' grants Write/WriteDacl/WriteOwner/GenericAll/GenericWrite rights to low-privileged principal(s):`n$dangerousAceBullets"
             $finding.Impact = "A principal with write access to a certificate template can reconfigure it into an ESC1-style template (enable SAN, remove approval, weaken EKUs) and then enroll for a certificate impersonating any account, including Domain Admins."
             $finding.Remediation = "Remove Write/WriteDacl/WriteOwner/GenericAll/GenericWrite permissions on the template from any principal other than PKI/Domain administrators."
             $finding.Details = @{

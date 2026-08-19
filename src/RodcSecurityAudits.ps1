@@ -326,7 +326,10 @@ function Test-ADRodcSecurity {
             $finding.Severity = 'High'
             $finding.SeverityLevel = 3
             $finding.AffectedObject = $detail.Name
-            $finding.Description = "The RODC '$($detail.Name)' has a password replication policy (PRP) gap: $($issues -join '; ')."
+            # BUGFIX: was a single semicolon-joined run-on sentence; rendered
+            # as one bullet per gap instead for readability.
+            $prpIssueBullets = ($issues | ForEach-Object { "- $_" }) -join "`n"
+            $finding.Description = "The RODC '$($detail.Name)' has a password replication policy (PRP) gap:`n$prpIssueBullets"
             $finding.Impact = "A too-broad allowed list lets a much larger set of accounts have their secrets cached on this lower-trust DC than intended; a denied list missing core privileged groups relies solely on the allowed list being correct, with no defense-in-depth if that list is later widened by mistake."
             $finding.Remediation = "Scope msDS-RevealOnDemandGroup (the allowed list) down to only the specific accounts/groups that legitimately need to authenticate through this RODC, and ensure msDS-NeverRevealGroup (the denied list) explicitly includes Domain Admins, Enterprise Admins, Schema Admins, built-in Administrators, Cert Publishers, and the built-in Denied RODC Password Replication Group."
             $finding.Details = @{

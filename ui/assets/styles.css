@@ -573,6 +573,19 @@ h3 {
   color: var(--ink);
 }
 
+/* Some findings build a newline-separated bullet list into Description
+   (e.g. Domain Admin Equivalence, ESC4) instead of one long
+   semicolon-joined sentence, and Remediation numbered lists (e.g. the
+   Kerberoasting finding) also rely on real newlines between steps. These
+   are set via textContent in app.js, which preserves the \n characters -
+   but the default `white-space: normal` collapses them right back into
+   one line. pre-line keeps normal word-wrapping while still breaking on
+   the newlines that are actually there. */
+.description,
+.remediation {
+  white-space: pre-line;
+}
+
 .remediation strong,
 .references strong,
 .detail-grid strong {

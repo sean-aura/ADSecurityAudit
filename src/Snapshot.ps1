@@ -201,8 +201,8 @@ function Get-ADSnapshot {
     $snapshotStages = @(
         'Domain & Domain Controllers', 'Machine Account Quota', 'dSHeuristics',
         'Pre-Windows 2000 Compatible Access', 'Users',
-        'ACLs on privileged (adminCount=1) users', 'Computers', 'Groups',
-        'GPOs', 'ACLs on key objects', 'LAPS schema presence',
+        'ACLs on privileged (adminCount=1) users', 'LAPS schema presence',
+        'Computers', 'Groups', 'GPOs', 'ACLs on key objects',
         'Password policy, forest mode, Recycle Bin', 'AD CS configuration',
         'DNS zones', 'Domain trusts'
     )
@@ -448,6 +448,54 @@ function Get-ADSnapshot {
         Write-Warning "Get-ADSnapshot: failed to collect ACLs on adminCount=1 users: $_"
     }
 
+    # --- v1.19.0 offline-parity backlog, step 23: LAPS schema presence ---
+    # A one-time boolean presence check (legacy LAPS and Windows LAPS schema
+    # extensions), for Test-LAPSDeployment's schema-presence gate. Booleans
+    # only - no need to carry the schema object itself.
+    #
+    # BUGFIX: this check now runs BEFORE the Computers collection below (it
+    # used to run afterwards, purely for Test-LAPSDeployment's benefit). The
+    # Computers query used to unconditionally request the
+    # 'ms-Mcs-AdmPwdExpirationTime' and 'msLAPS-PasswordExpirationTime'
+    # attributes. Get-ADComputer -Properties throws a terminating error for
+    # any attribute name that isn't defined in the schema at all (not just
+    # unpopulated) - so on a domain where neither LAPS variant has ever been
+    # schema-extended, that single bad -Properties list failed the *entire*
+    # Get-ADComputer call. Invoke-ADQueryWithRetry swallows that failure and
+    # returns $null, and the surrounding try/catch here only logs a warning -
+    # so every computer in the domain silently disappeared from the snapshot
+    # (and therefore from every offline check that reads Snapshot.Computers,
+    # not just LAPS coverage). Now the two attribute names are only added to
+    # the -Properties list when the corresponding schema extension is
+    # actually present.
+    Step-ADSnapshotProgress -Stage 'LAPS schema presence'
+    $legacyLapsPresent = $false
+    $windowsLapsPresent = $false
+    try {
+        Write-Verbose "Get-ADSnapshot: checking LAPS schema presence..."
+        $schemaNCForLaps = ([ADSI]"LDAP://RootDSE").schemaNamingContext
+        try {
+            $legacyLapsPresent = [bool](Get-ADObject -Identity "CN=ms-Mcs-AdmPwd,$schemaNCForLaps" -ErrorAction SilentlyContinue)
+        }
+        catch {
+            Write-Verbose "Get-ADSnapshot: legacy LAPS schema check failed: $_"
+        }
+        try {
+            $windowsLapsPresent = [bool](Get-ADObject -Identity "CN=ms-LAPS-Password,$schemaNCForLaps" -ErrorAction SilentlyContinue)
+        }
+        catch {
+            Write-Verbose "Get-ADSnapshot: Windows LAPS schema check failed: $_"
+        }
+        $snapshot.LapsSchema = @{
+            LegacyLapsPresent  = $legacyLapsPresent
+            WindowsLapsPresent = $windowsLapsPresent
+        }
+        Write-Verbose "Get-ADSnapshot: LapsSchema = Legacy:$legacyLapsPresent, Windows:$windowsLapsPresent"
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect LAPS schema presence: $_"
+    }
+
     # --- Computers (paged) ---
     # Same flattening fix as Users above. Note: the raw
     # msDS-AllowedToActOnBehalfOfOtherIdentity (RBCD) security descriptor
@@ -458,15 +506,26 @@ function Get-ADSnapshot {
     Step-ADSnapshotProgress -Stage 'Computers'
     try {
         Write-Verbose "Get-ADSnapshot: collecting computers..."
+
+        # BUGFIX: only request the LAPS attribute(s) that actually exist in
+        # this domain's schema - see the LAPS schema presence note above.
+        # Requesting a schema-undefined property name fails the whole
+        # Get-ADComputer call, not just that one column.
+        $computerBaseProperties = @(
+            'OperatingSystem', 'OperatingSystemVersion', 'LastLogonDate', 'Enabled',
+            'DistinguishedName', 'TrustedForDelegation', 'msDS-AllowedToDelegateTo',
+            'PrimaryGroupID', 'SID', 'userAccountControl', 'WhenCreated',
+            'SamAccountName', 'ServicePrincipalNames', 'TrustedToAuthForDelegation',
+            'PasswordLastSet', 'nTSecurityDescriptor'
+        )
+        $computerLapsProperties = @()
+        if ($legacyLapsPresent)  { $computerLapsProperties += 'ms-Mcs-AdmPwdExpirationTime' }
+        if ($windowsLapsPresent) { $computerLapsProperties += 'msLAPS-PasswordExpirationTime' }
+        $computerProperties = $computerBaseProperties + $computerLapsProperties
+
         $rawComputers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer (snapshot)' -Query {
-            Get-ADComputer -Filter '*' -ResultPageSize 500 -ErrorAction Stop -Properties `
-                OperatingSystem, OperatingSystemVersion, LastLogonDate, Enabled, `
-                DistinguishedName, TrustedForDelegation, 'msDS-AllowedToDelegateTo', `
-                PrimaryGroupID, SID, 'ms-Mcs-AdmPwdExpirationTime', `
-                'msLAPS-PasswordExpirationTime', userAccountControl, WhenCreated, `
-                SamAccountName, ServicePrincipalNames, TrustedToAuthForDelegation, `
-                PasswordLastSet, nTSecurityDescriptor
-        })
+            Get-ADComputer -Filter '*' -ResultPageSize 500 -ErrorAction Stop -Properties $computerProperties
+        } | Where-Object { $_ })
 
         # --- v1.19.0 offline-parity backlog, step 24 ---
         # RBCD presence flag: targeted LDAP filter, never the raw
@@ -684,38 +743,6 @@ function Get-ADSnapshot {
     }
     catch {
         Write-Warning "Get-ADSnapshot: failed during ACL collection: $_"
-    }
-
-    # --- v1.19.0 offline-parity backlog, step 23: LAPS schema presence ---
-    # A one-time boolean presence check (legacy LAPS and Windows LAPS schema
-    # extensions), for Test-LAPSDeployment's schema-presence gate. Booleans
-    # only - no need to carry the schema object itself.
-    Step-ADSnapshotProgress -Stage 'LAPS schema presence'
-    try {
-        Write-Verbose "Get-ADSnapshot: checking LAPS schema presence..."
-        $schemaNCForLaps = ([ADSI]"LDAP://RootDSE").schemaNamingContext
-        $legacyLapsPresent = $false
-        $windowsLapsPresent = $false
-        try {
-            $legacyLapsPresent = [bool](Get-ADObject -Identity "CN=ms-Mcs-AdmPwd,$schemaNCForLaps" -ErrorAction SilentlyContinue)
-        }
-        catch {
-            Write-Verbose "Get-ADSnapshot: legacy LAPS schema check failed: $_"
-        }
-        try {
-            $windowsLapsPresent = [bool](Get-ADObject -Identity "CN=ms-LAPS-Password,$schemaNCForLaps" -ErrorAction SilentlyContinue)
-        }
-        catch {
-            Write-Verbose "Get-ADSnapshot: Windows LAPS schema check failed: $_"
-        }
-        $snapshot.LapsSchema = @{
-            LegacyLapsPresent  = $legacyLapsPresent
-            WindowsLapsPresent = $windowsLapsPresent
-        }
-        Write-Verbose "Get-ADSnapshot: LapsSchema = Legacy:$legacyLapsPresent, Windows:$windowsLapsPresent"
-    }
-    catch {
-        Write-Warning "Get-ADSnapshot: failed to collect LAPS schema presence: $_"
     }
 
     # --- v1.19.0 offline-parity backlog, step 27: domain-wide policy/feature state ---

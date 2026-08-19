@@ -958,7 +958,6 @@ function Get-FindingHTML {
     if ([string]::IsNullOrWhiteSpace($impact))      { $impact      = 'Not specified for this finding.' }
     if ([string]::IsNullOrWhiteSpace($remediation)) { $remediation = 'Not specified for this finding.' }
     $remediation = $remediation -replace "`r`n", '<br>' -replace "`n", '<br>'
-
     # Optional metadata tags (v1.2.0) - these come from the shared Issue ->
     # MITRE/ANSSI mapping, so they're identical across every item in the
     # group; render once from the first item rather than once per object.
@@ -982,6 +981,12 @@ function Get-FindingHTML {
         $affectedObject = HtmlEncode $first.AffectedObject
         if ([string]::IsNullOrWhiteSpace($description))    { $description = 'Not specified for this finding.' }
         if ([string]::IsNullOrWhiteSpace($affectedObject))  { $affectedObject = 'N/A' }
+        # Some findings (e.g. Domain Admin Equivalence, ESC4) build a
+        # newline-separated bullet list into Description instead of one
+        # long semicolon-joined sentence; convert those to <br> the same
+        # way Remediation already is, so the bullets actually break onto
+        # separate lines instead of running together in the <p>.
+        $description = $description -replace "`r`n", '<br>' -replace "`n", '<br>'
 
         return @"
         <details class="finding $severityClass" id="$anchorId">
@@ -1026,6 +1031,7 @@ function Get-FindingHTML {
         $objName = HtmlEncode $f.AffectedObject
         if ([string]::IsNullOrWhiteSpace($objDesc)) { $objDesc = 'Not specified for this finding.' }
         if ([string]::IsNullOrWhiteSpace($objName)) { $objName = 'N/A' }
+        $objDesc = $objDesc -replace "`r`n", '<br>' -replace "`n", '<br>'
         @"
                     <li class="finding-instance">
                         <div class="finding-instance-object">$objName</div>

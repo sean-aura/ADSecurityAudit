@@ -316,7 +316,10 @@ function Test-ADGpoDeployedSecrets {
                     $finding.Severity = 'Medium'
                     $finding.SeverityLevel = 2
                     $finding.AffectedObject = $gpo.DisplayName
-                    $finding.Description = "GPO '$($gpo.DisplayName)' deploys one or more weakening settings: $($insecureSettings -join '; ')."
+                    # BUGFIX: was a single semicolon-joined run-on sentence;
+                    # rendered as one bullet per setting instead for readability.
+                    $insecureSettingBullets = ($insecureSettings | ForEach-Object { "- $_" }) -join "`n"
+                    $finding.Description = "GPO '$($gpo.DisplayName)' deploys one or more weakening settings:`n$insecureSettingBullets"
                     $finding.Impact = "Disabling the host firewall, hiding file extensions, or weakening RDP authentication/encryption each independently lowers the bar for initial access, lateral movement, or social-engineering-based execution on every computer the GPO applies to."
                     $finding.Remediation = "Review the GPO's Security Options and re-enable the Windows Firewall for all profiles, restore default Folder Options (show known file extensions), and require Network Level Authentication with a secure (SSL/TLS) RDP security layer."
                     $finding.Details = @{

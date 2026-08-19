@@ -384,7 +384,14 @@ function Test-ADDomainAdminEquivalence {
             $finding.Severity = $severity
             $finding.SeverityLevel = $severityLevel
             $finding.AffectedObject = $principal
-            $finding.Description = "Principal '$principal' holds permissions that provide Domain Admin-equivalent control: $($evidence.Reason -join '; ')."
+            # BUGFIX: was a single semicolon-joined run-on sentence
+            # ("reason1; reason2; reason3...") which is unreadable once a
+            # principal accumulates more than a couple of pieces of
+            # evidence. Rendered as one bullet per line instead - Reporting.ps1
+            # and the interactive dashboard both turn embedded newlines into
+            # line breaks.
+            $evidenceBullets = ($evidence.Reason | ForEach-Object { "- $_" }) -join "`n"
+            $finding.Description = "Principal '$principal' holds permissions that provide Domain Admin-equivalent control:`n$evidenceBullets"
             $finding.Impact = 'Compromise of this principal would allow attackers to seize control of protected groups, the domain naming context, PKI infrastructure, or perform DCSync.'
             $finding.Remediation = @"
 Review and remove the excessive permissions listed in the evidence:
@@ -1022,7 +1029,14 @@ Review and remove the excessive permissions listed in the evidence:
             $finding.Severity = $severity
             $finding.SeverityLevel = $severityLevel
             $finding.AffectedObject = $principal
-            $finding.Description = "Principal '$principal' holds permissions that provide Domain Admin-equivalent control: $($evidence.Reason -join '; ')."
+            # BUGFIX: was a single semicolon-joined run-on sentence
+            # ("reason1; reason2; reason3...") which is unreadable once a
+            # principal accumulates more than a couple of pieces of
+            # evidence. Rendered as one bullet per line instead - Reporting.ps1
+            # and the interactive dashboard both turn embedded newlines into
+            # line breaks.
+            $evidenceBullets = ($evidence.Reason | ForEach-Object { "- $_" }) -join "`n"
+            $finding.Description = "Principal '$principal' holds permissions that provide Domain Admin-equivalent control:`n$evidenceBullets"
             $finding.Impact = 'Compromise of this principal would allow attackers to seize control of protected groups, the domain naming context, PKI infrastructure, or perform DCSync.'
             $finding.Remediation = @"
 Review and remove the excessive permissions listed in the evidence:

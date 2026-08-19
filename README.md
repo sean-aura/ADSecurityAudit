@@ -46,11 +46,34 @@ The repository also includes a responsive web dashboard (in `ui/`) that visualiz
 ## Requirements
 
 - Windows PowerShell 5.1 or PowerShell 7+
-- Active Directory PowerShell Module (RSAT)
+- Active Directory PowerShell Module (RSAT) - see "Load RSAT if not already loaded" below
 - Domain Administrator or equivalent permissions for full audit
 - Windows Server 2016 or later (recommended)
 - Network connectivity to Domain Controllers
 - Appropriate read permissions for AD Certificate Services (if installed)
+
+### Load RSAT if not already loaded
+
+The module declares the `ActiveDirectory` module (part of RSAT - Remote Server
+Administration Tools) as a hard dependency (`#Requires -Modules ActiveDirectory`),
+so `Import-Module ADSecurityAudit` fails immediately if it isn't installed. RSAT
+itself is **not** a dependency this module can install for you - check for it
+first and install it if it's missing, then import as normal:
+
+```powershell
+# Check whether the AD module is already available
+if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
+    # Windows 10/11 (client OS): install the RSAT feature on-demand
+    Get-WindowsCapability -Name RSAT.ActiveDirectory* -Online | Add-WindowsCapability -Online
+
+    # Windows Server: install the AD DS/LDS Tools feature instead
+    # Install-WindowsFeature -Name RSAT-AD-PowerShell
+}
+
+Import-Module ActiveDirectory -ErrorAction Stop
+Import-Module .\ADSecurityAudit.psd1
+```
+
 
 ## Installation
 
@@ -384,8 +407,10 @@ Each finding includes:
 
 **Module Import Failure**
 
-# Ensure RSAT is installed
+```powershell
+# Ensure RSAT is installed - see "Load RSAT if not already loaded" under Requirements
 Get-WindowsCapability -Name RSAT.ActiveDirectory* -Online | Add-WindowsCapability -Online
+```
 
 
 **Permission Denied**

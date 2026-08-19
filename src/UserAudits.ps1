@@ -296,13 +296,32 @@ function Test-ADUserSecurity {
                 $finding.AffectedObject = $user.SamAccountName
                 $finding.Description = "User account has Service Principal Names (SPNs) configured, making it vulnerable to Kerberoasting attacks. Risk factors: $($riskFactors -join ', ')."
                 $finding.Impact = "Attackers can request service tickets for this account and crack the password offline. $(if ($isPrivileged) { 'As a privileged account, compromise could lead to domain-wide access.' })"
-                $finding.Remediation = @"
-1. $(if ($usesRC4Only) { 'Enable AES encryption: Set-ADUser -Identity ''$($user.SamAccountName)'' -KerberosEncryptionType AES256' })
-2. Ensure a strong (25+ character) password is set
-3. Consider migrating to a Group Managed Service Account (gMSA)
-4. $(if ($hasOldPassword) { 'Rotate the password immediately' })
-5. $(if ($isPrivileged) { 'Remove from privileged groups if service account does not require admin rights' })
-"@
+
+                # BUGFIX: steps used to be hard-numbered 1-5 with the
+                # conditional ones ($usesRC4Only / $hasOldPassword /
+                # $isPrivileged) inlined directly after the number. When a
+                # condition was false that line rendered as e.g. "1. " with
+                # nothing after it - a blank recommendation line. Building
+                # the list first and only numbering the steps that actually
+                # apply avoids blank/gapped numbering. This also fixes the
+                # AES step's account name never showing: it was wrapped in a
+                # single-quoted string, and single-quoted PowerShell strings
+                # don't interpolate $(...) - it printed the literal text
+                # "$($user.SamAccountName)" instead of the account name.
+                $remediationSteps = [System.Collections.ArrayList]::new()
+                if ($usesRC4Only) {
+                    [void]$remediationSteps.Add("Enable AES encryption: Set-ADUser -Identity '$($user.SamAccountName)' -KerberosEncryptionType AES256")
+                }
+                [void]$remediationSteps.Add('Ensure a strong (25+ character) password is set')
+                [void]$remediationSteps.Add('Consider migrating to a Group Managed Service Account (gMSA)')
+                if ($hasOldPassword) {
+                    [void]$remediationSteps.Add('Rotate the password immediately')
+                }
+                if ($isPrivileged) {
+                    [void]$remediationSteps.Add('Remove from privileged groups if service account does not require admin rights')
+                }
+                $stepNumber = 0
+                $finding.Remediation = ($remediationSteps | ForEach-Object { $stepNumber++; "$stepNumber. $_" }) -join "`n"
                 $finding.Details = @{
                     DistinguishedName = $user.DistinguishedName
                     ServicePrincipalNames = $user.ServicePrincipalNames -join '; '

@@ -131,7 +131,10 @@ function Test-ADDomainHardeningFlags {
                 $finding.Severity = 'High'
                 $finding.SeverityLevel = 3
                 $finding.AffectedObject = $dsServiceDN
-                $finding.Description = "The dSHeuristics attribute on the Directory Service object contains $($flagIssues.Count) dangerous flag(s): " + (($flagIssues | ForEach-Object { $_.Setting }) -join '; ') + "."
+                # BUGFIX: was a single semicolon-joined run-on sentence;
+                # rendered as one bullet per flag instead for readability.
+                $flagBullets = ($flagIssues | ForEach-Object { "- $($_.Setting)" }) -join "`n"
+                $finding.Description = "The dSHeuristics attribute on the Directory Service object contains $($flagIssues.Count) dangerous flag(s):`n$flagBullets"
                 $finding.Impact = "dSHeuristics settings apply forest-wide and can silently weaken anonymous-access restrictions, object-visibility security, or AdminSDHolder ACL enforcement without touching any individual object's permissions, making the change easy to miss in routine ACL reviews."
                 $finding.Remediation = "Review each flagged position against Microsoft's documented dSHeuristics semantics and reset it to the secure default (character removed or '0') unless there is a specific, documented business reason for the current value: `Set-ADObject -Identity '$dsServiceDN' -Replace @{dSHeuristics='<corrected-value>'}`."
                 $finding.Details = @{
