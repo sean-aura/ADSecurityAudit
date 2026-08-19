@@ -130,6 +130,69 @@ function Invoke-ADQueryWithRetry {
     return $null
 }
 
+# Live per-DC registry fallback helper, used by any check that follows the
+# "GPO-linked policy first, then a direct per-DC registry read if no linked
+# GPO defines the value" pattern (SMBv1/signing/LmCompatibilityLevel/LLMNR/
+# WSUS in LegacyAuthAudits.ps1, and the null-session check in
+# DomainHardeningAudits.ps1). Promoted here in v1.20.5 from a function that
+# used to be nested (and therefore private) inside
+# Test-ADLegacyAuthSurface, so a second module can reuse the exact same
+# read-only remote-registry logic instead of carrying its own copy.
+#
+# Read-only: this only ever reads a registry value via remote registry /
+# Invoke-Command; it never sets, clears, or otherwise modifies one.
+function Get-ADLiveRegistryValuePerDc {
+    <#
+    .SYNOPSIS
+        Reads a single registry value directly from each of a list of
+        Domain Controllers (remote registry / Invoke-Command).
+    .DESCRIPTION
+        Intended as the live fallback for a registry value that no linked
+        GPO defines, so a locally configured (non-policy) value is still
+        detected rather than silently missed. Never sets or clears a value.
+    .PARAMETER DomainControllers
+        Domain controller objects (as returned by Get-ADDomainController),
+        each expected to expose HostName and/or Name.
+    .PARAMETER Key
+        Registry key path, e.g. 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa'.
+    .PARAMETER ValueName
+        The value name to read under Key.
+    .OUTPUTS
+        PSCustomObject[] with DomainController, Value, and Error - one
+        record per DC, Error populated (and Value $null) on read failure.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [array]$DomainControllers,
+
+        [Parameter(Mandatory)]
+        [string]$Key,
+
+        [Parameter(Mandatory)]
+        [string]$ValueName
+    )
+    $results = [System.Collections.ArrayList]::new()
+    $regPath = "Registry::$Key"
+    foreach ($dc in $DomainControllers) {
+        $dcName = if ($dc.HostName) { $dc.HostName } else { $dc.Name }
+        try {
+            $value = Invoke-ADQueryWithRetry -OperationName "Read '$Key\$ValueName' on $dcName" -Query {
+                Invoke-Command -ComputerName $dcName -ErrorAction Stop -ScriptBlock {
+                    param($p, $vn)
+                    (Get-ItemProperty -Path $p -Name $vn -ErrorAction SilentlyContinue).$vn
+                } -ArgumentList $regPath, $ValueName
+            }
+            [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $value; Error = $null })
+        }
+        catch {
+            Write-Verbose "Get-ADLiveRegistryValuePerDc: could not read '$Key\$ValueName' on '$dcName': $_"
+            [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $null; Error = "$_" })
+        }
+    }
+    return $results
+}
+
 # Retrieve the domain's privileged / Tier-0 principal set (users + groups).
 #
 # This is the single shared definition of "Tier-0" used across detection

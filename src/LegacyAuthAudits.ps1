@@ -224,37 +224,12 @@ function Test-ADLegacyAuthSurface {
     # domain root as fallback.
     $dcScopeGpos = @($dcOuGpos + $domainGpos)
 
-    # -------------------------------------------------------------------
-    # Live per-DC registry fallback helper. Only invoked for settings that
-    # no linked GPO defines, so a locally configured (non-policy) value is
-    # still caught rather than silently skipped.
-    # -------------------------------------------------------------------
-    function Get-ADLiveRegistryValuePerDc {
-        param(
-            [array]$DomainControllers,
-            [string]$Key,
-            [string]$ValueName
-        )
-        $results = [System.Collections.ArrayList]::new()
-        $regPath = "Registry::$Key"
-        foreach ($dc in $DomainControllers) {
-            $dcName = if ($dc.HostName) { $dc.HostName } else { $dc.Name }
-            try {
-                $value = Invoke-ADQueryWithRetry -OperationName "Read '$Key\$ValueName' on $dcName" -Query {
-                    Invoke-Command -ComputerName $dcName -ErrorAction Stop -ScriptBlock {
-                        param($p, $vn)
-                        (Get-ItemProperty -Path $p -Name $vn -ErrorAction SilentlyContinue).$vn
-                    } -ArgumentList $regPath, $ValueName
-                }
-                [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $value; Error = $null })
-            }
-            catch {
-                Write-Verbose "Get-ADLiveRegistryValuePerDc: could not read '$Key\$ValueName' on '$dcName': $_"
-                [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $null; Error = "$_" })
-            }
-        }
-        return $results
-    }
+    # Live per-DC registry fallback (only invoked for settings that no
+    # linked GPO defines, so a locally configured/non-policy value is still
+    # caught rather than silently skipped) is Get-ADLiveRegistryValuePerDc,
+    # promoted to Common.ps1 in v1.20.5 so DomainHardeningAudits.ps1's
+    # null-session check can share this exact logic instead of carrying a
+    # second copy of it.
 
     # -------------------------------------------------------------------
     # Check 1: SMBv1 Enabled / Not Disabled by Policy

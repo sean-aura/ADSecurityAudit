@@ -59,6 +59,7 @@ $Script:MitreTechniqueNames = @{
     'T1098'      = 'Account Manipulation'
     'T1110'      = 'Brute Force'
     'T1134.005'  = 'Access Token Manipulation: SID-History Injection'
+    'T1135'      = 'Network Share Discovery'
     'T1136.002'  = 'Create Account: Domain Account'
     'T1187'      = 'Forced Authentication'
     'T1210'      = 'Exploitation of Remote Services'
@@ -193,6 +194,7 @@ $Script:ADFindingMetadataMap = @{
     'Dangerous dsHeuristics Flag Set'                    = @{ Mitre = 'T1556';     Anssi = 'vuln2_dsheuristics_dangerous';  Weight = 20 }
     'Broad Membership in Pre-Windows 2000 Compatible Access' = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_prewin2000_broad';    Weight = 20 }
     'Anonymous LDAP / RootDSE Binding Permitted'         = @{ Mitre = 'T1087.002'; Anssi = 'vuln3_anonymous_bind';          Weight = 10 }
+    'Null-Session Pipe/Share Access Permitted'           = @{ Mitre = 'T1135';     Anssi = 'vuln3_null_session_access';     Weight = 10 }
 
     # --- Coercion & NTLM Relay Exposure ---
     'Print Spooler Running on Domain Controller'         = @{ Mitre = 'T1187';     Anssi = 'vuln1_dc_spooler_running';      Weight = 40 }

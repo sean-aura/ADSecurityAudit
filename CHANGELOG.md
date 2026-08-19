@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.5]
+### Fixed
+- **`DomainHardeningAudits.ps1`'s header comment had claimed `A-NullSession`-comparable
+  coverage since this file was written, but no logic anywhere in the codebase read
+  `RestrictNullSessAccess`/`NullSessionPipes`/`NullSessionShares`.** Found via the same
+  header-vs-code audit that closed the `A-AnonymousAuthorizedGPO` gap in v1.20.4. Added a
+  fourth, read-only check to `Test-ADDomainHardeningFlags`: it audits `RestrictNullSessAccess`
+  (Security Options: "Network access: Restrict anonymous access to Named Pipes and Shares")
+  for the disabled (`0`) state - checking GPOs linked to the Domain Controllers OU, then the
+  domain root, and falling back to a direct per-DC registry read only when no linked GPO
+  defines the value - the same GPO-then-live-fallback pattern `LegacyAuthAudits.ps1` already
+  uses for SMBv1/SMB-signing/`LmCompatibilityLevel`. When the restriction is disabled, the
+  finding is additionally enriched (not gated) with the configured `NullSessionPipes`/
+  `NullSessionShares` allow-list sizes. Reported as its own new "Null-Session Pipe/Share
+  Access Permitted" finding, Medium severity - the same severity as the neighboring
+  "Anonymous LDAP / RootDSE Binding Permitted" finding it sits next to in this file, since
+  both are the same class of unauthenticated-access exposure on a different protocol surface
+  (SMB/named pipes vs. LDAP). New `Scoring.ps1` mapping entry (MITRE `T1135` - Network Share
+  Discovery, ANSSI `vuln3_null_session_access`).
+- **Reused, rather than duplicated, the existing GPO-link-resolution logic.** The new check
+  calls `LegacyAuthAudits.ps1`'s existing `Get-ADLinkedGposOrdered` and
+  `Get-ADPolicyRegistryValue` directly (both are already module-scope functions, reachable
+  from any file dot-sourced into this module, regardless of load order, since none of them run
+  until a `Test-*` function is actually invoked after every file has been sourced). The one
+  piece of this pattern that was **not** already reusable - the live per-DC registry-read
+  fallback - was a function nested inside `Test-ADLegacyAuthSurface` and therefore private to
+  it. Promoted it to a new shared `Get-ADLiveRegistryValuePerDc` function in `Common.ps1` and
+  removed the now-redundant nested copy from `LegacyAuthAudits.ps1`, so both modules call the
+  same implementation instead of carrying two copies of identical remote-registry-read logic.
+- No `ADSecurityFinding` schema changes. Registry-value read only - no live SMB/null-session
+  connection is ever attempted (unlike the anonymous LDAP bind check two checks above it in
+  the same file, which *is* a live probe). Live-only, skipped entirely under `-Snapshot` with
+  an `Add-ADOfflineSkipNote` entry, consistent with this file's existing anonymous-bind check
+  and with `Test-ADLegacyAuthSurface`'s entire live-only posture.
+
 ## [1.20.4]
 ### Fixed
 - **`GpoSecretsAudits.ps1`'s header comment had claimed `A-AnonymousAuthorizedGPO`-comparable

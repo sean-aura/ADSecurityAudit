@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.20.4'
+    ModuleVersion = '1.20.5'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -61,6 +61,13 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.20.5 - Implement A-NullSession-Comparable Detection (Null-Session Pipe/Share Access)
+- DomainHardeningAudits.ps1's header comment had claimed A-NullSession-comparable coverage since the file was written, but no logic anywhere in the module read RestrictNullSessAccess/NullSessionPipes/NullSessionShares - found via the same header-vs-code audit that closed the A-AnonymousAuthorizedGPO gap in v1.20.4.
+- Added a fourth check to Test-ADDomainHardeningFlags: audits 'Network access: Restrict anonymous access to Named Pipes and Shares' (RestrictNullSessAccess) for the disabled (0) state, checking GPOs linked to the Domain Controllers OU then the domain root first, falling back to a direct per-DC registry read when no linked GPO defines the value - the same GPO-then-live-fallback pattern LegacyAuthAudits.ps1 already uses for SMBv1/SMB-signing/LmCompatibilityLevel.
+- Reuses LegacyAuthAudits.ps1's existing Get-ADLinkedGposOrdered and Get-ADPolicyRegistryValue rather than duplicating GPO-link resolution. The per-DC live-registry-read fallback (previously a private function nested inside Test-ADLegacyAuthSurface) was promoted to a shared Get-ADLiveRegistryValuePerDc helper in Common.ps1 so both modules call one implementation.
+- Registry-value read only; no live SMB/null-session connection is ever attempted. Live-only and skipped entirely under -Snapshot (Add-ADOfflineSkipNote), consistent with this file's existing anonymous-bind check.
+- New ADFindingMetadataMap entry ('Null-Session Pipe/Share Access Permitted', MITRE T1135, ANSSI vuln3_null_session_access, same weight/level as the neighboring Anonymous LDAP/RootDSE Binding Permitted finding).
+
 v1.19.1 - Fix Test-ADControlPaths Crash, ZERO Live Connections Under -Snapshot (No Exceptions)
 - Fixed: Test-ADControlPaths failed on every run with "Cannot bind argument to parameter 'EdgeList' because it is an empty collection." Add-ADControlPathEdge declared -EdgeList as Mandatory on an ArrayList; PowerShell's parameter binder rejects a Mandatory argument that is an empty collection, so the very first edge ever added to a fresh graph threw. Fixed with [AllowEmptyCollection()], matching the existing AllowEmptyString() treatment already given to -From/-To on the same function.
 - Hardened -FromSnapshot's "no live AD access" contract to mean literally zero outbound connections, for environments where the DC genuinely is not reachable from the analysis machine (the whole point of re-analysing a JSON snapshot). v1.19.0 shipped several sub-checks that still fell back to live SMB/WinRM/AD calls when invoked with -Snapshot, contradicting its own documented contract - identified from a real -FromSnapshot run's transcript where warnings fired and live findings appeared despite the run being announced as offline. Every one of these is now a hard skip instead of a live fallback:
