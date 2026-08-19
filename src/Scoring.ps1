@@ -229,6 +229,7 @@ $Script:ADFindingMetadataMap = @{
     'GPP cpassword Found in SYSVOL'                       = @{ Mitre = 'T1552.006'; Anssi = 'vuln1_gpp_cpassword';          Weight = 40 }
     'Credentials Referenced in Logon/Startup Script'      = @{ Mitre = 'T1552.001'; Anssi = 'vuln2_script_credentials';     Weight = 20 }
     'Insecure Setting Deployed via GPO'                   = @{ Mitre = 'T1484.001'; Anssi = 'vuln3_gpo_insecure_setting';   Weight = 10 }
+    'GPO Grants Sensitive Logon Right to Broad Principal'  = @{ Mitre = 'T1078';     Anssi = 'vuln1_gpo_anonymous_logon_right'; Weight = 40 }
 
     # --- Known DC Vulnerabilities by Patch/Build (MS14-068, MS17-010, ZeroLogon, PrintNightmare, CVE-2026-41089 Netlogon RCE, BadSuccessor) ---
     'DC Missing ZeroLogon Patch'                          = @{ Mitre = 'T1068';     Anssi = 'vuln1_zerologon_unpatched';    Weight = 40 }

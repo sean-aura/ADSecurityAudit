@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.4]
+### Fixed
+- **`GpoSecretsAudits.ps1`'s header comment had claimed `A-AnonymousAuthorizedGPO`-comparable
+  coverage since this file was written, but no logic anywhere in the codebase implemented it.**
+  The module's only anonymous-related check (the pre-Windows 2000 Compatible Access group
+  membership check in `DomainHardeningAudits.ps1`) is a different AD mechanism entirely - a
+  group membership, not a GPO-deployed User Rights Assignment - so it did not close this gap.
+  Added a fourth, read-only check to `Test-ADGpoDeployedSecrets`: it parses each GPO's already-read
+  `GptTmpl.inf` `[Privilege Rights]` section for `SeNetworkLogonRight` ("Access this computer
+  from the network") or `SeRemoteInteractiveLogonRight` ("Allow log on through Remote Desktop
+  Services") grants that include the SID for Everyone (`S-1-1-0`), ANONYMOUS LOGON (`S-1-5-7`),
+  or Authenticated Users (`S-1-5-11`) - matched on SID, since `GptTmpl.inf` lists granted
+  principals as SIDs, not resolved names. Reported as its own new, always-Critical finding
+  ("GPO Grants Sensitive Logon Right to Broad Principal"), consistent with this module's existing
+  convention that a broad principal on any sensitive path is always Critical (see "Everyone/
+  Authenticated Users on a Control Path to Tier-0"), rather than folded into the existing
+  Medium-severity "Insecure Setting Deployed via GPO" bucket, which would have undersold this
+  class of exposure relative to how it is scored everywhere else in the module. No schema
+  changes; no exploitation code; reads a file `Test-ADGpoDeployedSecrets` already opens, inside
+  the same `-Snapshot`-skipped code path as the other GptTmpl.inf-based checks.
+
 ## [1.20.3]
 ### Fixed
 - **Dashboard: the finding-detail modal showed up empty on every page load, and its close

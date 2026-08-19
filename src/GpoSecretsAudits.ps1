@@ -4,10 +4,12 @@
 # every affected computer/user: leftover Group Policy Preferences (GPP)
 # `cpassword` values (MS14-025), plaintext-looking credentials referenced in
 # logon/startup scripts, and insecure settings deployed via GPO (firewall
-# disabled, weak folder options, insecure RDP). PingCastle-comparable check(s):
-# P-DelegationGPOData, P-DelegationFileDeployed, P-DelegationLoginScript,
-# S-FirewallScript, S-FolderOptions, S-TerminalServicesGPO,
-# A-AnonymousAuthorizedGPO.
+# disabled, weak folder options, insecure RDP), and GPO-deployed User Rights
+# Assignments that grant a sensitive logon right to an overly broad
+# principal (Everyone/ANONYMOUS LOGON/Authenticated Users).
+# PingCastle-comparable check(s): P-DelegationGPOData, P-DelegationFileDeployed,
+# P-DelegationLoginScript, S-FirewallScript, S-FolderOptions,
+# S-TerminalServicesGPO, A-AnonymousAuthorizedGPO.
 #
 # DETECTION ONLY: this module reads SYSVOL policy files (GPP XML, referenced
 # scripts) and GPO-linked registry policy values. A `cpassword` value found
@@ -32,6 +34,24 @@ $Script:GpoSecretsGppFiles = @(
 # Script extensions considered when scanning SYSVOL logon/startup/shutdown
 # script folders for embedded credentials.
 $Script:GpoSecretsScriptExtensions = @('*.bat', '*.cmd', '*.ps1', '*.vbs', '*.kix')
+
+# Well-known SIDs treated as "broad principals" when found granted a
+# sensitive User Rights Assignment via GPO (GptTmpl.inf lists principals as
+# SIDs, not resolved names). Scoped locally to this file rather than added
+# to a module-wide table, since no shared SID->name map exists elsewhere in
+# the module for this purpose.
+$Script:GpoSecretsBroadPrincipalSids = @{
+    'S-1-1-0'  = 'Everyone'
+    'S-1-5-7'  = 'ANONYMOUS LOGON'
+    'S-1-5-11' = 'Authenticated Users'
+}
+
+# Sensitive logon rights checked for grants to a broad principal above.
+# Maps the GptTmpl.inf [Privilege Rights] key to its friendly display name.
+$Script:GpoSecretsSensitiveLogonRights = @{
+    'SeNetworkLogonRight'          = 'Access this computer from the network'
+    'SeRemoteInteractiveLogonRight' = 'Allow log on through Remote Desktop Services'
+}
 
 # Lightweight, conservative patterns for spotting a credential embedded in a
 # script. These intentionally match on structure (a credential-flavoured
@@ -67,7 +87,7 @@ function Test-ADGpoDeployedSecrets {
     .SYNOPSIS
         Audits SYSVOL/GPO content for deployed secrets and insecure settings.
     .DESCRIPTION
-        Three independent, read-only checks against each GPO's SYSVOL policy
+        Four independent, read-only checks against each GPO's SYSVOL policy
         folder:
           1. GPP cpassword Found in SYSVOL - parses the standard GPP XML
              files (Groups.xml, Services.xml, ScheduledTasks.xml, Drives.xml,
@@ -88,6 +108,18 @@ function Test-ADGpoDeployedSecrets {
              insecure Terminal Services/RDP settings (Network Level
              Authentication disabled, unencrypted RDP security layer
              allowed).
+          4. GPO Grants Sensitive Logon Right to Broad Principal
+             (PingCastle A-AnonymousAuthorizedGPO-comparable) - parses the
+             same GptTmpl.inf's [Privilege Rights] section for
+             SeNetworkLogonRight ("Access this computer from the network")
+             or SeRemoteInteractiveLogonRight ("Allow log on through Remote
+             Desktop Services") grants that include the SID for Everyone
+             (S-1-1-0), ANONYMOUS LOGON (S-1-5-7), or Authenticated Users
+             (S-1-5-11). Matched on SID, since GptTmpl.inf stores principals
+             as SIDs, not resolved names. Reported as its own always-Critical
+             finding, consistent with this module's convention that a broad
+             principal (Everyone/Authenticated Users/Domain Users/ANONYMOUS
+             LOGON) on any sensitive path is always Critical.
     .PARAMETER Snapshot
         Optional snapshot hashtable (from Get-ADSnapshot). Every check in
         this function is a SYSVOL/registry.pol read against a live file
@@ -326,6 +358,61 @@ function Test-ADGpoDeployedSecrets {
                         GpoId            = $gpo.Id
                         FilePath         = $gptTmplPath
                         InsecureSettings = $insecureSettings
+                    }
+                    $findings += $finding
+                }
+
+                # -----------------------------------------------------------
+                # Check 4 - GPO grants a sensitive logon right (SeNetworkLogonRight,
+                # SeRemoteInteractiveLogonRight) to a broad principal
+                # (Everyone / ANONYMOUS LOGON / Authenticated Users).
+                # GptTmpl.inf's [Privilege Rights] section lists granted
+                # principals as a comma-separated list of SIDs prefixed with
+                # '*' (e.g. "*S-1-1-0,*S-1-5-32-544"), so this matches on SID,
+                # not principal name. Reported as its own always-Critical
+                # finding, per this module's broad-principal convention (see
+                # 'Everyone/Authenticated Users on a Control Path to Tier-0').
+                # -----------------------------------------------------------
+                $broadRightGrants = @()
+
+                foreach ($rightKey in $Script:GpoSecretsSensitiveLogonRights.Keys) {
+                    $rightMatch = [regex]::Match($tmplContent, "(?im)^\s*$rightKey\s*=\s*(.+)\s*$")
+                    if (-not $rightMatch.Success) {
+                        continue
+                    }
+
+                    $grantedSids = $rightMatch.Groups[1].Value -split ',' | ForEach-Object { $_.Trim().TrimStart('*') }
+                    $broadSidsGranted = $grantedSids | Where-Object { $Script:GpoSecretsBroadPrincipalSids.ContainsKey($_) }
+
+                    if ($broadSidsGranted.Count -gt 0) {
+                        $broadPrincipalNames = $broadSidsGranted | ForEach-Object { $Script:GpoSecretsBroadPrincipalSids[$_] }
+                        $rightDisplayName = $Script:GpoSecretsSensitiveLogonRights[$rightKey]
+                        $broadRightGrants += [PSCustomObject]@{
+                            Right            = $rightKey
+                            RightDisplayName = $rightDisplayName
+                            BroadPrincipals  = $broadPrincipalNames
+                        }
+                    }
+                }
+
+                if ($broadRightGrants.Count -gt 0) {
+                    $grantBullets = ($broadRightGrants | ForEach-Object {
+                        "- $($_.Right) ('$($_.RightDisplayName)') grants this right to $(($_.BroadPrincipals) -join ', ')"
+                    }) -join "`n"
+
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Group Policy'
+                    $finding.Issue = 'GPO Grants Sensitive Logon Right to Broad Principal'
+                    $finding.Severity = 'Critical'
+                    $finding.SeverityLevel = 4
+                    $finding.AffectedObject = $gpo.DisplayName
+                    $finding.Description = "GPO '$($gpo.DisplayName)' deploys a User Rights Assignment granting a sensitive logon right to an overly broad principal:`n$grantBullets"
+                    $finding.Impact = "Granting network or RDP logon rights to Everyone, ANONYMOUS LOGON, or Authenticated Users can silently re-open anonymous or unauthenticated-adjacent access to every computer the GPO applies to, independent of any domain-wide anonymous-access setting."
+                    $finding.Remediation = "Edit the GPO's User Rights Assignment (Computer Configuration > Windows Settings > Security Settings > Local Policies > User Rights Assignment) and remove Everyone/ANONYMOUS LOGON/Authenticated Users from the affected right(s), granting access only to specific, intended security groups."
+                    $finding.Details = @{
+                        GpoId       = $gpo.Id
+                        FilePath    = $gptTmplPath
+                        BroadGrants = $broadRightGrants
                     }
                     $findings += $finding
                 }
