@@ -36,6 +36,91 @@ Describe 'Get-ADSecurityAuditActiveServerOverride' {
     }
 }
 
+Describe 'Get-ADSecurityAuditDomainController' {
+    <#
+        Regression coverage for the forest-wide-DC-enumeration bug:
+        Get-ADDomainController's -Filter parameter set queries the
+        forest-wide Configuration container and returns every domain's
+        DCs regardless of -Server. Every per-DC probe in this module used
+        to call it bare and could silently mix in another domain's DCs.
+        These tests mock Get-ADDomain/Get-ADDomainController to simulate
+        exactly that forest-wide result set and confirm the helper filters
+        it down to the target domain only.
+    #>
+    BeforeAll {
+        function Get-ADDomain { }
+        function Get-ADDomainController { }
+    }
+
+    It 'filters out Domain Controllers belonging to a different domain than the one resolved via Get-ADDomain' {
+        Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+        Mock -CommandName Get-ADDomainController -MockWith {
+            @(
+                [PSCustomObject]@{ HostName = 'dc01.domaina.corp.com'; Domain = 'domaina.corp.com' }
+                [PSCustomObject]@{ HostName = 'dc01.domainb.corp.com'; Domain = 'domainb.corp.com' }
+                [PSCustomObject]@{ HostName = 'dc02.domainb.corp.com'; Domain = 'domainb.corp.com' }
+            )
+        }
+
+        $result = Get-ADSecurityAuditDomainController -Server 'domainb.corp.com' -WarningAction SilentlyContinue
+        $result.Count | Should -Be 2
+        $result | ForEach-Object { $_.Domain | Should -Be 'domainb.corp.com' }
+    }
+
+    It 'warns when foreign-domain Domain Controllers are excluded' {
+        Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+        Mock -CommandName Get-ADDomainController -MockWith {
+            @(
+                [PSCustomObject]@{ HostName = 'dc01.domaina.corp.com'; Domain = 'domaina.corp.com' }
+                [PSCustomObject]@{ HostName = 'dc01.domainb.corp.com'; Domain = 'domainb.corp.com' }
+            )
+        }
+
+        $warnings = @()
+        Get-ADSecurityAuditDomainController -Server 'domainb.corp.com' -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+        $warnings.Count | Should -BeGreaterThan 0
+        $warnings[0] | Should -Match 'excluded 1 Domain Controller'
+    }
+
+    It 'does not warn when every returned Domain Controller already belongs to the target domain' {
+        Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+        Mock -CommandName Get-ADDomainController -MockWith {
+            @(
+                [PSCustomObject]@{ HostName = 'dc01.domainb.corp.com'; Domain = 'domainb.corp.com' }
+                [PSCustomObject]@{ HostName = 'dc02.domainb.corp.com'; Domain = 'domainb.corp.com' }
+            )
+        }
+
+        $warnings = @()
+        $result = Get-ADSecurityAuditDomainController -Server 'domainb.corp.com' -WarningVariable warnings -WarningAction SilentlyContinue
+        $result.Count | Should -Be 2
+        $warnings.Count | Should -Be 0
+    }
+
+    It 'passes -Filter through to Get-ADDomainController (e.g. an RODC-only filter)' {
+        Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+        Mock -CommandName Get-ADDomainController -MockWith {
+            @([PSCustomObject]@{ HostName = 'rodc01.domainb.corp.com'; Domain = 'domainb.corp.com'; IsReadOnly = $true })
+        } -ParameterFilter { $Filter -ne '*' }
+
+        $result = Get-ADSecurityAuditDomainController -Server 'domainb.corp.com' -Filter { IsReadOnly -eq $true } -WarningAction SilentlyContinue
+        $result.Count | Should -Be 1
+        Should -Invoke -CommandName Get-ADDomainController -ParameterFilter { $Filter -ne '*' } -Times 1
+    }
+
+    It 'does not pass -Server to either inner call when none was given (preserves the ambient $PSDefaultParameterValues override)' {
+        Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } } -ParameterFilter { -not $Server }
+        Mock -CommandName Get-ADDomainController -MockWith {
+            @([PSCustomObject]@{ HostName = 'dc01.domainb.corp.com'; Domain = 'domainb.corp.com' })
+        } -ParameterFilter { -not $Server }
+
+        $result = Get-ADSecurityAuditDomainController -WarningAction SilentlyContinue
+        $result.Count | Should -Be 1
+        Should -Invoke -CommandName Get-ADDomain -ParameterFilter { -not $Server } -Times 1
+        Should -Invoke -CommandName Get-ADDomainController -ParameterFilter { -not $Server } -Times 1
+    }
+}
+
 Describe 'Split-ADObjectByTargetDomain' {
     It 'treats an empty/null input as zero in-scope and zero foreign objects' {
         $result = Split-ADObjectByTargetDomain -InputObject @() -TargetDomainDN 'DC=domainb,DC=corp,DC=com'

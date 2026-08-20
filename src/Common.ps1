@@ -458,6 +458,89 @@ function Split-ADObjectByTargetDomain {
     }
 }
 
+function Get-ADSecurityAuditDomainController {
+    <#
+    .SYNOPSIS
+        Enumerates Domain Controllers for ONE specific domain, correctly
+        scoped - unlike a bare `Get-ADDomainController -Filter`, which
+        queries the forest-wide Sites/Configuration container and returns
+        DCs from EVERY domain in the forest regardless of which -Server
+        you bind to.
+    .DESCRIPTION
+        Get-ADDomainController's -Filter/-LDAPFilter parameter set searches
+        the Configuration naming context (CN=Sites,CN=Configuration,...),
+        which is forest-wide and replicated to every DC in the forest - so
+        -Server only controls WHICH DC answers the query, not the query's
+        SCOPE. Every one of this module's per-DC probes (anonymous bind,
+        null session, Kerberos hardening, legacy auth, audit policy,
+        known-DC-vulnerability checks, stale-object depth, RODC security,
+        control-path graph, coercion/relay exposure, the main run's own DC
+        connectivity check, and Get-ADSnapshot) previously used a bare
+        `Get-ADDomainController -Filter *` to enumerate DCs to probe. In a
+        multi-domain forest this silently returns - and every one of those
+        checks then iterates over - Domain Controllers from OTHER domains
+        too, regardless of an active -Server override. This is a concrete,
+        confirmed explanation for "wrong domain" symptoms reported
+        specifically against DCs: -Server WAS being honored for BINDING
+        the query, but the query's own RESULT SET was never actually
+        domain-scoped to begin with - a completely different failure mode
+        than the -Server plumbing itself being broken.
+
+        This function performs the same -Filter enumeration, then filters
+        the result to DCs whose own .Domain property matches the domain
+        actually resolved via Get-ADDomain against the same -Server.
+        Get-ADDomain does NOT have this problem - it uses a different,
+        -Identity/-Server-scoped code path, not the forest-wide
+        Configuration container -Filter search does.
+    .PARAMETER Server
+        Optional. Passed through to both the Get-ADDomain and
+        Get-ADDomainController calls - typically the active -Server
+        override, when the caller wants to be explicit about it. When
+        omitted, no -Server is passed to either call, so an active
+        Set-ADSecurityAuditTargetServer override (if any) is still applied
+        via the normal $PSDefaultParameterValues auto-injection - this
+        matches every call site's pre-fix behavior exactly, so the ONLY
+        behavioral change from this fix is the domain-scoping filter
+        below, not how -Server itself gets resolved.
+    .PARAMETER Filter
+        Optional. Passed through to Get-ADDomainController's -Filter.
+        Defaults to '*'. Accepts the same string or script-block filter
+        syntax Get-ADDomainController itself does (e.g. a RODC-only
+        filter), while still getting correct domain scoping.
+    .OUTPUTS
+        Array of Get-ADDomainController result objects, all confirmed to
+        belong to the resolved target domain. Throws if either the
+        Get-ADDomain or Get-ADDomainController call fails, mirroring the
+        -ErrorAction Stop every existing call site already used on its own
+        bare Get-ADDomainController call.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [string]$Server,
+
+        [Parameter()]
+        $Filter = '*'
+    )
+
+    $domainParams = @{ ErrorAction = 'Stop' }
+    if ($Server) { $domainParams['Server'] = $Server }
+    $targetDomainDNSRoot = (Get-ADDomain @domainParams).DNSRoot
+
+    $dcParams = @{ Filter = $Filter; ErrorAction = 'Stop' }
+    if ($Server) { $dcParams['Server'] = $Server }
+    $allDCs = @(Get-ADDomainController @dcParams)
+
+    $scoped = @($allDCs | Where-Object { $_.Domain -eq $targetDomainDNSRoot })
+
+    $foreignCount = $allDCs.Count - $scoped.Count
+    if ($foreignCount -gt 0) {
+        Write-Warning "Get-ADSecurityAuditDomainController: excluded $foreignCount Domain Controller(s) belonging to a domain other than '$targetDomainDNSRoot' - Get-ADDomainController's -Filter searches the forest-wide Configuration container and returns every domain's DCs regardless of -Server."
+    }
+
+    return $scoped
+}
+
 function Get-ADTargetDomainController {
     <#
     .SYNOPSIS

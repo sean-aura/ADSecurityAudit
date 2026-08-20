@@ -106,7 +106,13 @@ Configure SACL on AdminSDHolder to audit modifications:
 
     try {
         # Get domain controllers to check audit policies
-        $domainControllers = Get-ADDomainController -Filter *
+        #
+        # Get-ADSecurityAuditDomainController (Common.ps1), not a bare
+        # Get-ADDomainController -Filter *: the latter queries the
+        # forest-wide Configuration container and returns every domain's
+        # DCs regardless of -Server, so a multi-domain-forest audit could
+        # silently run auditpol checks against the WRONG domain's DCs.
+        $domainControllers = Get-ADSecurityAuditDomainController
         
         Write-Verbose "Checking audit policies on $($domainControllers.Count) domain controller(s)..."
         

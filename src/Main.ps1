@@ -231,9 +231,13 @@ function Start-ADSecurityAudit {
             # Attempt to discover multiple DCs for failover
             $domainControllers = @()
             try {
-                $dcFilterParams = @{ Filter = '*'; ErrorAction = 'SilentlyContinue' }
-                if ($effectiveServer) { $dcFilterParams['Server'] = $effectiveServer }
-                $domainControllers = Get-ADDomainController @dcFilterParams | Select-Object -First 3
+                # Get-ADSecurityAuditDomainController (Common.ps1), not a
+                # bare Get-ADDomainController -Filter *: the latter queries
+                # the forest-wide Configuration container and returns every
+                # domain's DCs regardless of -Server, which could silently
+                # hand $connectedDC below a DC from the WRONG domain even
+                # with an active -Server override.
+                $domainControllers = Get-ADSecurityAuditDomainController -Server $effectiveServer | Select-Object -First 3
             }
             catch {
                 Write-Verbose "Could not enumerate all DCs, falling back to discovery: $_"

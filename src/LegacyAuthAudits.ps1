@@ -187,8 +187,11 @@ function Test-ADLegacyAuthSurface {
 
     $domainControllers = @()
     try {
-        $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Filter * (legacy-auth audit)' -Query {
-            Get-ADDomainController -Filter * -ErrorAction Stop
+        # Get-ADSecurityAuditDomainController, not a bare
+        # Get-ADDomainController -Filter * - the latter is forest-wide
+        # regardless of -Server; see Common.ps1 for why.
+        $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (legacy-auth audit)' -Query {
+            Get-ADSecurityAuditDomainController
         })
     }
     catch {

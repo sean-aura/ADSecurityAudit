@@ -61,6 +61,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from an existing JSON export" section for the full list of gaps versus
   the original report.
 ### Fixed
+- **Root cause of "-Server override doesn't work, wrong domain's data
+  appears" in a multi-domain forest.** Every per-DC probe in this module
+  (anonymous-bind, null-session, Kerberos hardening, legacy auth, audit
+  policy, known-DC-vulnerability checks, stale-object depth, RODC
+  security, control-path graph, coercion/relay exposure, the main run's
+  own DC connectivity check, and `Get-ADSnapshot`'s DC inventory
+  collection) enumerated Domain Controllers via a bare
+  `Get-ADDomainController -Filter *`. **`-Filter` is a fundamentally
+  different code path than `-Identity`/`-Discover`: it queries the
+  forest-wide `CN=Sites,CN=Configuration,...` container, which is
+  replicated to every DC in the forest - so `-Server` only controlled
+  WHICH DC answered the query, never the query's SCOPE.** In a
+  multi-domain forest this could silently return, and then iterate every
+  per-DC check over, Domain Controllers from a domain OTHER than the one
+  `-Server` was explicitly set to - a completely different (and far more
+  fundamental) failure mode than the `$PSDefaultParameterValues` `-Server`
+  auto-injection mechanism itself, which was working correctly the whole
+  time. New `Get-ADSecurityAuditDomainController` helper (Common.ps1)
+  performs the same enumeration, then filters the result to DCs whose own
+  `.Domain` property matches the domain actually resolved via
+  `Get-ADDomain` against the same `-Server` (which does NOT have this
+  problem). Every affected call site now uses this helper instead;
+  `Get-ADSnapshot` in particular means offline/`-FromSnapshot` re-analysis
+  is also fixed at the source rather than only live runs.
 - **`Get-ADRetestComparison` / `Export-ADRetestComparisonHTML`: the report
   header's `BASELINE GENERATED` (and, when a score sidecar predated this
   fix, `RETEST GENERATED`) rendered as raw PowerShell object text

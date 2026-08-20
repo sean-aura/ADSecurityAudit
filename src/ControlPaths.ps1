@@ -181,8 +181,11 @@ function Get-ADControlPathGraph {
             @()
         }
         else {
-            @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController (control-path graph)' -Query {
-                Get-ADDomainController -Filter * -ErrorAction Stop
+            # Get-ADSecurityAuditDomainController, not a bare
+            # Get-ADDomainController -Filter * - the latter is forest-wide
+            # regardless of -Server; see Common.ps1 for why.
+            @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (control-path graph)' -Query {
+                Get-ADSecurityAuditDomainController
             })
         }
     }

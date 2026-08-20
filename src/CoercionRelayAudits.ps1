@@ -42,7 +42,7 @@ function Test-ADCoercionAndRelayExposure {
     .PARAMETER Snapshot
         Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
         the DC list is read from `Snapshot.DomainControllers` instead of a
-        live `Get-ADDomainController -Filter *` call, but the live
+        live `Get-ADSecurityAuditDomainController` call, but the live
         per-DC service/registry probes are still skipped entirely (offline
         mode performs no live AD/network access), consistent with the
         anonymous-bind probe in Test-ADDomainHardeningFlags.
@@ -69,8 +69,11 @@ function Test-ADCoercionAndRelayExposure {
     }
     elseif (-not $Snapshot) {
         try {
-            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Filter * (coercion/relay audit)' -Query {
-                Get-ADDomainController -Filter * -ErrorAction Stop
+            # Get-ADSecurityAuditDomainController, not a bare
+            # Get-ADDomainController -Filter * - the latter is forest-wide
+            # regardless of -Server; see Common.ps1 for why.
+            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (coercion/relay audit)' -Query {
+                Get-ADSecurityAuditDomainController
             })
         }
         catch {

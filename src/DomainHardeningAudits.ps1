@@ -58,13 +58,14 @@ function Test-ADDomainHardeningFlags {
           3. Anonymous LDAP/RootDSE binding - a strictly read-only
              anonymous DirectoryEntry bind against RootDSE, attempted
              against EVERY Domain Controller in the domain (via
-             `Get-ADDomainController -Filter *`, the same enumeration
-             pattern Check 4 below and every other live per-DC probe in
-             this module use) rather than a single discovered/overridden
-             DC. Success on any DC is the finding; a refusal (exception)
-             on a given DC is that DC's secure state. This live probe is
-             skipped when -Snapshot is supplied, since offline re-analysis
-             must perform no live AD/network access.
+             `Get-ADSecurityAuditDomainController`, Common.ps1 - correctly
+             domain-scoped, unlike a bare `Get-ADDomainController -Filter *`
+             which is forest-wide regardless of -Server) rather than a
+             single discovered/overridden DC. Success on any DC is the
+             finding; a refusal (exception) on a given DC is that DC's
+             secure state. This live probe is skipped when -Snapshot is
+             supplied, since offline re-analysis must perform no live
+             AD/network access.
           4. Null-session pipe/share access - `RestrictNullSessAccess`
              (Security Options: "Network access: Restrict anonymous access
              to Named Pipes and Shares") read as disabled (0), checking
@@ -264,15 +265,13 @@ function Test-ADDomainHardeningFlags {
             # mix of hardened and non-hardened DCs could show a finding on
             # one run and none on the next, and a single unreachable
             # override host could error out the whole check even though
-            # every other DC was reachable. Now enumerates every DC via
-            # `Get-ADDomainController -Filter *` (the same pattern Check 4
-            # below, and every other live per-DC probe in this module,
-            # already use) and probes each independently so the -Server
-            # override, if active, is honored the normal way (it still
-            # narrows -Filter * to that domain/DC) without special-casing
-            # a single-host resolution path.
-            $anonDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Filter * (anonymous-bind probe)' -Query {
-                Get-ADDomainController -Filter * -ErrorAction Stop
+            # every other DC was reachable. Now enumerates every DC in the
+            # TARGET DOMAIN via Get-ADSecurityAuditDomainController (see
+            # Common.ps1 - a bare `Get-ADDomainController -Filter *` is
+            # forest-wide regardless of -Server, which would have silently
+            # probed other domains' DCs too) and probes each independently.
+            $anonDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (anonymous-bind probe)' -Query {
+                Get-ADSecurityAuditDomainController
             })
 
             if (-not $anonDomainControllers -or $anonDomainControllers.Count -eq 0) {
@@ -365,8 +364,11 @@ function Test-ADDomainHardeningFlags {
             Import-Module GroupPolicy -ErrorAction Stop
 
             $nsDomain = Get-ADDomain -ErrorAction Stop
-            $nsDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Filter * (null-session audit)' -Query {
-                Get-ADDomainController -Filter * -ErrorAction Stop
+            # Get-ADSecurityAuditDomainController, not a bare
+            # Get-ADDomainController -Filter * - the latter is forest-wide
+            # regardless of -Server; see Common.ps1 for why.
+            $nsDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (null-session audit)' -Query {
+                Get-ADSecurityAuditDomainController
             })
 
             if (-not $nsDomainControllers -or $nsDomainControllers.Count -eq 0) {

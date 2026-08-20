@@ -232,8 +232,11 @@ function Test-ADKerberosHardening {
             try {
                 Import-Module GroupPolicy -ErrorAction Stop
                 $domain = Get-ADDomain -ErrorAction Stop
-                $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Filter * (kerberos hardening)' -Query {
-                    Get-ADDomainController -Filter * -ErrorAction Stop
+                # Get-ADSecurityAuditDomainController, not a bare
+                # Get-ADDomainController -Filter * - the latter is
+                # forest-wide regardless of -Server; see Common.ps1.
+                $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (kerberos hardening)' -Query {
+                    Get-ADSecurityAuditDomainController
                 })
 
                 if ($domainControllers -and $domainControllers.Count -gt 0) {
@@ -360,8 +363,11 @@ function Test-ADKerberosHardening {
         try {
             Import-Module GroupPolicy -ErrorAction Stop
             $domain = Get-ADDomain -ErrorAction Stop
-            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Filter * (FAST audit)' -Query {
-                Get-ADDomainController -Filter * -ErrorAction Stop
+            # Get-ADSecurityAuditDomainController, not a bare
+            # Get-ADDomainController -Filter * - the latter is forest-wide
+            # regardless of -Server; see Common.ps1 for why.
+            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (FAST audit)' -Query {
+                Get-ADSecurityAuditDomainController
             })
 
             if (-not $domainControllers -or $domainControllers.Count -eq 0) {

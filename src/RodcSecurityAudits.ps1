@@ -151,8 +151,12 @@ function Test-ADRodcSecurity {
     }
     else {
         try {
-            $rodcs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController RODCs' -Query {
-                Get-ADDomainController -Filter { IsReadOnly -eq $true } -ErrorAction Stop
+            # Get-ADSecurityAuditDomainController, not a bare
+            # Get-ADDomainController -Filter - the latter is forest-wide
+            # regardless of -Server; see Common.ps1 for why. -Filter is
+            # still passed through so this only enumerates RODCs.
+            $rodcs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController RODCs' -Query {
+                Get-ADSecurityAuditDomainController -Filter { IsReadOnly -eq $true }
             })
         }
         catch {

@@ -286,8 +286,13 @@ function Get-ADSnapshot {
 
     try {
         Write-Verbose "Get-ADSnapshot: collecting domain controllers..."
-        $rawDCs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController (snapshot)' -Query {
-            Get-ADDomainController -Filter * -ErrorAction Stop
+        # Get-ADSecurityAuditDomainController, not a bare
+        # Get-ADDomainController -Filter * - the latter is forest-wide
+        # regardless of -Server, which would have baked OTHER domains'
+        # DCs permanently into this snapshot with no way to correct it
+        # later at -FromSnapshot re-analysis time. See Common.ps1 for why.
+        $rawDCs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (snapshot)' -Query {
+            Get-ADSecurityAuditDomainController -Server $effectiveServer
         })
         # Same flattening fix as Users/Computers above - ADDomainController
         # objects carry the same class of case-variant property risk.

@@ -185,8 +185,11 @@ function Test-ADStaleObjectDepth {
             $domainControllers = @($Snapshot.DomainControllers)
         }
         else {
-            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController (stale-object depth)' -Query {
-                Get-ADDomainController -Filter * -ErrorAction Stop
+            # Get-ADSecurityAuditDomainController, not a bare
+            # Get-ADDomainController -Filter * - the latter is forest-wide
+            # regardless of -Server; see Common.ps1 for why.
+            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (stale-object depth)' -Query {
+                Get-ADSecurityAuditDomainController
             })
         }
     }
