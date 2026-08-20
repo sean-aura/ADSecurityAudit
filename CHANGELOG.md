@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Fixed
+- **`Set-ADFindingMetadata: Cannot process argument transformation on
+  parameter 'Finding'`, thrown at the very end of a live run, after the
+  transcript had already stopped, with no JSON/HTML/CSV report written.**
+  Root cause: if any invoked test scriptblock emits more than one array to
+  its own output pipeline, the per-test results-assembly loop's `else`
+  branch (`$allFindings += $result`) appends that whole array as a single
+  nested element instead of spreading it into individual findings -
+  producing a jagged/nested `$allFindings` array. This module's own
+  `ConvertTo-ADFlatFindingsArray` helper already existed to guard against
+  exactly this shape of bug (previously documented as occurring "only
+  after a JSON round-trip" via `Get-ADRetestComparison`/`Get-ADRiskScore`),
+  but `Start-ADSecurityAudit`'s own findings-tagging loop never applied it
+  before `Set-ADFindingMetadata` - whose strongly-typed
+  `[ADSecurityFinding]$Finding` parameter cannot bind a nested array,
+  throwing immediately, after the transcript had already been stopped in
+  the `finally` block and before the export section ever ran. Fixed by
+  flattening `$allFindings` immediately after test-result assembly, before
+  the summary counts (which would otherwise silently undercount against
+  the un-flattened array) and before the tagging loop - matching the
+  defensive pattern already used by `Get-ADRiskScore`/
+  `Get-ADRetestComparison`, just applied earlier so every consumer is
+  protected, not only scoring.
 - **`-ExportPath ".\foldername"` (or any relative path) threw "Export path
   is not writable" even for a valid, writable folder.** `Join-Path`/
   `Test-Path`/`New-Item` are PowerShell-provider-aware and correctly

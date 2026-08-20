@@ -399,6 +399,27 @@ function Start-ADSecurityAudit {
         
         $endTime = Get-Date
         $duration = $endTime - $startTime
+
+        # Defensive: flatten $allFindings before ANY consumer touches it -
+        # including the summary counts just below. A jagged/nested array -
+        # a top-level element that is itself a sub-array of several
+        # findings, rather than one - can slip in above if any invoked
+        # test scriptblock emits more than one array to its own output
+        # pipeline (the assembly loop's `else` branch then appends that
+        # whole array as a single nested element instead of spreading it
+        # into individual findings). Left unflattened, the summary counts
+        # below would silently undercount (Where-Object can't see into a
+        # nested array element's .Severity), and Set-ADFindingMetadata
+        # further down - which has a strongly-typed
+        # [ADSecurityFinding]$Finding parameter - throws "Cannot process
+        # argument transformation on parameter 'Finding'" the moment its
+        # tagging loop reaches such an element, failing after
+        # Stop-Transcript has already run in the finally block and before
+        # any report file is written. Get-ADRiskScore/Get-ADRetestComparison
+        # already defend against this on their own inputs via this same
+        # helper; applying it here, immediately after assembly, protects
+        # every downstream consumer instead of just scoring.
+        $allFindings = ConvertTo-ADFlatFindingsArray -Findings $allFindings
         
         # Generate summary
         Write-Host "`n==================================================" -ForegroundColor Cyan
