@@ -107,6 +107,15 @@ function Get-ADMaturityTrend {
         Improving/Flat/Regressing direction classification per category and
         overall.
 
+        GeneratedDate was only added to Get-ADRiskScore's output in v1.21.0,
+        so a score sidecar produced by an older module version won't have
+        it. Rather than dropping that run from the trend, its date is
+        ESTIMATED from the sidecar file's own last-write time instead, and
+        that run is flagged (DateEstimated = $true on its Series entry, a
+        note in the returned Message, and a visible flag on that row in
+        Export-ADMaturityTrendHTML's per-run table) so an estimated date is
+        never mistaken for the sidecar's real recorded generation time.
+
         Does NOT recompute scores under the current scoring mapping table -
         see the module-level header comment above for why this is the
         deliberate opposite of Get-ADRetestComparison's behavior.
@@ -121,9 +130,10 @@ function Get-ADMaturityTrend {
         (AD_Maturity_Trend_<timestamp>.json convention), mirroring this
         module's other -ToJson features.
     .OUTPUTS
-        PSCustomObject: GeneratedDate, RunCount, DateRange, Series,
-        CategoryTrends, OverallDirection, Message (non-null only when fewer
-        than two usable runs were found).
+        PSCustomObject: GeneratedDate, RunCount, EstimatedDateCount,
+        DateRange, Series (each entry carries DateEstimated), CategoryTrends,
+        OverallDirection, Message (non-null when fewer than two usable runs
+        were found and/or one or more runs used an estimated date).
     .EXAMPLE
         Get-ADMaturityTrend -ReportPath .\Reports\ -Verbose |
             Export-ADMaturityTrendHTML -OutputPath .\maturity-trend.html
@@ -154,25 +164,37 @@ function Get-ADMaturityTrend {
             continue
         }
 
-        if (-not ($sc.PSObject.Properties.Name -contains 'GeneratedDate') -or -not $sc.GeneratedDate) {
-            Write-Warning "Skipping score sidecar with no GeneratedDate field (see Get-ADRiskScore's output contract): '$($f.FullName)'"
-            continue
-        }
         if (-not ($sc.PSObject.Properties.Name -contains 'TotalScore')) {
             Write-Warning "Skipping score sidecar missing the expected TotalScore field: '$($f.FullName)'"
             continue
         }
 
+        # GeneratedDate was only added to Get-ADRiskScore's output in v1.21.0
+        # (see Scoring.ps1) - a sidecar produced by an older module version
+        # won't have it. Rather than dropping that run's history entirely,
+        # fall back to the file's own last-write time and flag it as an
+        # ESTIMATED date (DateEstimated = $true on the run/series entry, and
+        # called out explicitly in the HTML report and the result's Message)
+        # so nobody mistakes an estimate for the sidecar's real generation
+        # time.
         $generatedDate = $null
-        try { $generatedDate = [datetime]$sc.GeneratedDate }
-        catch {
-            Write-Warning "Skipping score sidecar with an unparsable GeneratedDate value: '$($f.FullName)'"
-            continue
+        $dateEstimated = $false
+        if (($sc.PSObject.Properties.Name -contains 'GeneratedDate') -and $sc.GeneratedDate) {
+            try { $generatedDate = [datetime]$sc.GeneratedDate }
+            catch {
+                Write-Warning "Score sidecar has an unparsable GeneratedDate value - falling back to the file's last-write time as an ESTIMATED date instead: '$($f.FullName)'"
+            }
+        }
+        if (-not $generatedDate) {
+            $generatedDate = $f.LastWriteTime
+            $dateEstimated = $true
+            Write-Warning "Score sidecar has no GeneratedDate field (predates v1.21.0) - using the file's last-write time as an ESTIMATED date instead: '$($f.FullName)'"
         }
 
         $runs += [PSCustomObject]@{
             Path           = $f.FullName
             GeneratedDate  = $generatedDate
+            DateEstimated  = $dateEstimated
             ModuleVersion  = if ($sc.PSObject.Properties.Name -contains 'ModuleVersion') { $sc.ModuleVersion } else { $null }
             TotalScore     = [int]$sc.TotalScore
             MaturityLevel  = [int]$sc.MaturityLevel
@@ -185,13 +207,15 @@ function Get-ADMaturityTrend {
         throw "Found score sidecar(s) under '$ReportPath' but none were usable - see the warnings above."
     }
 
-    # Chronological order by each sidecar's OWN recorded GeneratedDate, never
-    # by filename (a file may have been renamed or moved).
+    # Chronological order by each sidecar's OWN recorded GeneratedDate (or the
+    # estimated fallback above), never by filename (a file may have been
+    # renamed or moved).
     $runs = @($runs | Sort-Object -Property GeneratedDate)
 
     $series = foreach ($r in $runs) {
         [PSCustomObject]@{
             GeneratedDate = $r.GeneratedDate
+            DateEstimated = $r.DateEstimated
             ModuleVersion = $r.ModuleVersion
             TotalScore    = $r.TotalScore
             MaturityLevel = $r.MaturityLevel
@@ -218,20 +242,27 @@ function Get-ADMaturityTrend {
 
     $overallDirection = Get-ADMaturityTrendDirection -Values @($runs.TotalScore)
 
-    $message = $null
+    $messageParts = @()
     if ($runs.Count -eq 1) {
-        $message = 'Only one usable score sidecar was found under this ReportPath - no trend can be computed yet. Re-run Get-ADMaturityTrend once at least one more historical export is available.'
-        Write-Warning $message
+        $messageParts += 'Only one usable score sidecar was found under this ReportPath - no trend can be computed yet. Re-run Get-ADMaturityTrend once at least one more historical export is available.'
     }
+    $estimatedRuns = @($runs | Where-Object { $_.DateEstimated })
+    if ($estimatedRuns.Count -gt 0) {
+        $estimatedFileList = ($estimatedRuns | ForEach-Object { $_.Path }) -join '; '
+        $messageParts += "$($estimatedRuns.Count) of $($runs.Count) score sidecar(s) had no GeneratedDate field (predates v1.21.0) - their date was ESTIMATED from the file's last-write time instead: $estimatedFileList"
+    }
+    $message = if ($messageParts.Count -gt 0) { $messageParts -join ' ' } else { $null }
+    if ($message) { Write-Warning $message }
 
     $result = [PSCustomObject]@{
-        GeneratedDate    = Get-Date
-        RunCount         = $runs.Count
-        DateRange        = [PSCustomObject]@{ Earliest = $runs[0].GeneratedDate; Latest = $runs[-1].GeneratedDate }
-        Series           = @($series)
-        CategoryTrends   = @($categoryTrends)
-        OverallDirection = $overallDirection
-        Message          = $message
+        GeneratedDate       = Get-Date
+        RunCount            = $runs.Count
+        EstimatedDateCount  = $estimatedRuns.Count
+        DateRange           = [PSCustomObject]@{ Earliest = $runs[0].GeneratedDate; Latest = $runs[-1].GeneratedDate }
+        Series              = @($series)
+        CategoryTrends      = @($categoryTrends)
+        OverallDirection    = $overallDirection
+        Message             = $message
     }
 
     if ($ToJson) {
@@ -415,9 +446,13 @@ function Export-ADMaturityTrendHTML {
 
     $runRowsHtml = ($Trend.Series | ForEach-Object {
         $verText = if ($_.ModuleVersion) { HtmlEncode "$($_.ModuleVersion)" } else { 'unknown' }
+        $dateCell = "$($_.GeneratedDate)"
+        if ($_.DateEstimated) {
+            $dateCell = "$($_.GeneratedDate) <span class=`"estimated-flag`" title=`"No GeneratedDate field in this sidecar (predates v1.21.0) - date estimated from the file's last-write time.`">&#9888; estimated</span>"
+        }
         @"
                     <tr>
-                        <td>$($_.GeneratedDate)</td>
+                        <td>$dateCell</td>
                         <td>$verText</td>
                         <td>$($_.TotalScore)</td>
                         <td>$($_.MaturityLevel)</td>
@@ -454,6 +489,7 @@ function Export-ADMaturityTrendHTML {
         .header-info strong { display: block; color: var(--ink-muted); font-size: 0.85em; margin-bottom: 5px; }
         .warning-box { background: #fdf8ec; border-left: 4px solid #8a6200; padding: 15px; margin: 20px 0; border-radius: 4px; }
         .warning-box p { color: #8a6200; margin: 5px 0; }
+        .estimated-flag { display: inline-block; font-size: 0.78em; font-weight: 700; color: #8a6200; background: #fdf8ec; border: 1px solid #8a6200; border-radius: 10px; padding: 1px 8px; margin-left: 6px; cursor: help; }
         table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 0.9em; }
         th { background: var(--brand); color: white; padding: 10px 12px; text-align: left; font-weight: 600; }
         td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
@@ -499,7 +535,7 @@ $runRowsHtml
                 </tbody>
             </table>
         </div>
-        <p style="color:var(--ink-muted); font-size:0.85em; margin-top:6px;">Module Version is shown for every run so a score jump can be attributed to a tool change (a different row's version) vs. an actual posture change (same version, different score).</p>
+        <p style="color:var(--ink-muted); font-size:0.85em; margin-top:6px;">Module Version is shown for every run so a score jump can be attributed to a tool change (a different row's version) vs. an actual posture change (same version, different score). A row marked <span class="estimated-flag">&#9888; estimated</span> had no recorded GeneratedDate (its sidecar predates v1.21.0) - its date is estimated from the sidecar file's own last-write time, not read from the file's contents.</p>
 
         <div class="footer">
             <p><strong>Generated by ADSecurityAudit Module v$($script:ModuleVersion) - Maturity Trend History</strong></p>

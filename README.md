@@ -261,6 +261,8 @@ Get-ADMaturityTrend -ReportPath "C:\Reports\contoso.com" -ToJson "C:\Reports\AD_
 
 With only one score sidecar found, no trend can be computed - the command returns a result with `RunCount = 1` and a clear `Message` explaining this, rather than throwing. With two, the trend is simply the pairwise delta between them.
 
+**Sidecars from before v1.21.0:** `GeneratedDate`/`ModuleVersion` were only added to `Get-ADRiskScore`'s output in v1.21.0, so an older score sidecar won't have them. Rather than silently dropping that run from the trend, its date is **estimated** from the sidecar file's own last-write time instead, and that run is flagged: `Series[].DateEstimated = $true`, a top-level `EstimatedDateCount`, a note in the returned `Message` naming the affected file(s), and a visible &#9888; **estimated** badge on that row in `Export-ADMaturityTrendHTML`'s per-run table (hover for why). This only affects the *displayed date* - the run's score/maturity data itself is read and trended normally.
+
 ## Exception / Remediation-State Tracking
 
 As of v1.23.0, a small file-based store lets you record "we've accepted this risk, not fixing it" so a persisting finding stops looking indistinguishable from a genuinely neglected one on every retest. This extends `Get-ADRetestComparison` (v1.21.0) - it's an additive annotation step, not a change to the New/Resolved/Still Open/Changed classification itself, and omitting it behaves exactly as before.

@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.1]
+### Fixed
+- **`Get-ADMaturityTrend` silently dropped any `AD_Security_Score_*.json`
+  sidecar that predates v1.21.0's `GeneratedDate`/`ModuleVersion` fields**,
+  since it relied on `GeneratedDate` to sort runs chronologically - a domain
+  with run history spanning that version boundary would see its older runs
+  vanish from the trend with only a console warning. Now falls back to the
+  sidecar file's own last-write time when `GeneratedDate` is missing or
+  unparsable, so older runs are included rather than dropped. Every such run
+  is explicitly flagged (not silently blended in as if the date were
+  authoritative): a new `DateEstimated` boolean per `Series` entry, a
+  top-level `EstimatedDateCount`, a note in the returned `Message` naming the
+  affected file(s), and a visible "estimated" badge in
+  `Export-ADMaturityTrendHTML`'s per-run table. Only the displayed/sorted
+  date is estimated - score/maturity data is read and trended unchanged.
+
 ## [1.23.0]
 ### Added
 - `Set-ADRemediationState` / `Get-ADRemediationState` (a small,

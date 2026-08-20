@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.23.0'
+    ModuleVersion = '1.23.1'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -67,6 +67,12 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.23.1 - Fix Get-ADMaturityTrend Silently Dropping Pre-v1.21.0 Score Sidecars
+- Fixed: Get-ADMaturityTrend silently skipped (with only a console warning) any AD_Security_Score_*.json sidecar that predates v1.21.0's GeneratedDate/ModuleVersion fields, since it relied on GeneratedDate to sort runs chronologically. A domain with a long run history spanning that version boundary would see its older runs vanish from the trend without an obvious explanation - found via a follow-up backward-compatibility check, not the original acceptance criteria.
+- Get-ADMaturityTrend now falls back to the sidecar file's own last-write time when GeneratedDate is missing or unparsable, so older runs are included instead of dropped. Every such run is explicitly flagged rather than silently blended in as if the date were authoritative: a new DateEstimated boolean on its Series entry, a top-level EstimatedDateCount on the result, a note in the returned Message naming the affected file(s), and a visible "estimated" badge (with a tooltip explaining why) on that row in Export-ADMaturityTrendHTML's per-run table.
+- Only the displayed/sorted date is estimated - the run's own recorded TotalScore/MaturityLevel/CategoryScores are read and trended exactly as before; this fix does not touch score computation.
+- New Pester coverage: a fixture sidecar in the pre-v1.21.0 shape (no GeneratedDate/ModuleVersion fields at all) is confirmed to appear in the trend, correctly flagged, rather than being dropped.
+
 v1.23.0 - Exception / Remediation-State Tracking
 - Added Set-ADRemediationState / Get-ADRemediationState: a small, hand-editable JSON state file (conventionally AD_Remediation_State.json, one per domain) keyed by the same Category+Issue+AffectedObject key Get-ADRetestComparison already uses (Get-ADFindingMatchKey), recording a status (Open/AcceptedRisk/InProgress/Remediated), optional owner, note, and date per finding. Set-ADRemediationState is an explicit read-modify-write upsert - re-running it for the same key updates the entry rather than duplicating it - not auto-discovery; this module never infers remediation intent on its own.
 - Get-ADRetestComparison gained an optional -RemediationStatePath parameter: when supplied, StillOpenFindings and ChangedFindings are annotated with a RemediationState property (Status/Owner/Note/SetDate), defaulting untracked findings to Status='Open' with nulls. Purely additive - omitting the parameter behaves identically to before it existed (verified with a regression check), and the New/Resolved/StillOpen/Changed classification itself is unchanged.

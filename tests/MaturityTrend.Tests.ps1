@@ -210,6 +210,85 @@ Describe 'Export-ADMaturityTrendHTML' {
     }
 }
 
+Describe 'Get-ADMaturityTrend - estimated-date fallback for pre-v1.21.0 sidecars' {
+    It 'includes a sidecar with no GeneratedDate field, estimating its date from the file''s last-write time instead of dropping it' {
+        $folder = Join-Path $TestDrive 'legacy-sidecar'
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+
+        # Simulate a PRE-v1.21.0 sidecar: exactly what Get-ADRiskScore
+        # returned before GeneratedDate/ModuleVersion were added.
+        $legacySidecar = [PSCustomObject]@{
+            TotalScore     = 20
+            MaturityLevel  = 2
+            MaturityLabel  = 'Level 2 - Partial hygiene'
+            CategoryScores = @([PSCustomObject]@{ Category = 'User Account'; Score = 20; Findings = 1; RawPoints = 4 })
+            MitreSummary   = @()
+            FindingCount   = 1
+            WeightedPoints = 4
+            SeverityCounts = [PSCustomObject]@{ Critical = 0; High = 0; Medium = 0; Low = 1; Info = 0 }
+        }
+        $legacyPath = Join-Path $folder 'AD_Security_Score_legacy.json'
+        $legacySidecar | ConvertTo-Json -Depth 6 | Out-File -FilePath $legacyPath -Encoding UTF8
+
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'current' -GeneratedDate ([datetime]'2026-06-01') -Findings @()
+
+        $trend = Get-ADMaturityTrend -ReportPath $folder -WarningAction SilentlyContinue
+
+        # Both runs present - the legacy one is NOT dropped.
+        $trend.RunCount | Should -Be 2
+        $trend.EstimatedDateCount | Should -Be 1
+
+        $legacyEntry = $trend.Series | Where-Object { $_.DateEstimated }
+        $legacyEntry | Should -Not -BeNullOrEmpty
+        $legacyEntry.GeneratedDate | Should -Be (Get-Item $legacyPath).LastWriteTime
+        $legacyEntry.TotalScore | Should -Be 20
+
+        $trend.Message | Should -Match 'ESTIMATED'
+        $trend.Message | Should -Match '1 of 2'
+    }
+
+    It 'does not flag a run whose sidecar has a valid GeneratedDate' {
+        $folder = Join-Path $TestDrive 'no-estimation-needed'
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'a' -GeneratedDate ([datetime]'2026-01-01') -Findings @()
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'b' -GeneratedDate ([datetime]'2026-02-01') -Findings @()
+
+        $trend = Get-ADMaturityTrend -ReportPath $folder
+        $trend.EstimatedDateCount | Should -Be 0
+        ($trend.Series | Where-Object { $_.DateEstimated }).Count | Should -Be 0
+        $trend.Message | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Export-ADMaturityTrendHTML - estimated-date flag' {
+    It 'visually flags a row whose date was estimated' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src/Reporting.ps1')
+        $folder = Join-Path $TestDrive 'html-estimated'
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+
+        $legacySidecar = [PSCustomObject]@{
+            TotalScore     = 10
+            MaturityLevel  = 3
+            MaturityLabel  = 'Level 3 - Standard hardening'
+            CategoryScores = @()
+            MitreSummary   = @()
+            FindingCount   = 0
+            WeightedPoints = 0
+            SeverityCounts = [PSCustomObject]@{ Critical = 0; High = 0; Medium = 0; Low = 0; Info = 0 }
+        }
+        $legacySidecar | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $folder 'AD_Security_Score_legacy.json') -Encoding UTF8
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'current' -GeneratedDate ([datetime]'2026-06-01') -Findings @()
+
+        $trend = Get-ADMaturityTrend -ReportPath $folder -WarningAction SilentlyContinue
+        $outPath = Join-Path $TestDrive 'trend-estimated.html'
+        Export-ADMaturityTrendHTML -Trend $trend -OutputPath $outPath
+
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Match 'estimated-flag'
+        $content | Should -Match 'estimated'
+    }
+}
+
 Describe 'Get-ADSvgTrendLine' {
     It 'renders a flat 2-point line for a single value without dividing by zero' {
         { Get-ADSvgTrendLine -Values @(42) } | Should -Not -Throw
