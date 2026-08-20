@@ -221,7 +221,13 @@ function Test-ADCertificateServices {
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
         
         try {
-            $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -Filter * -Properties * -ErrorAction Stop
+            # -SearchScope OneLevel, not the default Subtree - see the
+            # matching comment in CertificateServicesExtendedAudits.ps1.
+            # Subtree would also return the "Certificate Templates"
+            # container object itself, which has no template attributes
+            # and would otherwise be silently iterated as if it were a
+            # real template.
+            $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -ErrorAction Stop
         }
         catch {
             Write-Verbose "AD Certificate Services not found or accessible. Skipping AD CS audit."
@@ -402,7 +408,14 @@ function Test-ADCertificateServices {
         
         # Check Certificate Authority permissions (ESC7)
         try {
-            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -Filter * -Properties * -ErrorAction Stop
+            # -SearchScope OneLevel, not the default Subtree - a Subtree
+            # search also returns the "Enrollment Services" container
+            # object itself (no dNSHostName/cACertificate/real ACL of
+            # interest), which was previously iterated here as if it were
+            # a real CA, producing a bogus/confusing ACL check and
+            # potential finding attributed to a "CA" named "Enrollment
+            # Services" that isn't actually a Certificate Authority.
+            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -ErrorAction Stop
             
             foreach ($ca in $certAuthorities) {
                 $acl = $null

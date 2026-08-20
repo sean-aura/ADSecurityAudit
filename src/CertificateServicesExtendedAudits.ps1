@@ -343,14 +343,28 @@ function Test-ADCSExtended {
             $configContext = Get-ADRootDSEValue -Property configurationNamingContext
             $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
 
+            # -SearchScope OneLevel, not the default Subtree: a Subtree
+            # search over "CN=Certificate Templates,..."/"CN=Enrollment
+            # Services,..." returns the CONTAINER OBJECT ITSELF alongside
+            # its real children (pKICertificateTemplate/pKIEnrollmentService
+            # objects, which are never nested further than one level under
+            # these containers). Neither loop below filtered by objectClass,
+            # so that container object was silently iterated as if it were
+            # a real template/CA - its own Name IS literally "Certificate
+            # Templates"/"Enrollment Services", it has no dNSHostName or
+            # cACertificate, and every check against it either produced
+            # confusing noise (e.g. "CA 'Enrollment Services' has no
+            # dNSHostName; skipping ESC8 probe" - about the container, not
+            # any real, misconfigured CA) or was silently skipped. OneLevel
+            # returns only the real child objects, never the base container.
             $certTemplates = @(Invoke-ADQueryWithRetry -OperationName 'Get certificate templates (ADCS extended audit)' -Query {
-                Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -Filter * -Properties * -ErrorAction Stop
+                Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -ErrorAction Stop
             })
             $adcsInstalled = $true
 
             try {
                 $certAuthorities = @(Invoke-ADQueryWithRetry -OperationName 'Get enrollment services (ADCS extended audit)' -Query {
-                    Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -Filter * -Properties * -ErrorAction Stop
+                    Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -ErrorAction Stop
                 })
             }
             catch {

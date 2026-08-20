@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed
+- **`Get-ADTargetDomainController` failed with "Cannot find directory
+  server with identity: `<domain FQDN>`" whenever the active `-Server`
+  override was a domain name rather than a specific DC name** - which is
+  this module's own documented, encouraged form of `-Server` ("target a
+  domain other than your own", e.g. `-Server domainb.corp.com`).
+  `Get-ADDomainController -Identity` requires an actual DC identity
+  (GUID/Name/IPv4Address/DNS host name of the DC itself), not a domain
+  FQDN, so every live-network-probe check that depends on this function
+  (anonymous-bind DirectoryEntry probe, DNS zone-transfer target
+  resolution) silently failed to resolve a DC and skipped its probe
+  whenever `-Server` was given as a domain name. Now resolves via
+  `Get-ADSecurityAuditDomainController` instead, which correctly handles
+  either form.
+- **AD CS Certificate Templates/Enrollment Services enumeration returned
+  the CONTAINER OBJECT ITSELF alongside real templates/CAs**
+  (`Test-ADCertificateServices`, `Test-ADCSExtended`, `Get-ADSnapshot`).
+  `Get-ADObject -SearchBase "CN=Certificate Templates,..."` (and
+  `"CN=Enrollment Services,..."`) with the default `-SearchScope`
+  (Subtree) also matches the base container object, which is never
+  filtered out downstream - its own `Name` is literally "Certificate
+  Templates"/"Enrollment Services", and it has no template attributes or
+  `dNSHostName`/`cACertificate`. This produced exactly the confusing
+  symptom "CA 'Enrollment Services' has no dNSHostName; skipping ESC8
+  probe" even when a real, correctly-configured Enterprise CA exists -
+  the message is about the container, not the real CA (which is a
+  separate entry in the same result set and is unaffected). Fixed at all
+  six call sites (two per file) with `-SearchScope OneLevel`, since
+  neither object type is ever nested further than one level under these
+  containers.
+
 ### Added
 - **JSON/CSV output alignment** - the main audit's CSV export
   (`AD_Security_Audit_<timestamp>.csv`) was silently missing two fields

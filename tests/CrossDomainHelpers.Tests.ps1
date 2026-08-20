@@ -121,6 +121,54 @@ Describe 'Get-ADSecurityAuditDomainController' {
     }
 }
 
+Describe 'Get-ADTargetDomainController' {
+    <#
+        Regression coverage: -Identity requires a real DC identity
+        (GUID/Name/IPv4Address/DNSHostName of the DC itself), not a domain
+        FQDN - but -Server (and therefore the active override) is commonly
+        a domain FQDN per this module's own documented usage. The old
+        implementation passed the override straight to -Identity and threw
+        "Cannot find directory server with identity: <domain FQDN>" every
+        time an operator used that documented form.
+    #>
+    BeforeAll {
+        function Get-ADDomain { }
+        function Get-ADDomainController { }
+    }
+
+    AfterEach {
+        Clear-ADSecurityAuditTargetServer
+    }
+
+    It 'resolves a DC when the active override is a DOMAIN FQDN, not a specific DC name' {
+        Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+        Mock -CommandName Get-ADDomainController -MockWith {
+            @([PSCustomObject]@{ HostName = 'dc01.domainb.corp.com'; Domain = 'domainb.corp.com' })
+        }
+
+        Set-ADSecurityAuditTargetServer -Server 'domainb.corp.com'
+        $result = Get-ADTargetDomainController -WarningAction SilentlyContinue
+        $result | Should -Not -BeNullOrEmpty
+        $result.HostName | Should -Be 'dc01.domainb.corp.com'
+    }
+
+    It 'falls back to -Discover when no override is active' {
+        Mock -CommandName Get-ADDomainController -MockWith { [PSCustomObject]@{ HostName = 'discovered-dc.contoso.com' } } -ParameterFilter { $Discover }
+
+        Clear-ADSecurityAuditTargetServer
+        $result = Get-ADTargetDomainController
+        $result.HostName | Should -Be 'discovered-dc.contoso.com'
+    }
+
+    It 'returns $null (not a throw) when the override domain has no reachable DCs' {
+        Mock -CommandName Get-ADDomain -MockWith { throw 'simulated unreachable domain' }
+
+        Set-ADSecurityAuditTargetServer -Server 'unreachable.corp.com'
+        { Get-ADTargetDomainController -WarningAction SilentlyContinue } | Should -Not -Throw
+        Get-ADTargetDomainController -WarningAction SilentlyContinue | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'Split-ADObjectByTargetDomain' {
     It 'treats an empty/null input as zero in-scope and zero foreign objects' {
         $result = Split-ADObjectByTargetDomain -InputObject @() -TargetDomainDN 'DC=domainb,DC=corp,DC=com'

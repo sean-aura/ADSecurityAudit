@@ -872,13 +872,24 @@ function Get-ADSnapshot {
         $caProperties = @('dNSHostName', 'cACertificate')
 
         Write-Verbose "Get-ADSnapshot: collecting certificate templates..."
-        $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -Filter * -Properties $templateProperties -ErrorAction Stop
+        # -SearchScope OneLevel, not the default Subtree - see the matching
+        # comment in CertificateServicesExtendedAudits.ps1. This snapshot
+        # is persisted to disk for later offline analysis, so a Subtree
+        # search here would have baked the "Certificate Templates"
+        # container object itself into every snapshot permanently, with no
+        # way to correct it later at -FromSnapshot re-analysis time.
+        $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties $templateProperties -ErrorAction Stop
         Write-Verbose "Get-ADSnapshot: collected $(@($certTemplates).Count) certificate template(s)."
 
         $certAuthorities = $null
         try {
             Write-Verbose "Get-ADSnapshot: collecting certificate authorities..."
-            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -Filter * -Properties $caProperties -ErrorAction Stop
+            # Same OneLevel fix - a Subtree search also returns the
+            # "Enrollment Services" container object itself, which has no
+            # dNSHostName/cACertificate and would otherwise be
+            # indistinguishable from a real (but misconfigured) CA once
+            # baked into the snapshot.
+            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties $caProperties -ErrorAction Stop
             Write-Verbose "Get-ADSnapshot: collected $(@($certAuthorities).Count) certificate authority(ies)."
         }
         catch {

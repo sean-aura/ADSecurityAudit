@@ -559,7 +559,26 @@ function Get-ADTargetDomainController {
 
     try {
         if ($overrideServer) {
-            return (Get-ADDomainController -Identity $overrideServer -Server $overrideServer -ErrorAction Stop)
+            # $overrideServer is very often a DOMAIN FQDN (e.g.
+            # "domainb.corp.com") - this module's own -Server documentation
+            # explicitly encourages that form for "target a domain other
+            # than your own". Get-ADDomainController's -Identity parameter
+            # requires an actual DC identity (GUID/Name/IPv4Address/DNS
+            # HostName of the DC itself, not the domain) - passing a bare
+            # domain FQDN to -Identity previously failed every time with
+            # "Cannot find directory server with identity: <domain FQDN>",
+            # silently skipping every live probe that depends on this
+            # function whenever an operator used the documented, common
+            # form of -Server. Resolve via Get-ADSecurityAuditDomainController
+            # instead - it correctly enumerates the DCs that actually belong
+            # to whichever domain $overrideServer resolves to (whether given
+            # as a domain name or a specific DC name), and this just takes
+            # the first one.
+            $dcs = @(Get-ADSecurityAuditDomainController -Server $overrideServer)
+            if ($dcs.Count -gt 0) {
+                return $dcs[0]
+            }
+            throw "No Domain Controllers found for '$overrideServer'."
         }
         else {
             return (Get-ADDomainController -Discover -ErrorAction Stop)
