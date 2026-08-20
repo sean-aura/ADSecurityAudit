@@ -352,6 +352,16 @@ function Get-ADRiskScore {
         [array]$Findings
     )
 
+    # Defensive guard: flatten in case $Findings is jagged (an element that
+    # is itself a sub-array of several findings rather than one) - e.g. from
+    # a findings JSON re-read offline by Get-ADRetestComparison. Without
+    # this, a jagged element makes every property read below return an
+    # array instead of a scalar (PowerShell member-enumeration), producing a
+    # confusing "cannot convert System.Object[] to Int32" deep in the loop
+    # rather than working findings data. A no-op when $Findings is already
+    # flat (the normal case for a live audit run).
+    $Findings = ConvertTo-ADFlatFindingsArray -Findings $Findings
+
     $maturityLabels = @{
         1 = 'Level 1 - Critical gaps (basic hygiene not met)'
         2 = 'Level 2 - Partial hygiene'

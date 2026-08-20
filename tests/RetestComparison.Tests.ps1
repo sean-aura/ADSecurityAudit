@@ -167,6 +167,50 @@ Describe 'Get-ADRetestComparison - input resolution and error handling' {
     }
 }
 
+Describe 'Get-ADRetestComparison - jagged/nested findings export (regression)' {
+    <#
+        Regression coverage for a real crash reported from production data:
+        a findings export whose top-level array contained an element that
+        was itself a sub-array of several findings (rather than one)
+        crashed deep inside Get-ADRiskScore with a confusing "cannot
+        convert System.Object[] to Int32" error. Get-ADRetestComparison now
+        flattens both exports defensively (ConvertTo-ADFlatFindingsArray in
+        Common.ps1) immediately after parsing them.
+    #>
+    BeforeAll {
+        function New-TaggedFinding {
+            param([string]$Category, [string]$Issue, [string]$Severity, [int]$SeverityLevel, [string]$AffectedObject, [int]$Weight, [string]$Anssi)
+            $f = [ADSecurityFinding]::new()
+            $f.Category = $Category; $f.Issue = $Issue; $f.Severity = $Severity; $f.SeverityLevel = $SeverityLevel
+            $f.AffectedObject = $AffectedObject
+            $f.Weight = $Weight
+            $f.AnssiControl = $Anssi
+            return $f
+        }
+    }
+
+    It 'reads a jagged findings export without throwing, treating the nested sub-array as individual findings' {
+        $f1 = New-TaggedFinding -Category 'User Account' -Issue 'I1' -Severity 'Low' -SeverityLevel 1 -AffectedObject 'o1' -Weight 4 -Anssi 'vuln4_test'
+        $f2 = New-TaggedFinding -Category 'User Account' -Issue 'I2' -Severity 'Low' -SeverityLevel 1 -AffectedObject 'o2' -Weight 4 -Anssi 'vuln4_test'
+        $f3 = New-TaggedFinding -Category 'Privileged Groups' -Issue 'I3' -Severity 'High' -SeverityLevel 3 -AffectedObject 'o3' -Weight 20 -Anssi 'vuln2_test'
+
+        # A top-level array where one element is itself a sub-array of two
+        # findings - exactly the shape that crashed in production.
+        $jagged = @( @($f1, $f2), $f3 )
+
+        $folder = Join-Path $TestDrive 'jagged'
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+        $path = Join-Path $folder 'AD_Security_Audit_jagged.json'
+        $jagged | ConvertTo-Json -Depth 10 | Out-File -FilePath $path -Encoding UTF8
+
+        { Get-ADRetestComparison -BaselinePath $path -RetestPath $path } | Should -Not -Throw
+
+        $cmp = Get-ADRetestComparison -BaselinePath $path -RetestPath $path
+        $cmp.StillOpenFindings.Count | Should -Be 3
+        $cmp.ScoreDelta | Should -Be 0
+    }
+}
+
 Describe 'Get-ADRetestComparison -ToJson' {
     It 'persists a parseable AD_Retest_Comparison_<timestamp>.json' {
         $folder = New-RunFixture -FolderName 'tojson' -Findings $script:BaselineFindings -Timestamp '2026-06-01_00-00-00'

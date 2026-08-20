@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.23.1'
+    ModuleVersion = '1.23.2'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -67,6 +67,11 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.23.2 - Fix Get-ADRetestComparison Crash on a Jagged Findings Export
+- Fixed: Get-ADRetestComparison (and Get-ADRiskScore, called from it) could crash with a confusing "Cannot convert the System.Object[] value ... to type System.Int32" error, plus several follow-on errors in the same loop, when a findings JSON export contained a jagged/nested element - a top-level array entry that was itself a sub-array of several findings rather than one. PowerShell's member-enumeration silently turns every property read on such an element into an array (e.g. $finding.Weight returns an array instead of an int), which then fails deep inside the scoring arithmetic rather than surfacing a clear shape problem. Reported from real production data comparing a v1.20.6 baseline against a v1.23.1 retest.
+- Get-ADRiskScore's own $allFindings assembly in Main.ps1 was independently confirmed NOT to introduce this nesting (PowerShell's += operator flattens even a jagged upstream source one level), so the fix hardens the read/scoring path itself rather than assuming a specific upstream cause: a new shared ConvertTo-ADFlatFindingsArray helper (Common.ps1) recursively flattens a findings array, treating only true collections as nested (a Details hashtable is correctly left alone as finding-level content, not recursed into). Get-ADRiskScore now flattens its -Findings parameter defensively on every call (a no-op for the normal, already-flat case), and Get-ADRetestComparison flattens both the baseline and retest exports immediately after parsing them, before either Get-ADRiskScore or the finding-key-matching step sees them.
+- New Pester coverage: Get-ADRiskScore and Get-ADRetestComparison are both confirmed to handle a deliberately jagged findings array/export correctly (same FindingCount/TotalScore as the equivalent flat input), plus direct unit tests for ConvertTo-ADFlatFindingsArray (one level of nesting, multiple levels, an already-flat no-op, an empty array, and confirming a Details hashtable's own nested array is left untouched).
+
 v1.23.1 - Fix Get-ADMaturityTrend Silently Dropping Pre-v1.21.0 Score Sidecars
 - Fixed: Get-ADMaturityTrend silently skipped (with only a console warning) any AD_Security_Score_*.json sidecar that predates v1.21.0's GeneratedDate/ModuleVersion fields, since it relied on GeneratedDate to sort runs chronologically. A domain with a long run history spanning that version boundary would see its older runs vanish from the trend without an obvious explanation - found via a follow-up backward-compatibility check, not the original acceptance criteria.
 - Get-ADMaturityTrend now falls back to the sidecar file's own last-write time when GeneratedDate is missing or unparsable, so older runs are included instead of dropped. Every such run is explicitly flagged rather than silently blended in as if the date were authoritative: a new DateEstimated boolean on its Series entry, a top-level EstimatedDateCount on the result, a note in the returned Message naming the affected file(s), and a visible "estimated" badge (with a tooltip explaining why) on that row in Export-ADMaturityTrendHTML's per-run table.

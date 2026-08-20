@@ -188,6 +188,14 @@ function Get-ADRetestComparison {
         throw "Failed to parse retest findings export '$($retestFile.FullName)': $_"
     }
 
+    # Defensive: flatten immediately after parsing, in case either export is
+    # jagged (see ConvertTo-ADFlatFindingsArray in Common.ps1). Every
+    # consumer below (Get-ADRiskScore, the key-building map) then only ever
+    # sees real, individual finding objects - a no-op for a normal, already-
+    # flat export.
+    $baselineFindings = ConvertTo-ADFlatFindingsArray -Findings $baselineFindings
+    $retestFindings   = ConvertTo-ADFlatFindingsArray -Findings $retestFindings
+
     $baselineMeta = Get-ADRetestSidecarMeta -FindingsFile $baselineFile
     $retestMeta   = Get-ADRetestSidecarMeta -FindingsFile $retestFile
 

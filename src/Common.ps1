@@ -548,6 +548,70 @@ function Get-ADOfflineSkipNotes {
     return @($Script:ADOfflineSkipNotes)
 }
 
+function ConvertTo-ADFlatFindingsArray {
+    <#
+    .SYNOPSIS
+        Recursively flattens a findings collection that may contain nested
+        arrays, so downstream code always sees one finding-like object per
+        element rather than a sub-array of several.
+    .DESCRIPTION
+        Defensive guard against a jagged/nested input array - e.g. a
+        findings JSON export that (for reasons not fully understood -
+        Main.ps1's own $allFindings += $result assembly loop flattens
+        correctly, so the nesting has been observed only after a JSON
+        round-trip through Get-ADRetestComparison's offline file read, not
+        during a live audit run) ends up containing an element that is
+        itself a sub-array of several finding objects instead of one.
+
+        When that happens, PowerShell's member-enumeration silently turns
+        every property read on that element into an array (e.g.
+        $finding.Weight returns System.Object[] instead of an int), which
+        then throws deep inside Get-ADRiskScore's arithmetic with a
+        confusing "cannot convert System.Object[] to Int32" error rather
+        than a clear message about the actual shape problem. Flattening
+        immediately after the file is read means every consumer (scoring,
+        finding-key matching) only ever sees real, individual finding
+        objects.
+
+        A "finding" is anything that is NOT itself an array/enumerable
+        collection. Strings and dictionaries/hashtables are treated as leaf
+        values (never recursed into), since a finding's own Details
+        hashtable is legitimate finding-level content, not a nested
+        collection of findings.
+    .PARAMETER Findings
+        The findings array to flatten (may already be flat - flattening an
+        already-flat array is a safe no-op).
+    .OUTPUTS
+        A flat array where every element is a single finding-like object.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [array]$Findings
+    )
+
+    $flat = [System.Collections.ArrayList]::new()
+
+    function Add-ADFlatFindingItem {
+        param($Item)
+        if ($null -eq $Item) { return }
+        $isNestedCollection = ($Item -is [System.Collections.IEnumerable]) -and
+                              ($Item -isnot [string]) -and
+                              ($Item -isnot [System.Collections.IDictionary])
+        if ($isNestedCollection) {
+            foreach ($sub in $Item) { Add-ADFlatFindingItem -Item $sub }
+        }
+        else {
+            [void]$flat.Add($Item)
+        }
+    }
+
+    foreach ($item in $Findings) { Add-ADFlatFindingItem -Item $item }
+
+    return @($flat)
+}
+
 function Get-ADFindingMatchKey {
     <#
     .SYNOPSIS

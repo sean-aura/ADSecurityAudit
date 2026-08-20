@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.2]
+### Fixed
+- **`Get-ADRetestComparison` (and `Get-ADRiskScore`, called from it) could
+  crash with a confusing `Cannot convert the System.Object[] value ... to
+  type System.Int32` error** when a findings JSON export contained a jagged/
+  nested element - a top-level array entry that was itself a sub-array of
+  several findings rather than one. PowerShell's member-enumeration silently
+  turns every property read on such an element into an array, which then
+  fails deep inside the scoring arithmetic. Reported from real production
+  data comparing a v1.20.6 baseline against a v1.23.1 retest. New shared
+  `ConvertTo-ADFlatFindingsArray` helper (`Common.ps1`) recursively flattens
+  a findings array (a `Details` hashtable is correctly left alone as
+  finding-level content, not recursed into); `Get-ADRiskScore` now applies
+  it defensively on every call, and `Get-ADRetestComparison` applies it to
+  both exports immediately after parsing them. No-op for the normal,
+  already-flat case.
+
 ## [1.23.1]
 ### Fixed
 - **`Get-ADMaturityTrend` silently dropped any `AD_Security_Score_*.json`
