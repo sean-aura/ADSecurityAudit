@@ -217,7 +217,7 @@ function Test-ADCertificateServices {
 
     try {
         # Check if AD CS is installed
-        $configContext = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
         
         try {

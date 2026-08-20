@@ -127,7 +127,9 @@ Start-ADSecurityAudit -ExportPath "C:\ADReports" -Verbose
 
 In a multi-domain forest, every `Get-AD*`/`Set-AD*` call the AD PowerShell module makes without an explicit `-Server` performs a "serverless" bind - it resolves against the account running the audit's own logon domain (or whatever DC AD's client-side locator picks), not necessarily the domain you intend to audit. If you're running the audit as an account from Domain A against a machine that's actually in Domain B, this can silently produce results scoped to Domain A instead - most visibly in `Test-ADMachineAccountQuota`, since `ms-DS-MachineAccountQuota` lives on the domain object itself.
 
-Pass `-Server` (a domain FQDN or a specific DC FQDN/hostname) to force the entire run - domain lookup, DC discovery, and every individual test - to target the domain you actually mean:
+**Default behavior (no `-Server` needed for the common case):** when `-Server` is omitted, it now defaults automatically to the current user's own domain (`$env:USERDNSDOMAIN` - the DNS domain of the account actually running the session, not the machine's joined domain), rather than leaving that ambiguous. For most operators auditing their own domain, this "just works" with no parameter needed at all.
+
+Pass `-Server` explicitly only when you need to target a domain **other** than your own account's - e.g. auditing Domain B while logged in as (or running under) a Domain A account:
 
 ```powershell
 Start-ADSecurityAudit -Server domainb.corp.com -ExportPath "C:\ADReports"
@@ -135,14 +137,20 @@ Start-ADSecurityAudit -Server domainb.corp.com -ExportPath "C:\ADReports"
 Start-ADSecurityAudit -Server dc01.domainb.corp.com -ExportPath "C:\ADReports"
 ```
 
-The same override is available standalone, independent of a full audit run:
+The same override (and the same user-domain default) is available standalone, independent of a full audit run:
 
 ```powershell
 Test-ADMachineAccountQuota -Server domainb.corp.com
 Get-ADSnapshot -Server domainb.corp.com -ToJson "C:\Snapshots\domainb.json"
 ```
 
-`-Server` is ignored (with a warning) when combined with `-FromSnapshot`, since offline mode performs no live AD access at all - there's no domain to override.
+`-Server` (and its user-domain default) is ignored (with a warning if passed explicitly) when combined with `-FromSnapshot`, since offline mode performs no live AD access at all - there's no domain to override.
+
+**Known limitation:** if you use `runas /netonly` (or an equivalent alternate-credential technique) to run under a *different* domain's credentials than the one you're locally logged into, `$env:USERDNSDOMAIN` still reflects your original interactive logon's domain, not the alternate credential's domain - pass `-Server` explicitly in that case.
+
+This override is applied consistently everywhere the module talks to AD: every `Get-AD*`/`Set-AD*` cmdlet call across every test module (via a shared `$PSDefaultParameterValues` mechanism, so no individual test had to be hand-edited), plus two classes of call that don't go through the normal AD-cmdlet path and would otherwise silently ignore `-Server`:
+- A handful of files read `RootDSE` via a raw ADSI bind (`[ADSI]"LDAP://RootDSE"`) rather than `Get-ADRootDSE`; ADSI binds are COM object construction, not cmdlet calls, so they're invisible to the override mechanism above and would keep resolving to the calling machine's own domain regardless. These now go through `Get-ADRootDSE` instead.
+- A few live-network-probe checks (the anonymous-bind test, DNS-cmdlet target resolution) called `Get-ADDomainController -Discover` directly, which is a different parameter set than `-Server` and would otherwise throw and silently skip the check under an active override. These now resolve directly against the override when one is set.
 
 ### Offline / Snapshot-Based Audit
 Collect once, analyze later or elsewhere, with no live AD access at analysis time:

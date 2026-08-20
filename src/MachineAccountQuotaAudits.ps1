@@ -34,14 +34,16 @@ function Test-ADMachineAccountQuota {
         of a live AD query.
     .PARAMETER Server
         Optional override for which domain/DC to query, as a domain FQDN
-        (e.g. 'domainb.corp.com') or a specific DC FQDN/hostname. Use this
-        in a multi-domain forest when the account running the audit is not
-        from the domain you intend to check - without it, Get-ADDomain
-        performs a "serverless" bind that resolves against the invoking
-        account's own logon domain, not necessarily the target domain,
-        which is exactly the "checks Domain A instead of Domain B" symptom
-        this parameter exists to fix. Ignored when -Snapshot is supplied
-        (no live AD access is performed in that mode).
+        (e.g. 'domainb.corp.com') or a specific DC FQDN/hostname. When
+        omitted, defaults to the current user's own domain
+        ($env:USERDNSDOMAIN) rather than letting Get-ADDomain perform its
+        default "serverless" bind, which resolves against whatever domain
+        the AD module's own ambient resolution picks - not necessarily the
+        target domain, which is exactly the "checks Domain A instead of
+        Domain B" symptom this default exists to avoid. Pass this
+        explicitly only to target a domain OTHER than your own account's.
+        Ignored when -Snapshot is supplied (no live AD access is performed
+        in that mode).
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
@@ -84,16 +86,18 @@ function Test-ADMachineAccountQuota {
             # against the invoking account's own logon domain rather than
             # necessarily the intended target domain - in a multi-domain
             # forest this is what causes the quota check to silently read
-            # the wrong domain. When -Server is supplied, splat it onto
-            # both calls explicitly; when it isn't, behavior is unchanged
-            # from before (default AD-module resolution).
+            # the wrong domain. -Server, if supplied, is used explicitly;
+            # if not, defaults to the current user's own domain
+            # ($env:USERDNSDOMAIN) rather than the ambiguous default.
+            $effectiveServer = Resolve-ADSecurityAuditTargetServer -Server $Server
+
             $domainParams = @{ ErrorAction = 'Stop' }
-            if ($Server) { $domainParams['Server'] = $Server }
+            if ($effectiveServer) { $domainParams['Server'] = $effectiveServer }
             $domain = Get-ADDomain @domainParams
             $domainDN = $domain.DistinguishedName
 
             $objectParams = @{ Identity = $domainDN; Properties = 'ms-DS-MachineAccountQuota'; ErrorAction = 'Stop' }
-            if ($Server) { $objectParams['Server'] = $Server }
+            if ($effectiveServer) { $objectParams['Server'] = $effectiveServer }
             $domainObject = Get-ADObject @objectParams
             $quota = $domainObject.'ms-DS-MachineAccountQuota'
         }

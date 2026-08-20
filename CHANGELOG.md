@@ -6,10 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- **`-Server` now defaults to the current user's own domain**
+  (`$env:USERDNSDOMAIN`) when omitted, instead of leaving "no `-Server`"
+  ambient/ambiguous. `$env:USERDNSDOMAIN` is the DNS domain of the account
+  actually running the session (set by the LSA at logon) - not the
+  machine's own joined domain - so the common case ("audit my own
+  domain") is now deterministic without the operator needing to know
+  about or type `-Server` at all. An explicit `-Server` still always wins.
+  New shared `Resolve-ADSecurityAuditTargetServer` helper (`Common.ps1`)
+  implements this for `Start-ADSecurityAudit`, `Get-ADSnapshot`, and
+  `Test-ADMachineAccountQuota`. Known limitation: `runas /netonly` (or an
+  equivalent alternate-credential technique) does not update
+  `$env:USERDNSDOMAIN`, so pass `-Server` explicitly in that case.
 ### Fixed
-- **Multi-domain-forest server confusion**: no `Get-AD*`/`Set-AD*` call
-  anywhere in the module passed `-Server`, so every one of them relied on
-  the AD PowerShell module's default "serverless" bind - which resolves
+- **Multi-domain-forest server confusion (part 2 - raw ADSI binds)**: even
+  after adding `-Server` support, several files still read the
+  Configuration/Schema naming context via a raw `[ADSI]"LDAP://RootDSE"`
+  bind (`CertificateServicesAudits.ps1`, `CertificateServicesExtendedAudits.ps1`,
+  `DomainHardeningAudits.ps1`, `Snapshot.ps1` - 7 call sites total). That
+  syntax is a `System.DirectoryServices`/COM object construction, not a
+  PowerShell AD cmdlet call, so it is completely invisible to
+  `$PSDefaultParameterValues` and ignored the `-Server` override entirely -
+  it always bound to a DC of the *calling machine's own joined domain*
+  regardless of what `-Server` requested. This was the remaining root
+  cause behind `-Server` still resolving to the wrong domain even when the
+  operator's account and machine agreed with each other. Replaced every
+  instance with the new `Get-ADRootDSEValue` helper (`Common.ps1`), which
+  goes through `Get-ADRootDSE` - a real `Get-AD*` cmdlet - so it honors the
+  override like everything else.
+- **`Get-ADDomainController -Discover` / `-Server` parameter-set conflict**:
+  `-Discover` and `-Server` are mutually exclusive parameter sets on that
+  cmdlet. Two live-network-probe call sites (`DomainHardeningAudits.ps1`'s
+  anonymous-bind check, `DnsSecurityAudits.ps1`'s DNS-cmdlet target-DC
+  resolution) called `-Discover` directly, independent of `Main.ps1`'s own
+  DC discovery - so an active `-Server` override would throw a
+  parameter-binding error on these specific calls and silently skip the
+  check instead of honoring the override. New shared
+  `Get-ADTargetDomainController` helper (`Common.ps1`) centralizes the
+  same "resolve directly against an active override; otherwise
+  `-Discover`" logic `Main.ps1` already used for its own DC connectivity
+  check, so every live-probe call site gets it for free.
+- **Multi-domain-forest server confusion (part 1)**: no `Get-AD*`/`Set-AD*`
+  call anywhere in the module passed `-Server`, so every one of them relied
+  on the AD PowerShell module's default "serverless" bind - which resolves
   against the invoking account's own logon domain rather than necessarily
   the domain the operator intends to audit. In a multi-domain forest this
   produced the reported symptom: an account from Domain A running the
@@ -34,6 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the session, so the fix applies to every audit test's own AD queries -
   not just the handful of call sites touched directly - without having to
   edit each of the ~40 source files individually.
+- **`Get-ADRootDSEValue` / `Get-ADTargetDomainController`** (`Common.ps1`):
+  shared helpers backing the two "part 2" fixes above.
 
 ## [1.23.2]
 ### Fixed

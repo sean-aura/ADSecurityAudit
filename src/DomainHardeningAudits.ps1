@@ -98,7 +98,7 @@ function Test-ADDomainHardeningFlags {
             $dsServiceDN = if ($Snapshot.ContainsKey('DsHeuristicsDN')) { $Snapshot.DsHeuristicsDN } else { 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration' }
         }
         else {
-            $configNC = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+            $configNC = Get-ADRootDSEValue -Property configurationNamingContext
             $dsServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configNC"
             $dsServiceObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject dSHeuristics' -Query {
                 Get-ADObject -Identity $dsServiceDN -Properties dSHeuristics -ErrorAction Stop
@@ -252,9 +252,15 @@ function Test-ADDomainHardeningFlags {
         try {
             $targetDC = $null
             try {
-                $targetDC = (Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Discover (anon bind target)' -Query {
-                    Get-ADDomainController -Discover -ErrorAction Stop
-                }).HostName
+                # Fixed: previously called Get-ADDomainController -Discover
+                # directly, which is mutually exclusive with -Server as a
+                # parameter set - if a -Server override was active
+                # elsewhere in this run, this call would throw a
+                # parameter-binding error and silently skip the whole
+                # anonymous-bind probe instead of correctly honoring the
+                # override. Get-ADTargetDomainController resolves directly
+                # against the override when one is active.
+                $targetDC = (Get-ADTargetDomainController).HostName
             }
             catch {
                 Write-Verbose "Test-ADDomainHardeningFlags: DC discovery for anonymous-bind probe failed: $_"

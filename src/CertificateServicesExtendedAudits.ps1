@@ -340,7 +340,7 @@ function Test-ADCSExtended {
     }
     else {
         try {
-            $configContext = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+            $configContext = Get-ADRootDSEValue -Property configurationNamingContext
             $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
 
             $certTemplates = @(Invoke-ADQueryWithRetry -OperationName 'Get certificate templates (ADCS extended audit)' -Query {

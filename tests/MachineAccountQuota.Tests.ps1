@@ -13,6 +13,19 @@ BeforeAll {
     $root = Split-Path -Parent $PSScriptRoot
     . (Join-Path $root 'src/Common.ps1')
     . (Join-Path $root 'src/MachineAccountQuotaAudits.ps1')
+
+    # Test-ADMachineAccountQuota now defaults -Server to $env:USERDNSDOMAIN
+    # when -Server isn't passed (see Resolve-ADSecurityAuditTargetServer).
+    # Save/clear it here so every test below is deterministic regardless of
+    # whether the machine actually running these tests happens to be
+    # domain-joined - individual tests that want to exercise the
+    # default-to-user-domain behavior set it explicitly themselves.
+    $script:originalUserDnsDomain = $env:USERDNSDOMAIN
+    $env:USERDNSDOMAIN = $null
+}
+
+AfterAll {
+    $env:USERDNSDOMAIN = $script:originalUserDnsDomain
 }
 
 Describe 'Test-ADMachineAccountQuota (snapshot mode)' {
@@ -100,7 +113,7 @@ Describe 'Test-ADMachineAccountQuota (-Server override, multi-domain-forest fix)
         $findings[0].AffectedObject | Should -Be 'DC=domainb,DC=corp,DC=com'
     }
 
-    It 'does not pass a -Server parameter at all when none is supplied (backward compatible)' {
+    It 'does not pass a -Server parameter at all when none is supplied and $env:USERDNSDOMAIN is empty (backward compatible)' {
         function Get-ADDomain { [PSCustomObject]@{ DistinguishedName = 'DC=contoso,DC=com' } }
         function Get-ADObject { param($Identity, $Properties) [PSCustomObject]@{ 'ms-DS-MachineAccountQuota' = 0 } }
 
@@ -108,5 +121,49 @@ Describe 'Test-ADMachineAccountQuota (-Server override, multi-domain-forest fix)
         # code under test always spliced -Server (even $null/empty) onto the
         # splat, this would throw a parameter-binding error.
         { Test-ADMachineAccountQuota } | Should -Not -Throw
+    }
+}
+
+Describe 'Test-ADMachineAccountQuota (default to current user domain when -Server is omitted)' {
+    AfterEach {
+        $env:USERDNSDOMAIN = $null
+    }
+
+    It 'defaults -Server to $env:USERDNSDOMAIN when -Server is not supplied' {
+        $env:USERDNSDOMAIN = 'domaina.corp.com'
+        $script:capturedDomainServer = $null
+        $script:capturedObjectServer = $null
+
+        function Get-ADDomain {
+            param($Server, $ErrorAction)
+            $script:capturedDomainServer = $Server
+            [PSCustomObject]@{ DistinguishedName = 'DC=domaina,DC=corp,DC=com' }
+        }
+        function Get-ADObject {
+            param($Identity, $Properties, $Server, $ErrorAction)
+            $script:capturedObjectServer = $Server
+            [PSCustomObject]@{ 'ms-DS-MachineAccountQuota' = 10 }
+        }
+
+        $findings = Test-ADMachineAccountQuota
+
+        $script:capturedDomainServer | Should -Be 'domaina.corp.com'
+        $script:capturedObjectServer | Should -Be 'domaina.corp.com'
+    }
+
+    It 'an explicit -Server still wins over $env:USERDNSDOMAIN' {
+        $env:USERDNSDOMAIN = 'domaina.corp.com'
+        $script:capturedDomainServer = $null
+
+        function Get-ADDomain {
+            param($Server, $ErrorAction)
+            $script:capturedDomainServer = $Server
+            [PSCustomObject]@{ DistinguishedName = 'DC=domainb,DC=corp,DC=com' }
+        }
+        function Get-ADObject { param($Identity, $Properties, $Server, $ErrorAction) [PSCustomObject]@{ 'ms-DS-MachineAccountQuota' = 0 } }
+
+        Test-ADMachineAccountQuota -Server 'domainb.corp.com' | Out-Null
+
+        $script:capturedDomainServer | Should -Be 'domainb.corp.com'
     }
 }

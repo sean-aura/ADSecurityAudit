@@ -162,11 +162,10 @@ function Get-ADSnapshot {
     .PARAMETER Server
         Optional override for which domain/DC every query in this
         collection pass targets - a domain FQDN (e.g. 'domainb.corp.com')
-        or a specific DC FQDN/hostname. Use this in a multi-domain forest
-        when the account running the collection is not from the domain you
-        intend to snapshot; without it, every Get-AD* call here performs a
-        "serverless" bind that resolves against the invoking account's own
-        logon domain rather than necessarily the target domain.
+        or a specific DC FQDN/hostname. When omitted, defaults to the
+        current user's own domain ($env:USERDNSDOMAIN) rather than the
+        ambiguous default serverless bind - pass this explicitly only when
+        collecting a domain OTHER than your own account's domain.
     .OUTPUTS
         [hashtable] with keys: CollectedDate, Domain, DomainControllers,
         Users, Computers, Groups, GPOs, ACLs, ADCS, DnsZones, Trusts,
@@ -187,13 +186,17 @@ function Get-ADSnapshot {
 
     Write-Verbose "Starting collect-once AD snapshot..."
 
-    # See Set-ADSecurityAuditTargetServer in Common.ps1: forces every
-    # Get-AD*/Set-AD* call in this collection pass to explicitly target
-    # $Server instead of the default serverless bind. Cleared before every
-    # exit point below (including the early return just after this).
-    if ($Server) {
-        Write-Verbose "Get-ADSnapshot: -Server '$Server' supplied; all AD queries in this collection pass will explicitly target it."
-        Set-ADSecurityAuditTargetServer -Server $Server
+    # See Resolve-ADSecurityAuditTargetServer/Set-ADSecurityAuditTargetServer
+    # in Common.ps1: -Server, if supplied, forces every Get-AD*/Set-AD* call
+    # in this collection pass to explicitly target it. If NOT supplied,
+    # defaults to the current user's own domain ($env:USERDNSDOMAIN)
+    # instead of the ambiguous default serverless bind. Cleared before
+    # every exit point below (including the early return just after this).
+    $effectiveServer = Resolve-ADSecurityAuditTargetServer -Server $Server
+    if ($effectiveServer) {
+        $serverSource = if ($Server) { 'explicit -Server' } else { "your own domain, `$env:USERDNSDOMAIN" }
+        Write-Verbose "Get-ADSnapshot: all AD queries in this collection pass will explicitly target '$effectiveServer' ($serverSource)."
+        Set-ADSecurityAuditTargetServer -Server $effectiveServer
     }
 
     # Auto-create the -ToJson output directory up front, the same way
@@ -209,7 +212,7 @@ function Get-ADSnapshot {
             }
             catch {
                 Write-Error "Get-ADSnapshot: could not create -ToJson output directory '$toJsonDir': $_"
-                if ($Server) { Clear-ADSecurityAuditTargetServer }
+                if ($effectiveServer) { Clear-ADSecurityAuditTargetServer }
                 return
             }
         }
@@ -330,7 +333,7 @@ function Get-ADSnapshot {
     Step-ADSnapshotProgress -Stage 'dSHeuristics'
     try {
         Write-Verbose "Get-ADSnapshot: collecting dSHeuristics..."
-        $configContextForDsh = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+        $configContextForDsh = Get-ADRootDSEValue -Property configurationNamingContext -Server $effectiveServer
         $dsServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configContextForDsh"
         $snapshot.DsHeuristicsDN = $dsServiceDN
         $dsServiceObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject dSHeuristics (snapshot)' -Query {
@@ -494,7 +497,7 @@ function Get-ADSnapshot {
     $windowsLapsPresent = $false
     try {
         Write-Verbose "Get-ADSnapshot: checking LAPS schema presence..."
-        $schemaNCForLaps = ([ADSI]"LDAP://RootDSE").schemaNamingContext
+        $schemaNCForLaps = Get-ADRootDSEValue -Property schemaNamingContext -Server $effectiveServer
         try {
             $legacyLapsPresent = [bool](Get-ADObject -Identity "CN=ms-Mcs-AdmPwd,$schemaNCForLaps" -ErrorAction SilentlyContinue)
         }
@@ -713,7 +716,7 @@ function Get-ADSnapshot {
             DomainRoot    = $domainForAcl.DistinguishedName
         }
 
-        $configContext = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $effectiveServer
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
         $aclTargets['CertificateTemplatesContainer'] = "CN=Certificate Templates,$pkiContainer"
 
@@ -853,7 +856,7 @@ function Get-ADSnapshot {
     Step-ADSnapshotProgress -Stage 'AD CS configuration'
     try {
         Write-Verbose "Get-ADSnapshot: collecting AD CS configuration..."
-        $configContext = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $effectiveServer
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
 
         $templateProperties = @(
@@ -1056,7 +1059,7 @@ function Get-ADSnapshot {
     }
 
     Write-Verbose "Get-ADSnapshot: collection pass complete."
-    if ($Server) { Clear-ADSecurityAuditTargetServer }
+    if ($effectiveServer) { Clear-ADSecurityAuditTargetServer }
     return $snapshot
 }
 

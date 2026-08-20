@@ -198,6 +198,155 @@ function Clear-ADSecurityAuditTargetServer {
     }
 }
 
+# When -Server isn't supplied at all, this resolves a sensible, DETERMINISTIC
+# default instead of leaving it to whatever the AD module/Windows LDAP
+# client's own ambient resolution happens to pick (which is the whole class
+# of bug the rest of this file exists to work around). Defaults to the
+# CURRENT USER's own domain - $env:USERDNSDOMAIN, the DNS domain of the
+# account whose credentials are running this session, set by the LSA at
+# logon - rather than the machine's joined domain, matching the most common
+# operator intent ("audit the domain my account belongs to") without
+# requiring -Server to be typed for that case at all.
+function Resolve-ADSecurityAuditTargetServer {
+    <#
+    .SYNOPSIS
+        Resolves the effective -Server value: the explicit value if one was
+        passed, otherwise the current user's own domain
+        ($env:USERDNSDOMAIN), otherwise $null (falls back to the AD
+        module's own ambient resolution).
+    .DESCRIPTION
+        $env:USERDNSDOMAIN is set by the LSA at logon from the DOMAIN
+        ACCOUNT's own domain - not $env:USERDOMAIN (NetBIOS form, can be
+        the computer name for a local logon) and not the machine's own
+        joined domain (Get-CimInstance Win32_ComputerSystem / Get-ADDomain
+        with no override). This means the default now correctly follows
+        the operator's account even when the machine itself is joined to a
+        different domain in the forest - the scenario this module's
+        -Server parameter was originally added to fix.
+
+        KNOWN LIMITATION: if the caller used `runas /netonly` (or an
+        equivalent alternate-credential technique) to run this session
+        under a DIFFERENT domain's credentials than the one they're
+        locally logged into, $env:USERDNSDOMAIN still reflects the
+        original interactive logon's domain, not the alternate
+        credential's domain, since /netonly does not change the process's
+        inherited environment block. Pass -Server explicitly in that case.
+    .PARAMETER Server
+        The explicit -Server value the caller passed, if any. Empty/$null
+        means "not specified".
+    .OUTPUTS
+        [string] the effective server to use, or $null if neither an
+        explicit value nor $env:USERDNSDOMAIN is available (e.g. a local,
+        non-domain logon session) - callers treat a $null return the same
+        way they previously treated "no -Server given at all".
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [string]$Server
+    )
+    if ($Server) {
+        return $Server
+    }
+    if ($env:USERDNSDOMAIN) {
+        Write-Verbose "Resolve-ADSecurityAuditTargetServer: -Server not specified; defaulting to the current user's domain (`$env:USERDNSDOMAIN): $env:USERDNSDOMAIN"
+        return $env:USERDNSDOMAIN
+    }
+    Write-Verbose "Resolve-ADSecurityAuditTargetServer: -Server not specified and `$env:USERDNSDOMAIN is empty (e.g. a local, non-domain logon session); falling back to the AD module's own default resolution."
+    return $null
+}
+
+# Several files previously read the Configuration/Schema naming context via
+# a RAW ADSI bind - ([ADSI]"LDAP://RootDSE").configurationNamingContext -
+# instead of the AD module's own Get-ADRootDSE cmdlet. [ADSI]"LDAP://..."
+# is a System.DirectoryServices/COM object construction, NOT a PowerShell
+# cmdlet call, so it is invisible to $PSDefaultParameterValues entirely -
+# Set-ADSecurityAuditTargetServer's -Server override has no effect on it
+# whatsoever. Left alone, it performs its own independent "serverless" LDAP
+# bind that resolves via the Windows LDAP client's locator, which
+# typically binds to a DC of the CALLING MACHINE's own joined domain -
+# so even with -Server correctly set to a different target, every one of
+# these calls would silently keep talking to the wrong domain regardless.
+# This was the actual remaining root cause behind "the -Server override is
+# still talking to the wrong domain" even when the operator's own account
+# and machine agree with each other.
+#
+# Fix: go through Get-ADRootDSE instead, which IS a Get-AD* cmdlet and
+# therefore honors the -Server override automatically (via the global
+# default) or explicitly (via its own -Server parameter, for callers that
+# have one in scope).
+function Get-ADRootDSEValue {
+    <#
+    .SYNOPSIS
+        Returns configurationNamingContext or schemaNamingContext from
+        RootDSE, honoring the -Server override - unlike a raw
+        [ADSI]"LDAP://RootDSE" bind, which does not.
+    .PARAMETER Property
+        'configurationNamingContext' or 'schemaNamingContext'.
+    .PARAMETER Server
+        Optional explicit override, for callers that already have -Server
+        in their own parameter list. When omitted, relies on whatever
+        Set-ADSecurityAuditTargetServer has installed globally, if anything.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('configurationNamingContext', 'schemaNamingContext')]
+        [string]$Property,
+
+        [Parameter()]
+        [string]$Server
+    )
+    $rootDSEParams = @{ ErrorAction = 'Stop' }
+    if ($Server) { $rootDSEParams['Server'] = $Server }
+    $rootDSE = Get-ADRootDSE @rootDSEParams
+    return $rootDSE.$Property
+}
+
+# Get-ADDomainController's -Discover and -Server are mutually exclusive
+# parameter sets - if Set-ADSecurityAuditTargetServer's global -Server
+# default is active and a call site still uses -Discover directly (as
+# several live-network-probe checks do, independent of Main.ps1's own DC
+# discovery), PowerShell throws a parameter-binding error rather than
+# honoring the override, and the probe is silently skipped by the
+# surrounding try/catch instead of correctly targeting the requested
+# domain. This centralizes the same "if an override is active, resolve
+# directly against it; otherwise fall back to -Discover" logic Main.ps1
+# already applies to its own DC connectivity check, so every other
+# live-probe call site gets the same correctness for free.
+function Get-ADTargetDomainController {
+    <#
+    .SYNOPSIS
+        Resolves one Domain Controller for a live network probe (e.g. an
+        anonymous-bind check, a zone-transfer SOA query), honoring the
+        Set-ADSecurityAuditTargetServer -Server override when active
+        instead of unconditionally calling -Discover.
+    .OUTPUTS
+        A Get-ADDomainController result object (has .HostName, etc.), or
+        $null if resolution failed.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $overrideServer = $null
+    if ($Global:PSDefaultParameterValues -and $Global:PSDefaultParameterValues.ContainsKey('Get-AD*:Server')) {
+        $overrideServer = $Global:PSDefaultParameterValues['Get-AD*:Server']
+    }
+
+    try {
+        if ($overrideServer) {
+            return (Get-ADDomainController -Identity $overrideServer -Server $overrideServer -ErrorAction Stop)
+        }
+        else {
+            return (Get-ADDomainController -Discover -ErrorAction Stop)
+        }
+    }
+    catch {
+        Write-Verbose "Get-ADTargetDomainController: could not resolve a target DC: $_"
+        return $null
+    }
+}
+
 # Live per-DC registry fallback helper, used by any check that follows the
 # "GPO-linked policy first, then a direct per-DC registry read if no linked
 # GPO defines the value" pattern (SMBv1/signing/LmCompatibilityLevel/LLMNR/

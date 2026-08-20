@@ -341,9 +341,14 @@ function Test-ADDnsSecurity {
         $dnsCmdletTargetDC = $null
         if (Get-Module -ListAvailable -Name DnsServer -ErrorAction SilentlyContinue) {
             try {
-                $dnsCmdletTargetDC = (Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Discover (DNS audit)' -Query {
-                    Get-ADDomainController -Discover -ErrorAction Stop
-                }).HostName
+                # Fixed: previously called Get-ADDomainController -Discover
+                # directly - mutually exclusive with -Server as a parameter
+                # set, so an active -Server override elsewhere in the run
+                # would throw here and silently fall back to the
+                # attribute-read path against the wrong domain instead of
+                # honoring the override. Get-ADTargetDomainController
+                # resolves directly against the override when one is active.
+                $dnsCmdletTargetDC = (Get-ADTargetDomainController).HostName
                 if ($dnsCmdletTargetDC) {
                     Import-Module DnsServer -ErrorAction Stop
                     $useDnsCmdlets = $true

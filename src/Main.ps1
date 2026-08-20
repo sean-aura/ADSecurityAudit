@@ -26,13 +26,19 @@ function Start-ADSecurityAudit {
         # target this domain/DC rather than letting the AD module's default
         # "serverless" bind resolve against the invoking account's own
         # logon domain. Accepts a domain FQDN (e.g. 'domainb.corp.com') or
-        # a specific DC FQDN/hostname (e.g. 'dc01.domainb.corp.com'). Use
-        # this when the account running the audit is from a different
-        # domain than the one you intend to check - without it, in a
-        # multi-domain forest, tests like MachineAccountQuota can silently
-        # read the wrong domain's data. Ignored (with a warning) if
-        # combined with -FromSnapshot, since that mode performs no live AD
-        # access at all.
+        # a specific DC FQDN/hostname (e.g. 'dc01.domainb.corp.com').
+        # DEFAULT WHEN OMITTED: the current user's own domain
+        # ($env:USERDNSDOMAIN) - not the machine's joined domain - is used
+        # automatically, so the common case ("audit my own domain") no
+        # longer depends on the AD module's ambient resolution at all. Pass
+        # -Server explicitly only when you need to target a domain OTHER
+        # than your own account's domain (e.g. auditing Domain B while
+        # logged in as a Domain A account), or when running under
+        # alternate credentials via `runas /netonly` (see
+        # Resolve-ADSecurityAuditTargetServer in Common.ps1 for why the
+        # default can't reliably detect that case on its own). Ignored
+        # (with a warning) if combined with -FromSnapshot, since that mode
+        # performs no live AD access at all.
         [Parameter()]
         [string]$Server,
 
@@ -58,6 +64,7 @@ function Start-ADSecurityAudit {
     )
     
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $effectiveServer = $null
 
     # Reset the offline-skip-note tracker (v1.19.1) so notes from a
     # previous Start-ADSecurityAudit call in the same PowerShell session
@@ -171,31 +178,42 @@ function Start-ADSecurityAudit {
         
         Import-Module ActiveDirectory -ErrorAction Stop
 
+        # Resolve the effective server: the explicit -Server value if one
+        # was passed, otherwise the current user's own domain
+        # ($env:USERDNSDOMAIN) by default rather than leaving "no -Server"
+        # ambient/ambiguous - see Resolve-ADSecurityAuditTargetServer for
+        # why. $effectiveServer is $null only when neither is available
+        # (e.g. a local, non-domain logon session), in which case behavior
+        # is unchanged from before this feature existed.
+        $effectiveServer = Resolve-ADSecurityAuditTargetServer -Server $Server
+
         # Multi-domain-forest override (see -Server param comment above):
         # installs a -Server default for every Get-AD*/Set-AD* call made
         # anywhere in this run - not just the two calls immediately below,
         # but every audit test's own Get-ADDomain/Get-ADObject/Get-ADUser/
         # Get-ADComputer/etc. calls too - so the whole run targets the
-        # domain the operator specified instead of whatever domain the
-        # invoking account's default AD binding would otherwise resolve to.
-        # Always cleared in the outer finally block below, so it never
-        # leaks into a later Start-ADSecurityAudit call in the same session.
-        if ($Server) {
-            Write-Host "Server override: forcing all AD queries to target '$Server'`n" -ForegroundColor Cyan
-            Set-ADSecurityAuditTargetServer -Server $Server
+        # domain the operator specified (or their own domain, by default)
+        # instead of whatever domain the invoking account's default AD
+        # binding would otherwise resolve to. Always cleared in the outer
+        # finally block below, so it never leaks into a later
+        # Start-ADSecurityAudit call in the same session.
+        if ($effectiveServer) {
+            $serverSource = if ($Server) { 'explicit -Server' } else { "your own domain, `$env:USERDNSDOMAIN" }
+            Write-Host "Server override: forcing all AD queries to target '$effectiveServer' ($serverSource)`n" -ForegroundColor Cyan
+            Set-ADSecurityAuditTargetServer -Server $effectiveServer
         }
 
         Write-Verbose "Testing Domain Controller connectivity..."
         try {
             $domainParams = @{ ErrorAction = 'Stop' }
-            if ($Server) { $domainParams['Server'] = $Server }
+            if ($effectiveServer) { $domainParams['Server'] = $effectiveServer }
             $domain = Get-ADDomain @domainParams
 
             # Attempt to discover multiple DCs for failover
             $domainControllers = @()
             try {
                 $dcFilterParams = @{ Filter = '*'; ErrorAction = 'SilentlyContinue' }
-                if ($Server) { $dcFilterParams['Server'] = $Server }
+                if ($effectiveServer) { $dcFilterParams['Server'] = $effectiveServer }
                 $domainControllers = Get-ADDomainController @dcFilterParams | Select-Object -First 3
             }
             catch {
@@ -203,14 +221,15 @@ function Start-ADSecurityAudit {
             }
 
             if (-not $domainControllers -or $domainControllers.Count -eq 0) {
-                if ($Server) {
-                    # -Server was explicitly given: do NOT fall back to
-                    # -Discover here. DC Locator's -Discover uses subnet/
-                    # site mapping (or the caller's own logon domain) to
-                    # pick a DC, which is the exact "resolves to the wrong
-                    # domain" behavior -Server exists to bypass. Resolve
-                    # directly against the requested target instead.
-                    $domainControllers = @(Get-ADDomainController -Identity $Server -Server $Server -ErrorAction Stop)
+                if ($effectiveServer) {
+                    # An override is active (explicit or the user-domain
+                    # default): do NOT fall back to -Discover here. DC
+                    # Locator's -Discover uses subnet/site mapping (or the
+                    # caller's own logon domain) to pick a DC, which is the
+                    # exact "resolves to the wrong domain" behavior the
+                    # override exists to bypass. Resolve directly against
+                    # the requested target instead.
+                    $domainControllers = @(Get-ADDomainController -Identity $effectiveServer -Server $effectiveServer -ErrorAction Stop)
                 }
                 else {
                     $domainControllers = @(Get-ADDomainController -Discover -ErrorAction Stop)
@@ -263,7 +282,7 @@ function Start-ADSecurityAudit {
             'AuditPolicyConfiguration' = { Test-AuditPolicyConfiguration }
             'ConstrainedDelegation' = { Test-ConstrainedDelegation }
             'DomainAdminEquivalence' = { Test-ADDomainAdminEquivalence }
-            'MachineAccountQuota' = { Test-ADMachineAccountQuota -Server $Server }
+            'MachineAccountQuota' = { Test-ADMachineAccountQuota -Server $effectiveServer }
             'DomainHardeningFlags' = { Test-ADDomainHardeningFlags }
             'CoercionAndRelayExposure' = { Test-ADCoercionAndRelayExposure }
             'DnsSecurity' = { Test-ADDnsSecurity }
@@ -502,7 +521,7 @@ function Start-ADSecurityAudit {
         return $allFindings
     }
     finally {
-        if ($Server) {
+        if ($effectiveServer) {
             Clear-ADSecurityAuditTargetServer
         }
         Stop-Transcript
