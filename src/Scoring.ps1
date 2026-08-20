@@ -371,6 +371,8 @@ function Get-ADRiskScore {
             FindingCount   = 0
             WeightedPoints = 0
             SeverityCounts = [PSCustomObject]@{ Critical = 0; High = 0; Medium = 0; Low = 0; Info = 0 }
+            GeneratedDate  = Get-Date
+            ModuleVersion  = $script:ModuleVersion
         }
     }
 
@@ -483,6 +485,8 @@ function Get-ADRiskScore {
         FindingCount   = $Findings.Count
         WeightedPoints = $totalPoints
         SeverityCounts = [PSCustomObject]$sevCounts
+        GeneratedDate  = Get-Date
+        ModuleVersion  = $script:ModuleVersion
     }
 }
 

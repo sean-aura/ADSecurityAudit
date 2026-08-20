@@ -65,6 +65,9 @@ $moduleScripts = @(
     'src/RodcSecurityAudits.ps1',
     'src/ControlPaths.ps1',
     'src/ForestConsolidation.ps1',
+    'src/RetestComparison.ps1',
+    'src/RemediationState.ps1',
+    'src/MaturityTrend.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
 )
@@ -113,6 +116,12 @@ Export-ModuleMember -Function @(
     'Export-ADControlPathGraphBloodHound',
     'Get-ADForestConsolidation',
     'Export-ADForestConsolidationHTML',
+    'Get-ADRetestComparison',
+    'Export-ADRetestComparisonHTML',
+    'Set-ADRemediationState',
+    'Get-ADRemediationState',
+    'Get-ADMaturityTrend',
+    'Export-ADMaturityTrendHTML',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',

@@ -548,6 +548,29 @@ function Get-ADOfflineSkipNotes {
     return @($Script:ADOfflineSkipNotes)
 }
 
+function Get-ADFindingMatchKey {
+    <#
+    .SYNOPSIS
+        Builds the Category+Issue+AffectedObject key used to match the same
+        finding across two different runs (e.g. a baseline and a retest).
+    .DESCRIPTION
+        Coarser keys (Category+Issue only) would hide partial remediation -
+        e.g. 5 stale accounts down to 2 should show 3 resolved and 2 still
+        open, not just "still present". This is the SINGLE SOURCE OF TRUTH
+        for that key construction - Get-ADRetestComparison (RetestComparison.ps1)
+        and the remediation-state store (RemediationState.ps1) both call this
+        function rather than building the "$Category|$Issue|$AffectedObject"
+        string independently, so the two can never disagree on what a "key" is.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Category,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Issue,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$AffectedObject
+    )
+    return "$Category|$Issue|$AffectedObject"
+}
+
 # Sanitize values for CSV export to prevent formula injection
 function ConvertTo-SafeCsvValue {
     [CmdletBinding()]

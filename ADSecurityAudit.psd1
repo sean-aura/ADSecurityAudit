@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.20.6'
+    ModuleVersion = '1.23.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -42,6 +42,12 @@
         'Export-ADControlPathGraphBloodHound',
         'Get-ADForestConsolidation',
         'Export-ADForestConsolidationHTML',
+        'Get-ADRetestComparison',
+        'Export-ADRetestComparisonHTML',
+        'Set-ADRemediationState',
+        'Get-ADRemediationState',
+        'Get-ADMaturityTrend',
+        'Export-ADMaturityTrendHTML',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -61,6 +67,32 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.23.0 - Exception / Remediation-State Tracking
+- Added Set-ADRemediationState / Get-ADRemediationState: a small, hand-editable JSON state file (conventionally AD_Remediation_State.json, one per domain) keyed by the same Category+Issue+AffectedObject key Get-ADRetestComparison already uses (Get-ADFindingMatchKey), recording a status (Open/AcceptedRisk/InProgress/Remediated), optional owner, note, and date per finding. Set-ADRemediationState is an explicit read-modify-write upsert - re-running it for the same key updates the entry rather than duplicating it - not auto-discovery; this module never infers remediation intent on its own.
+- Get-ADRetestComparison gained an optional -RemediationStatePath parameter: when supplied, StillOpenFindings and ChangedFindings are annotated with a RemediationState property (Status/Owner/Note/SetDate), defaulting untracked findings to Status='Open' with nulls. Purely additive - omitting the parameter behaves identically to before it existed (verified with a regression check), and the New/Resolved/StillOpen/Changed classification itself is unchanged.
+- Export-ADRetestComparisonHTML's Still Open section now badges tracked findings by RemediationState.Status, reusing the existing severity-badge CSS pattern with a distinct (not alarming) color for AcceptedRisk, so a leadership reader can see at a glance which persisting findings are a deliberate decision vs. genuine neglect.
+- Get-ADRiskScore's computed score is completely unaffected by remediation state - an AcceptedRisk finding still counts toward the score exactly as before. This is a display/reporting annotation only, never a scoring policy change.
+- Explicitly out of scope for this pass (left for a future enhancement): no automatic expiry/review-date alerting on stale AcceptedRisk entries, and no ticket-system (JIRA/ServiceNow) integration - the Note field is free text for a human to paste a reference into. Consistent with this module's no-network-side-effects posture everywhere else.
+- Hard dependency on v1.21.0's Get-ADRetestComparison, which must already exist - this is an additive extension of it, not a standalone feature.
+
+v1.22.0 - Multi-run Maturity Trend History
+- Added Get-ADMaturityTrend / Export-ADMaturityTrendHTML: an offline, file-based command that reads ALL of a domain's historical AD_Security_Score_<timestamp>.json sidecars (3, 10, 50 - however many exist) and produces a chronological trend - score/maturity over time, per-category trend, and a simple Improving/Flat/Regressing direction indicator per category and overall.
+- Complementary to (not a replacement for) v1.21.0's Get-ADRetestComparison: that feature answers "what changed between these two specific runs" with finding-level detail; this one answers "what's the trajectory over N runs" with score/maturity/category trend lines only. Deliberately not merged into one function - finding-level matching across many runs gets combinatorially messier for limited additional value at that granularity.
+- Sorts sidecars chronologically by each file's own recorded GeneratedDate (not filename, in case files were renamed/moved) - verified against a fixture where the newest run's filename was deliberately made to sort alphabetically first.
+- Deliberately does NOT recompute scores under the current mapping table - the opposite design choice from Get-ADRetestComparison. Reads each sidecar's own historically-computed TotalScore/MaturityLevel as-is, since the point is seeing how the tool's own assessment evolved over the real historical record. Each run's own ModuleVersion is surfaced in the output and the HTML report's per-run table specifically so a score jump can be attributed to a tool change vs. an actual posture change.
+- Direction classification is simple first-vs-last arithmetic with a tolerance band, not a statistical regression - consistent with this module's general preference for simple, auditable arithmetic (the same philosophy as Get-ADRiskScore's own diminishing-returns model).
+- Handles 1-run input (no trend possible, clear message via the new Message field, not an error) and 2-run input (a plain pairwise delta) gracefully.
+- Export-ADMaturityTrendHTML renders a score/maturity line chart and per-category sparklines via a new Get-ADSvgTrendLine helper (new time-series SVG territory - the existing gauge/category-bar helpers are single-value, not time-series), plus a plain per-run table surfacing ModuleVersion.
+- No AD/LDAP queries, no credentials, no network access to any domain controller - pure offline aggregation of exports this module already produces. Not registered in Main.ps1's $allTests.
+
+v1.21.0 - Retest / Configuration-Maturity Delta Comparison
+- Added Get-ADRetestComparison / Export-ADRetestComparisonHTML: an offline, file-based comparison between two prior Start-ADSecurityAudit exports of the same domain (a pre-remediation baseline and a post-remediation retest) - answering "did remediation work, and by how much?" instead of a manual side-by-side eyeball diff of two HTML reports.
+- Matches findings by Category+Issue+AffectedObject (the new shared Get-ADFindingMatchKey helper in Common.ps1) to classify each as New / Resolved / Still Open / Changed - a coarser Category+Issue-only key would hide partial remediation (e.g. 5 stale accounts down to 2 would show as one "still present" bucket instead of 3 Resolved + 2 Still Open).
+- Both runs' scores are recomputed under the CURRENT Get-ADRiskScore mapping table rather than trusting either run's originally-stored score sidecar values, so a retest captured under a different module version stays apples-to-apples; each run's own recorded ModuleVersion/GeneratedDate is still surfaced (from the optional score sidecar) for context.
+- Export-ADRetestComparisonHTML renders a standalone HTML report with a togglable Current State / Delta View, reusing the existing score gauge, category-bar, and finding-list components (Get-ADSvgGauge, Get-ADSvgCategoryBars, Get-FindingHTML) plus a new sibling Get-ADSvgCategoryDeltaBars helper for the paired baseline/retest category view. The view toggle's [hidden]-attribute panels include an explicit `.view-panel[hidden] { display: none; }` override so it does not regress the v1.20.3 modal-visibility bug.
+- Get-ADRiskScore's output gained two additive fields, GeneratedDate and ModuleVersion, needed so the score sidecar can be identified by when/what version produced it - no existing field changed or removed.
+- No AD/LDAP queries, no credentials, no network access to any domain controller - pure offline aggregation of exports this module already produces, same posture as Get-ADForestConsolidation. Not registered in Main.ps1's $allTests.
+
 v1.20.5 - Implement A-NullSession-Comparable Detection (Null-Session Pipe/Share Access)
 - DomainHardeningAudits.ps1's header comment had claimed A-NullSession-comparable coverage since the file was written, but no logic anywhere in the module read RestrictNullSessAccess/NullSessionPipes/NullSessionShares - found via the same header-vs-code audit that closed the A-AnonymousAuthorizedGPO gap in v1.20.4.
 - Added a fourth check to Test-ADDomainHardeningFlags: audits 'Network access: Restrict anonymous access to Named Pipes and Shares' (RestrictNullSessAccess) for the disabled (0) state, checking GPOs linked to the Domain Controllers OU then the domain root first, falling back to a direct per-DC registry read when no linked GPO defines the value - the same GPO-then-live-fallback pattern LegacyAuthAudits.ps1 already uses for SMBv1/SMB-signing/LmCompatibilityLevel.

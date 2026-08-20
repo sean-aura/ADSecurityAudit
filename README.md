@@ -211,6 +211,86 @@ Get-ADForestConsolidation -ReportPath "C:\Reports" `
 
 Comparable in spirit to PingCastle's paid "Conso" (multi-domain consolidation) report - see the Independence note above: this is implemented independently against this project's own JSON schema, not against PingCastle's report format.
 
+## Retest / Maturity-Delta Comparison
+
+As of v1.21.0, `Get-ADRetestComparison` answers the question every retest engagement is actually for: **did remediation work, and by how much?** Like Forest Consolidation, this is an **offline, file-based post-processing feature** - it performs no additional LDAP/AD queries, requires no credentials, and needs no network access to any domain controller. It is not part of the live audit test set (`Main.ps1`'s `$allTests`) - it's a standalone command you run after two `Start-ADSecurityAudit` runs of the *same domain* already exist (typically a pre-remediation baseline and a post-remediation retest).
+
+It produces:
+
+- **Score & maturity delta** - both runs' findings are recomputed through the **current** `Get-ADRiskScore` mapping table (never the originally-stored score sidecar values), so a retest captured under a newer module version than the baseline stays apples-to-apples - the delta reflects posture change, not a scoring-table change. Each run's own recorded `ModuleVersion`/`GeneratedDate` is still shown for context.
+- **Per-category delta** - baseline sub-score, retest sub-score, and the delta for every category present in either run.
+- **New / Resolved / Still Open / Changed findings** - matched by `Category+Issue+AffectedObject` (a coarser Category+Issue key would hide partial remediation: 5 stale accounts down to 2 shows as 3 Resolved + 2 Still Open, not one "still present" bucket). A matched finding whose `Severity`/`Weight` differs between the two runs is classified as **Changed**, carrying both the before and after values, rather than folded into Still Open.
+- **`Export-ADRetestComparisonHTML`** - a standalone HTML report with a togglable **Current State** (the retest's own findings, presented the same way the main report does) and **Delta View** (score/maturity delta headline, per-category delta bars, and the four New/Resolved/Still Open/Changed sections).
+
+```powershell
+# Assumes two prior Start-ADSecurityAudit runs of the same domain exist -
+# a pre-remediation baseline and a post-remediation retest:
+Get-ADRetestComparison -BaselinePath "C:\Reports\Pre" -RetestPath "C:\Reports\Post" -Verbose |
+    Export-ADRetestComparisonHTML -OutputPath "C:\Reports\retest-report.html"
+
+# Also persist the comparison as JSON:
+Get-ADRetestComparison -BaselinePath "C:\Reports\Pre" -RetestPath "C:\Reports\Post" `
+    -ToJson "C:\Reports\AD_Retest_Comparison_2026-08-01.json"
+```
+
+`-BaselinePath`/`-RetestPath` each accept either an explicit `AD_Security_Audit_<timestamp>.json` file or a folder (the newest matching export in it is used, same resolution idiom as Forest Consolidation's `-ReportPath`). A sibling `AD_Security_Score_<timestamp>.json` is read for each side, when present, purely for the informational `ModuleVersion`/`GeneratedDate` shown in the report header - it is never used as the authoritative score.
+
+PingCastle does not publicly ship an equivalent retest-delta report - this is comparison tooling over this module's own prior exports, implemented independently.
+
+## Multi-run Maturity Trend History
+
+As of v1.22.0, `Get-ADMaturityTrend` answers a different question than the retest comparison above: not "what changed between these two specific runs", but **"what's the trajectory over N runs"** - a quarterly cadence over a year, say, without manually opening every historical score sidecar. Like the other post-processing features, this is **offline and file-based** - no additional LDAP/AD queries, no credentials, no network access to any domain controller. It is not part of the live audit test set.
+
+It produces:
+
+- **Score/maturity over time** - a chronological series of every `AD_Security_Score_<timestamp>.json` sidecar found under `-ReportPath`, ordered by each sidecar's *own* recorded generation date (not filename, in case files were renamed or moved).
+- **Per-category trend** - the same chronological series broken out per audit category, each with a simple **Improving / Flat / Regressing** direction (first-vs-last score, with a small tolerance band for "Flat" - deliberately plain arithmetic, not a statistical regression).
+- **`Export-ADMaturityTrendHTML`** - a hand-built inline-SVG line chart of score over time, small per-category sparklines, and a plain per-run table listing each run's date, score, maturity, and **module version** - so a score jump can be attributed to a tool change (the mapping table changed) vs. an actual posture change, at a glance.
+
+**Important - this is the opposite design choice from Retest Comparison above:** `Get-ADMaturityTrend` does **not** recompute scores under the current scoring mapping table. It reads each sidecar's score exactly as it was originally computed, because the whole point is seeing how the tool's assessment evolved over the real historical record. `Get-ADRetestComparison` recomputes both sides under the current table for the opposite reason - a two-point apples-to-apples comparison. Don't assume the two features handle version-skew the same way.
+
+```powershell
+# Assumes 3+ Start-ADSecurityAudit runs of the same domain already exist,
+# e.g. one AD_Security_Score_*.json sidecar per quarterly audit:
+Get-ADMaturityTrend -ReportPath "C:\Reports\contoso.com" -Verbose |
+    Export-ADMaturityTrendHTML -OutputPath "C:\Reports\maturity-trend.html"
+
+# Also persist the trend as JSON:
+Get-ADMaturityTrend -ReportPath "C:\Reports\contoso.com" -ToJson "C:\Reports\AD_Maturity_Trend_2026-08-01.json"
+```
+
+With only one score sidecar found, no trend can be computed - the command returns a result with `RunCount = 1` and a clear `Message` explaining this, rather than throwing. With two, the trend is simply the pairwise delta between them.
+
+## Exception / Remediation-State Tracking
+
+As of v1.23.0, a small file-based store lets you record "we've accepted this risk, not fixing it" so a persisting finding stops looking indistinguishable from a genuinely neglected one on every retest. This extends `Get-ADRetestComparison` (v1.21.0) - it's an additive annotation step, not a change to the New/Resolved/Still Open/Changed classification itself, and omitting it behaves exactly as before.
+
+- **`Set-ADRemediationState -Key <k> -Status <Open|AcceptedRisk|InProgress|Remediated> [-Owner] [-Note] -StatePath <path>`** - an explicit read-modify-write upsert. Re-running it for the same `-Key` updates the existing entry rather than duplicating it. This module never infers a remediation decision on its own - a human (or a script you write yourself) calls this explicitly.
+- **`Get-ADRemediationState -StatePath <path>`** - reads the state file, returning an empty structure if it doesn't exist yet (no need to pre-create one).
+- **`Get-ADRetestComparison -RemediationStatePath <path>`** (new optional parameter) - when supplied, `StillOpenFindings` and `ChangedFindings` are annotated with a `RemediationState` property (`Status`/`Owner`/`Note`/`SetDate`); untracked findings default to `Status = 'Open'` with nulls.
+- **`Export-ADRetestComparisonHTML`** - the Still Open section badges each finding by its `RemediationState.Status`, using a distinct (not alarming) color for `AcceptedRisk` so a leadership reader can see at a glance which persisting findings are a deliberate decision.
+
+The state-file key is built by the same `Get-ADFindingMatchKey` (Category+Issue+AffectedObject) that `Get-ADRetestComparison` already uses internally, so the two can never disagree on what a "key" is.
+
+```powershell
+# Mark a finding as an accepted risk:
+$key = Get-ADFindingMatchKey -Category 'Certificate Services' `
+    -Issue 'Enrollment Agent Template with Low-Privilege Enrollment (ESC3)' `
+    -AffectedObject 'CN=LegacyEnroll,CN=Certificate Templates,...'
+
+Set-ADRemediationState -Key $key -Status AcceptedRisk -Owner 'jane.doe@contoso.com' `
+    -Note 'Legacy app dependency, tracked in JIRA-1234, revisit Q3 2027.' `
+    -StatePath 'C:\Reports\AD_Remediation_State.json'
+
+# Re-run the retest report - the tracked finding now shows an AcceptedRisk badge
+# instead of looking like every other unaddressed Still Open finding:
+Get-ADRetestComparison -BaselinePath 'C:\Reports\Pre' -RetestPath 'C:\Reports\Post' `
+    -RemediationStatePath 'C:\Reports\AD_Remediation_State.json' |
+    Export-ADRetestComparisonHTML -OutputPath 'C:\Reports\retest-report.html'
+```
+
+An `AcceptedRisk` finding still counts toward `Get-ADRiskScore` exactly as before - this is a reporting annotation only, not a scoring policy change, since silently excluding accepted-risk findings from the score would misrepresent actual security posture. There's no automatic expiry/review-date alerting on stale entries and no ticket-system (JIRA/ServiceNow) integration in this pass - the `Note` field is free text for you to paste a reference into.
+
 ## Security Findings Categories
 
 The audit generates findings across multiple severity levels:

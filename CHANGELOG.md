@@ -5,6 +5,59 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.0]
+### Added
+- `Set-ADRemediationState` / `Get-ADRemediationState` (a small,
+  hand-editable JSON state file keyed by the same Category+Issue+
+  AffectedObject key `Get-ADRetestComparison` already uses) and wires an
+  optional `-RemediationStatePath` parameter into `Get-ADRetestComparison`
+  to annotate StillOpen/Changed findings with tracked status (Open/
+  AcceptedRisk/InProgress/Remediated), owner, note, and date.
+  `Export-ADRetestComparisonHTML` badges tracked findings accordingly.
+  Explicitly does not affect `Get-ADRiskScore` - an accepted-risk finding
+  still counts toward the score, this is a reporting annotation only.
+  No ticket-system integration, no expiry alerting (both left for a
+  future pass). Zero behavior change when `-RemediationStatePath` is
+  omitted.
+
+## [1.22.0]
+### Added
+- `Get-ADMaturityTrend` / `Export-ADMaturityTrendHTML`: an offline,
+  file-based command that reads all of a domain's historical
+  `AD_Security_Score_*.json` sidecars (not just two) and produces a
+  chronological score/maturity/per-category trend with a simple
+  Improving/Flat/Regressing classification. Deliberately does NOT recompute
+  scores under the current mapping table (opposite of
+  `Get-ADRetestComparison`) - surfaces each run's own `ModuleVersion`
+  instead so a reader can attribute a score jump to a tool change vs. an
+  actual posture change. New inline-SVG trend-line helper
+  (`Get-ADSvgTrendLine`), no chart library. Offline, no new AD queries.
+  Complementary to, not a redesign of, `Get-ADRetestComparison` - see the
+  README's "Multi-run Maturity Trend History" section for the distinction.
+
+## [1.21.0]
+### Added
+- `Get-ADRetestComparison` / `Export-ADRetestComparisonHTML`: an offline,
+  file-based comparison between two prior `Start-ADSecurityAudit` exports of
+  the same domain (baseline vs. retest), for tracking configuration-maturity
+  change across a remediation cycle. Matches findings by
+  Category+Issue+AffectedObject to classify each as New / Resolved /
+  Still Open / Changed, and recomputes both runs' scores under the current
+  Scoring.ps1 mapping table so cross-version retests stay apples-to-apples.
+  Renders as a standalone HTML report with a togglable Current State / Delta
+  View, reusing the existing score gauge, category bars, and finding-list
+  components. No additional AD queries, credentials, or schema changes.
+- New shared `Get-ADFindingMatchKey` helper (`Common.ps1`): builds the
+  `Category+Issue+AffectedObject` matching key used to identify the same
+  finding across two runs. Single source of truth for this key so future
+  features (e.g. remediation/exception tracking) can never disagree with
+  `Get-ADRetestComparison` on what a "key" is.
+### Changed
+- `Get-ADRiskScore`'s output gained two additive fields, `GeneratedDate` and
+  `ModuleVersion`, so a persisted score sidecar can be identified by when and
+  by which module version it was produced. No existing field changed or
+  removed.
+
 ## [1.20.6]
 ### Fixed
 - **`DnsSecurityAudits.ps1`'s header comment had claimed `P-DNSDelegation`-comparable
