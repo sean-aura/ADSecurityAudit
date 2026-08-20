@@ -55,12 +55,16 @@ function Test-ADDomainHardeningFlags {
              weakening (16th character present and non-zero).
           2. Pre-Windows 2000 Compatible Access - flags membership by broad
              principals (Authenticated Users, Everyone, ANONYMOUS LOGON).
-          3. Anonymous LDAP/RootDSE binding - a single, strictly read-only
-             anonymous DirectoryEntry bind against RootDSE. Success is the
-             finding; a refusal (exception) is the secure state and no
-             finding is raised. This live probe is skipped when -Snapshot
-             is supplied, since offline re-analysis must perform no live
-             AD/network access.
+          3. Anonymous LDAP/RootDSE binding - a strictly read-only
+             anonymous DirectoryEntry bind against RootDSE, attempted
+             against EVERY Domain Controller in the domain (via
+             `Get-ADDomainController -Filter *`, the same enumeration
+             pattern Check 4 below and every other live per-DC probe in
+             this module use) rather than a single discovered/overridden
+             DC. Success on any DC is the finding; a refusal (exception)
+             on a given DC is that DC's secure state. This live probe is
+             skipped when -Snapshot is supplied, since offline re-analysis
+             must perform no live AD/network access.
           4. Null-session pipe/share access - `RestrictNullSessAccess`
              (Security Options: "Network access: Restrict anonymous access
              to Named Pipes and Shares") read as disabled (0), checking
@@ -250,66 +254,89 @@ function Test-ADDomainHardeningFlags {
     # -------------------------------------------------------------------
     if (-not $Snapshot) {
         try {
-            $targetDC = $null
-            try {
-                # Fixed: previously called Get-ADDomainController -Discover
-                # directly, which is mutually exclusive with -Server as a
-                # parameter set - if a -Server override was active
-                # elsewhere in this run, this call would throw a
-                # parameter-binding error and silently skip the whole
-                # anonymous-bind probe instead of correctly honoring the
-                # override. Get-ADTargetDomainController resolves directly
-                # against the override when one is active.
-                $targetDC = (Get-ADTargetDomainController).HostName
-            }
-            catch {
-                Write-Verbose "Test-ADDomainHardeningFlags: DC discovery for anonymous-bind probe failed: $_"
-            }
+            # Fixed: previously resolved a single DC via
+            # Get-ADTargetDomainController (either the -Discover result or,
+            # if a -Server override was active, that one overridden
+            # host) and probed only that one DC. That meant the finding -
+            # and even whether the probe errored at all - depended on
+            # whichever single DC happened to be picked that run, not on
+            # the domain's actual anonymous-bind posture: a domain with a
+            # mix of hardened and non-hardened DCs could show a finding on
+            # one run and none on the next, and a single unreachable
+            # override host could error out the whole check even though
+            # every other DC was reachable. Now enumerates every DC via
+            # `Get-ADDomainController -Filter *` (the same pattern Check 4
+            # below, and every other live per-DC probe in this module,
+            # already use) and probes each independently so the -Server
+            # override, if active, is honored the normal way (it still
+            # narrows -Filter * to that domain/DC) without special-casing
+            # a single-host resolution path.
+            $anonDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Filter * (anonymous-bind probe)' -Query {
+                Get-ADDomainController -Filter * -ErrorAction Stop
+            })
 
-            if (-not $targetDC) {
-                Write-Verbose "Test-ADDomainHardeningFlags: no target DC available; skipping anonymous-bind probe."
+            if (-not $anonDomainControllers -or $anonDomainControllers.Count -eq 0) {
+                Write-Verbose "Test-ADDomainHardeningFlags: no Domain Controllers found; skipping anonymous-bind probe."
             }
             else {
-                $anonBindSucceeded = $false
-                $probePath = "LDAP://$targetDC/RootDSE"
+                $anonBindResults = [System.Collections.ArrayList]::new()
 
-                try {
-                    $anonEntry = New-Object System.DirectoryServices.DirectoryEntry(
-                        $probePath, $null, $null, [System.DirectoryServices.AuthenticationTypes]::Anonymous
-                    )
-                    # ADSI binds lazily; force the actual network bind by
-                    # touching a property. An exception here means the
-                    # anonymous bind was refused (the secure state).
-                    [void]$anonEntry.Properties['currentTime']
-                    [void]$anonEntry.NativeObject
-                    $anonBindSucceeded = $true
-                }
-                catch {
-                    Write-Verbose "Test-ADDomainHardeningFlags: anonymous RootDSE bind refused (secure): $_"
+                foreach ($dc in $anonDomainControllers) {
+                    $dcHost = if ($dc.HostName) { $dc.HostName } else { $dc.Name }
+                    $probePath = "LDAP://$dcHost/RootDSE"
                     $anonBindSucceeded = $false
-                }
-                finally {
-                    if ($anonEntry) { $anonEntry.Dispose() }
+                    $anonEntry = $null
+
+                    try {
+                        $anonEntry = New-Object System.DirectoryServices.DirectoryEntry(
+                            $probePath, $null, $null, [System.DirectoryServices.AuthenticationTypes]::Anonymous
+                        )
+                        # ADSI binds lazily; force the actual network bind
+                        # by touching a property. An exception here means
+                        # the anonymous bind was refused (the secure
+                        # state) - or, less commonly, that this specific
+                        # DC could not be reached at all; either way, no
+                        # anonymous read was achieved against it.
+                        [void]$anonEntry.Properties['currentTime']
+                        [void]$anonEntry.NativeObject
+                        $anonBindSucceeded = $true
+                    }
+                    catch {
+                        Write-Verbose "Test-ADDomainHardeningFlags: anonymous RootDSE bind against '$dcHost' refused or failed (treated as secure for this DC): $_"
+                        $anonBindSucceeded = $false
+                    }
+                    finally {
+                        if ($anonEntry) { $anonEntry.Dispose() }
+                    }
+
+                    [void]$anonBindResults.Add([PSCustomObject]@{
+                        DomainController  = $dcHost
+                        AnonBindSucceeded = $anonBindSucceeded
+                        ProbePath         = $probePath
+                    })
                 }
 
-                if ($anonBindSucceeded) {
+                $vulnerableDCs = @($anonBindResults | Where-Object { $_.AnonBindSucceeded } | ForEach-Object { $_.DomainController })
+
+                if ($vulnerableDCs.Count -gt 0) {
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Domain Hardening'
                     $finding.Issue = 'Anonymous LDAP / RootDSE Binding Permitted'
                     $finding.Severity = 'Medium'
                     $finding.SeverityLevel = 2
-                    $finding.AffectedObject = $targetDC
-                    $finding.Description = "An anonymous (unauthenticated) LDAP bind to RootDSE on '$targetDC' succeeded."
-                    $finding.Impact = "Anonymous LDAP binding is a null-session indicator: it lets unauthenticated clients enumerate directory-service metadata (naming contexts, supported capabilities, schema/config paths) without any credentials, aiding reconnaissance ahead of further attacks."
-                    $finding.Remediation = "Restrict anonymous LDAP operations via dSHeuristics (character 7) and/or the 'Network access: Let Everyone permissions apply to anonymous users' and related null-session security policy settings, then re-test."
+                    $finding.AffectedObject = ($vulnerableDCs -join ', ')
+                    $finding.Description = "An anonymous (unauthenticated) LDAP bind to RootDSE succeeded against $($vulnerableDCs.Count) of $($anonDomainControllers.Count) Domain Controller(s): $($vulnerableDCs -join ', ')."
+                    $finding.Impact = "Anonymous LDAP binding is a null-session indicator: it lets unauthenticated clients enumerate directory-service metadata (naming contexts, supported capabilities, schema/config paths) without any credentials, aiding reconnaissance ahead of further attacks. Because this was observed on only some Domain Controllers, exposure is inconsistent across the environment rather than a single domain-wide setting - see PerDomainControllerResults for which DCs still refuse the bind."
+                    $finding.Remediation = "Restrict anonymous LDAP operations via dSHeuristics (character 7) and/or the 'Network access: Let Everyone permissions apply to anonymous users' and related null-session security policy settings, ensuring the policy is applied consistently to every Domain Controller listed above, then re-test."
                     $finding.Details = @{
-                        DomainController = $targetDC
-                        ProbePath        = $probePath
+                        DomainControllersTested     = $anonDomainControllers.Count
+                        VulnerableDomainControllers = $vulnerableDCs
+                        PerDomainControllerResults  = @($anonBindResults)
                     }
                     $findings += $finding
                 }
                 else {
-                    Write-Verbose "Test-ADDomainHardeningFlags: anonymous RootDSE binding refused; no finding (secure)."
+                    Write-Verbose "Test-ADDomainHardeningFlags: anonymous RootDSE binding refused on all $($anonDomainControllers.Count) Domain Controller(s); no finding (secure)."
                 }
             }
         }

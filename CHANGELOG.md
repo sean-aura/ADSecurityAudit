@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Fixed
+- **Anonymous LDAP / RootDSE Binding Permitted check (`Test-ADDomainHardeningFlags`,
+  DomainHardeningAudits.ps1) only ever probed a single Domain Controller.**
+  Root cause: unlike every other live per-DC probe in this module (e.g. the
+  null-session check immediately below it, which enumerates every DC via
+  `Get-ADDomainController -Filter *`), this check resolved its target via
+  `Get-ADTargetDomainController`, which returns exactly one DC - the
+  `-Discover` result, or the single overridden host if
+  `Set-ADSecurityAuditTargetServer` was active. In a multi-DC domain this
+  meant the finding (and whether the probe errored at all) depended on
+  whichever one DC happened to be picked that run, rather than reflecting
+  the domain's actual anonymous-bind posture across all DCs - a domain
+  with a mix of hardened and non-hardened DCs could flag one host and
+  silently miss the others (or error out entirely if the single resolved
+  host was unreachable) with no indication only one DC had been tested.
+  Fixed: now enumerates every DC via `Get-ADDomainController -Filter *`
+  and probes each independently; the finding is raised if any DC's
+  anonymous bind succeeds, and lists exactly which DCs are affected
+  (`Details.VulnerableDomainControllers`) alongside the full per-DC
+  breakdown (`Details.PerDomainControllerResults`), so a partially-hardened
+  fleet is visible instead of hidden behind a single-DC sample.
 - **`Set-ADFindingMetadata: Cannot process argument transformation on
   parameter 'Finding'`, thrown at the very end of a live run, after the
   transcript had already stopped, with no JSON/HTML/CSV report written.**
