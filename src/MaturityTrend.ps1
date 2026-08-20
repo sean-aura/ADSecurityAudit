@@ -214,7 +214,11 @@ function Get-ADMaturityTrend {
 
     $series = foreach ($r in $runs) {
         [PSCustomObject]@{
-            GeneratedDate = $r.GeneratedDate
+            # Stringified - $r.GeneratedDate is a real [datetime] here, but
+            # $result (which this feeds) is round-tripped through -ToJson,
+            # and a raw [datetime] would suffer the same ConvertTo-Json
+            # expansion described in Scoring.ps1's GeneratedDate comment.
+            GeneratedDate = $r.GeneratedDate.ToString('o')
             DateEstimated = $r.DateEstimated
             ModuleVersion = $r.ModuleVersion
             TotalScore    = $r.TotalScore
@@ -230,7 +234,7 @@ function Get-ADMaturityTrend {
         $catSeries = foreach ($r in $runs) {
             $c = @($r.CategoryScores) | Where-Object { $_.Category -eq $cat }
             $score = if ($c -and $c.Count -gt 0) { [int]$c[0].Score } else { 0 }
-            [PSCustomObject]@{ GeneratedDate = $r.GeneratedDate; Score = $score }
+            [PSCustomObject]@{ GeneratedDate = $r.GeneratedDate.ToString('o'); Score = $score }
         }
         [PSCustomObject]@{
             Category  = $cat
@@ -255,10 +259,16 @@ function Get-ADMaturityTrend {
     if ($message) { Write-Warning $message }
 
     $result = [PSCustomObject]@{
-        GeneratedDate       = Get-Date
+        # String, not a raw [datetime] - see Scoring.ps1's comment on why
+        # (this object is itself written out via -ToJson below).
+        GeneratedDate       = (Get-Date).ToString('o')
         RunCount            = $runs.Count
         EstimatedDateCount  = $estimatedRuns.Count
-        DateRange           = [PSCustomObject]@{ Earliest = $runs[0].GeneratedDate; Latest = $runs[-1].GeneratedDate }
+        # Earliest/Latest stringified here too - $runs[].GeneratedDate is a
+        # real [datetime] at this point (cast above), but this whole $result
+        # object can be round-tripped through -ToJson, and a raw [datetime]
+        # would suffer the same ConvertTo-Json expansion described above.
+        DateRange           = [PSCustomObject]@{ Earliest = $runs[0].GeneratedDate.ToString('o'); Latest = $runs[-1].GeneratedDate.ToString('o') }
         Series              = @($series)
         CategoryTrends      = @($categoryTrends)
         OverallDirection    = $overallDirection
@@ -423,7 +433,7 @@ function Export-ADMaturityTrendHTML {
 
     $scoreLineSvg = ''
     if (@($Trend.Series).Count -gt 0) {
-        $labels = @($Trend.Series | ForEach-Object { "$($_.GeneratedDate) - Score $($_.TotalScore)" })
+        $labels = @($Trend.Series | ForEach-Object { "$(ConvertTo-ADFriendlyDateText -Value $_.GeneratedDate) - Score $($_.TotalScore)" })
         $scoreLineSvg = Get-ADSvgTrendLine -Values @($Trend.Series.TotalScore) -PointLabels $labels -Color '#1f4e79'
     }
 
@@ -504,8 +514,8 @@ function Export-ADMaturityTrendHTML {
 
         <div class="header-info">
             <div><strong>RUNS IN TREND</strong>$($Trend.RunCount)</div>
-            <div><strong>EARLIEST</strong>$($Trend.DateRange.Earliest)</div>
-            <div><strong>LATEST</strong>$($Trend.DateRange.Latest)</div>
+            <div><strong>EARLIEST</strong>$(ConvertTo-ADFriendlyDateText -Value $Trend.DateRange.Earliest)</div>
+            <div><strong>LATEST</strong>$(ConvertTo-ADFriendlyDateText -Value $Trend.DateRange.Latest)</div>
             <div><strong>OVERALL DIRECTION</strong><span style="color:$overallColor; font-weight:700;">$($Trend.OverallDirection)</span></div>
             <div><strong>REPORT GENERATED</strong>$reportDate</div>
         </div>

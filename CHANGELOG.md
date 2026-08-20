@@ -6,7 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- **JSON/CSV output alignment** - the main audit's CSV export
+  (`AD_Security_Audit_<timestamp>.csv`) was silently missing two fields
+  that the JSON export (and every finding object) always carried:
+  `SeverityLevel` and `Details`. Appended both as new columns at the end of
+  the existing column list (after `Weight`, per this file's own "append,
+  never reorder" output contract) - `Details` is serialized as a compact,
+  formula-injection-sanitized JSON string, since it's an open-ended
+  per-check hashtable with no fixed column set to flatten it into.
+- **Cross-domain privileged-group-membership visibility**
+  (`Test-ADPrivilegedGroups`, GroupAudits.ps1) - `Get-ADGroupMember
+  -Recursive` can return members from a domain OTHER than the group's own
+  (a universal group, or - in a multi-domain forest where the operator's
+  machine is joined to a different domain than the one being audited -
+  membership resolved via a Global Catalog legitimately including full
+  objects from other domains too), and this was previously invisible: a
+  member's own domain was never checked against the group's. New
+  `Split-ADObjectByTargetDomain` helper (Common.ps1) flags any such member
+  with a `Write-Warning` and a new informational `Cross-Domain Privileged
+  Group Membership` finding (Low severity, so it's visible in the HTML
+  report - `Info` isn't a rendered severity bucket) listing the affected
+  accounts and their actual domain(s), instead of silently folding them
+  into the audited domain's membership count with no indication they came
+  from somewhere else.
+- **Enterprise Admins / Schema Admins now resolve correctly for non-root
+  domains** (`Test-ADPrivilegedGroups`) - these two groups exist ONLY in
+  the forest root domain. Auditing any child domain via `-Server`
+  previously scoped the `Get-ADGroup -Filter` lookup to that child domain
+  alone, always found nothing, and silently skipped the group entirely
+  with no finding and no indication why. Now falls back to resolving the
+  forest root (`Get-ADForest`) and re-querying there when the initial,
+  target-domain-scoped lookup comes back empty.
+- New `Get-ADSecurityAuditActiveServerOverride` helper (Common.ps1) -
+  centralizes reading the currently-active `Set-ADSecurityAuditTargetServer`
+  `-Server` value (previously duplicated inline inside
+  `Get-ADTargetDomainController`) so other call sites that need the actual
+  override value (not just the `$PSDefaultParameterValues` auto-injection)
+  can reuse it consistently.
+- **`Export-ADSecurityReportHTMLFromJson`** - recreates the main
+  `Start-ADSecurityAudit` HTML report directly from a previously-exported
+  `AD_Security_Audit_<timestamp>.json` findings file, with no live Active
+  Directory access and no re-run of the audit. Accepts an explicit file or a
+  folder (same newest-file resolution idiom as `Get-ADRetestComparison`'s
+  `-BaselinePath`/`-RetestPath`). The risk score/maturity/MITRE roll-up is
+  always freshly recomputed via `Get-ADRiskScore` (never read back from a
+  stray score sidecar, matching `Get-ADRetestComparison`'s existing
+  philosophy). `Domain`, `Duration`, `RunMode`, `SnapshotCollectedDate`,
+  Offline Mode Coverage Notes, and the Privileged Users section are not
+  present in the findings JSON and are not recoverable - `-Domain`/
+  `-Duration`/`-RunMode`/`-SnapshotCollectedDate` parameters let you supply
+  them if known, otherwise the recreated report shows explicit placeholders
+  rather than guessing. See the README's "Recreating the main HTML report
+  from an existing JSON export" section for the full list of gaps versus
+  the original report.
 ### Fixed
+- **`Get-ADRetestComparison` / `Export-ADRetestComparisonHTML`: the report
+  header's `BASELINE GENERATED` (and, when a score sidecar predated this
+  fix, `RETEST GENERATED`) rendered as raw PowerShell object text
+  (`@{value=...; DisplayHint=2; DateTime=...}`) instead of a date.**
+  Root cause: `Get-ADRiskScore` (Scoring.ps1) stored `GeneratedDate` as a
+  live `[datetime]` object rather than a string. `ConvertTo-Json` expands a
+  raw `[datetime]` using its own `DisplayHint`/`DateTime`/`value` note
+  properties instead of writing a plain date string, so every downstream
+  `ConvertFrom-Json` read of a score sidecar (or of any other object this
+  module round-trips through `-ToJson`, including `Get-ADForestConsolidation`'s
+  `LastSeen` and `Get-ADMaturityTrend`'s date fields, which had the same
+  latent issue) got that dump back instead of a usable date. Fixed at the
+  source (`GeneratedDate` is now stored via `.ToString('o')`) and defensively
+  on read (`ConvertTo-ADFriendlyDateText`, Common.ps1, added to Get-ADRetestSidecarMeta
+  and to `ForestConsolidation`'s/`MaturityTrend`'s date rendering) so
+  already-generated, pre-fix sidecars/exports also render correctly without
+  needing to be regenerated. Also added `BASELINE FINDINGS`/`RETEST FINDINGS`
+  count fields to the retest report header for parity with the main report's
+  `TOTAL FINDINGS`.
 - **Anonymous LDAP / RootDSE Binding Permitted check (`Test-ADDomainHardeningFlags`,
   DomainHardeningAudits.ps1) only ever probed a single Domain Controller.**
   Root cause: unlike every other live per-DC probe in this module (e.g. the

@@ -320,7 +320,12 @@ function Get-ADForestConsolidation {
                         $missingDomains += [PSCustomObject]@{
                             DomainName = $name
                             Status     = 'not scanned this run'
-                            LastSeen   = $prior.GeneratedDate
+                            # Normalized (Common.ps1) so this renders as a clean
+                            # date even against a prior consolidation JSON
+                            # written before GeneratedDate was stored as a
+                            # string - see the Scoring.ps1/RetestComparison.ps1
+                            # comments on the same underlying issue.
+                            LastSeen   = ConvertTo-ADFriendlyDateText -Value $prior.GeneratedDate
                         }
                     }
                 }
@@ -335,7 +340,8 @@ function Get-ADForestConsolidation {
     }
 
     $result = [PSCustomObject]@{
-        GeneratedDate       = Get-Date
+        # String, not a raw [datetime] - see Scoring.ps1's comment on why.
+        GeneratedDate       = (Get-Date).ToString('o')
         DomainCount         = $domains.Count
         ForestScore         = [int]$forestScore
         ForestMaturityLevel = [int]$forestMaturityLevel

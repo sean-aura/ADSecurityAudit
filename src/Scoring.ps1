@@ -381,7 +381,13 @@ function Get-ADRiskScore {
             FindingCount   = 0
             WeightedPoints = 0
             SeverityCounts = [PSCustomObject]@{ Critical = 0; High = 0; Medium = 0; Low = 0; Info = 0 }
-            GeneratedDate  = Get-Date
+            # Stored as an ISO-8601 STRING, not a raw [datetime]. ConvertTo-Json
+            # expands a raw [datetime] using its own DisplayHint/DateTime/value
+            # note properties rather than a plain string, so anything that
+            # later reads this back with ConvertFrom-Json (e.g.
+            # Get-ADRetestComparison's score-sidecar metadata) would otherwise
+            # get "@{value=...; DisplayHint=2; DateTime=...}" instead of a date.
+            GeneratedDate  = (Get-Date).ToString('o')
             ModuleVersion  = $script:ModuleVersion
         }
     }
@@ -495,7 +501,9 @@ function Get-ADRiskScore {
         FindingCount   = $Findings.Count
         WeightedPoints = $totalPoints
         SeverityCounts = [PSCustomObject]$sevCounts
-        GeneratedDate  = Get-Date
+        # See the empty-environment branch above for why this is a string,
+        # not a raw [datetime].
+        GeneratedDate  = (Get-Date).ToString('o')
         ModuleVersion  = $script:ModuleVersion
     }
 }

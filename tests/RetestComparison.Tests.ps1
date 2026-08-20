@@ -111,6 +111,28 @@ Describe 'Get-ADRetestComparison' {
         $script:Comparison.RetestMeta.ScorePath | Should -Not -BeNullOrEmpty
     }
 
+    It 'stores GeneratedDate as a clean, parseable date string - not the raw ConvertTo-Json expansion of a [datetime] object (regression)' {
+        # Regression coverage for a real bug: Get-ADRiskScore used to store
+        # GeneratedDate as a raw [datetime]. ConvertTo-Json expands a raw
+        # [datetime] using its own DisplayHint/DateTime/value note
+        # properties instead of a plain string, so ConvertFrom-Json handed
+        # back "@{value=...; DisplayHint=2; DateTime=...}" wherever this was
+        # read from a score sidecar - visible directly in the retest
+        # report's header as unreadable text instead of a date.
+        $script:Comparison.BaselineMeta.GeneratedDate | Should -Not -BeNullOrEmpty
+        $script:Comparison.BaselineMeta.GeneratedDate | Should -Not -Match 'DisplayHint'
+        { [datetime]$script:Comparison.BaselineMeta.GeneratedDate } | Should -Not -Throw
+
+        $script:Comparison.RetestMeta.GeneratedDate | Should -Not -BeNullOrEmpty
+        $script:Comparison.RetestMeta.GeneratedDate | Should -Not -Match 'DisplayHint'
+        { [datetime]$script:Comparison.RetestMeta.GeneratedDate } | Should -Not -Throw
+    }
+
+    It 'exposes BaselineScore/RetestScore FindingCount for the report header' {
+        $script:Comparison.BaselineScore.FindingCount | Should -Be $script:BaselineFindings.Count
+        $script:Comparison.RetestScore.FindingCount | Should -Be $script:RetestFindings.Count
+    }
+
     It 'recomputes both runs'' scores via the current Get-ADRiskScore rather than trusting stored sidecar values' {
         # Even though weight is issue-keyed (not severity-keyed) in the mapping
         # table, the recomputed score must come from Get-ADRiskScore's own
@@ -252,5 +274,73 @@ Describe 'Export-ADRetestComparisonHTML' {
         $outPath = Join-Path $TestDrive 'retest-report-pipeline.html'
         $script:HtmlComparison | Export-ADRetestComparisonHTML -OutputPath $outPath
         Test-Path $outPath | Should -BeTrue
+    }
+
+    It 'never renders the raw ConvertTo-Json expansion of a [datetime] object in the header (regression)' {
+        $outPath = Join-Path $TestDrive 'retest-report-date-regression.html'
+        Export-ADRetestComparisonHTML -Comparison $script:HtmlComparison -OutputPath $outPath
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Match 'BASELINE GENERATED'
+        $content | Should -Not -Match 'DisplayHint'
+    }
+
+    It 'includes BASELINE FINDINGS / RETEST FINDINGS counts in the header' {
+        $outPath = Join-Path $TestDrive 'retest-report-findings-count.html'
+        Export-ADRetestComparisonHTML -Comparison $script:HtmlComparison -OutputPath $outPath
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Match 'BASELINE FINDINGS'
+        $content | Should -Match 'RETEST FINDINGS'
+    }
+
+    It 'renders correctly from a JSON round-trip via -ToJson, including a pre-fix corrupted GeneratedDate sidecar (regression)' {
+        # Exercises the exact "recreate the HTML report from an existing
+        # JSON file" workflow documented in the README: -ToJson now, then
+        # ConvertFrom-Json + Export-ADRetestComparisonHTML later, possibly
+        # in a different session.
+        $jsonPath = Join-Path $TestDrive 'AD_Retest_Comparison_roundtrip.json'
+        Get-ADRetestComparison -BaselinePath $folderB -RetestPath $folderR -ToJson $jsonPath | Out-Null
+
+        $reloaded = Get-Content -Path $jsonPath -Raw | ConvertFrom-Json
+        $outPath = Join-Path $TestDrive 'retest-report-roundtrip.html'
+        { Export-ADRetestComparisonHTML -Comparison $reloaded -OutputPath $outPath } | Should -Not -Throw
+
+        Test-Path $outPath | Should -BeTrue
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Not -Match 'DisplayHint'
+    }
+}
+
+Describe 'ConvertTo-ADFriendlyDateText' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src/Common.ps1')
+    }
+
+    It 'returns $null for a null/empty value' {
+        ConvertTo-ADFriendlyDateText -Value $null | Should -BeNullOrEmpty
+    }
+
+    It 'formats a real [datetime] object' {
+        $result = ConvertTo-ADFriendlyDateText -Value ([datetime]'2026-08-20 00:47:43')
+        $result | Should -Be '2026-08-20 00:47:43'
+    }
+
+    It 'passes through a plain ISO-8601 string unchanged in content (current, fixed sidecar format)' {
+        $result = ConvertTo-ADFriendlyDateText -Value '2026-08-20T00:47:43.0000000+00:00'
+        { [datetime]$result } | Should -Not -Throw
+        $result | Should -Not -Match 'DisplayHint'
+    }
+
+    It 'recovers a clean date from the corrupted legacy shape (ConvertTo-Json''s expansion of a raw [datetime])' {
+        # This is exactly the object shape ConvertFrom-Json hands back for a
+        # pre-fix score sidecar whose GeneratedDate was stored as a raw
+        # [datetime] rather than a string.
+        $corrupted = [PSCustomObject]@{
+            value       = '08/20/2026 00:47:43'
+            DisplayHint = 2
+            DateTime    = 'Thursday, 20 August 2026 12:47:43 AM'
+        }
+        $result = ConvertTo-ADFriendlyDateText -Value $corrupted
+        $result | Should -Not -Match 'DisplayHint'
+        { [datetime]$result } | Should -Not -Throw
     }
 }

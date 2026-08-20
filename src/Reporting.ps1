@@ -1,3 +1,123 @@
+function Export-ADSecurityReportHTMLFromJson {
+    <#
+    .SYNOPSIS
+        Recreates the main HTML audit report from a previously-exported
+        AD_Security_Audit_<timestamp>.json findings file, with no live
+        Active Directory access.
+    .DESCRIPTION
+        Start-ADSecurityAudit's HTML report (Export-ADSecurityReportHTML) is
+        normally built once, in-memory, at the end of a live run - it needs
+        Findings plus several run-time-only values (Domain, Summary,
+        Duration, RunMode, SnapshotCollectedDate, OfflineSkipNotes,
+        PrivilegedUsers) that Start-ADSecurityAudit never persists to disk
+        on their own. Only two files survive a run for later offline use:
+        the flat findings export (AD_Security_Audit_<timestamp>.json) and,
+        optionally, its AD_Security_Score_<timestamp>.json sidecar.
+
+        This function is the "I only kept/have the JSON, not the original
+        HTML" recovery path: point it at a findings export (or a folder -
+        same newest-file resolution idiom as Get-ADRetestComparison's
+        -BaselinePath/-RetestPath) and it rebuilds the HTML report from
+        that alone. Because most of Export-ADSecurityReportHTML's other
+        inputs simply don't exist in the findings JSON, this comes with
+        real, spelled-out gaps versus the original report - see LIMITATIONS
+        below. If you still have the original HTML, that one file has
+        everything and this function has nothing to add for it.
+
+        The risk score shown is always freshly RECOMPUTED from the
+        findings via Get-ADRiskScore, never read back from a score sidecar
+        (same "never trust a stored sidecar score" philosophy as
+        Get-ADRetestComparison) - so a JSON export originally scored under
+        an older module version is rescored under whatever version you run
+        this function with.
+    .PARAMETER FindingsPath
+        Either an explicit AD_Security_Audit_<timestamp>.json file, or a
+        folder to search for the newest one (same resolution idiom as
+        Get-ADRetestComparison's -BaselinePath/-RetestPath).
+    .PARAMETER OutputPath
+        Path to write the recreated HTML report to.
+    .PARAMETER Domain
+        Not present in the findings JSON (the ADSecurityFinding schema
+        doesn't carry a Domain field - see the note in
+        ForestConsolidation.ps1). Defaults to a clearly-labeled placeholder;
+        pass the actual domain name if you know it, so the recreated report
+        doesn't read as if the domain were unknown at scan time.
+    .PARAMETER Duration
+        Not present in the findings JSON (Start-ADSecurityAudit only times
+        a run in-memory). Defaults to zero; the recreated report's SCAN
+        DURATION will read as "0 seconds" unless you supply the real value.
+    .PARAMETER RunMode
+        Not recoverable from the findings JSON alone. Defaults to 'Live'.
+        Pass 'Offline (Snapshot)' (plus -SnapshotCollectedDate) if you know
+        the original run used -FromSnapshot and want that reflected.
+    .PARAMETER SnapshotCollectedDate
+        Only meaningful with -RunMode 'Offline (Snapshot)'; see
+        Export-ADSecurityReportHTML.
+    .OUTPUTS
+        None. Writes the HTML file to -OutputPath.
+    .EXAMPLE
+        Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00.json" `
+            -OutputPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00-recreated.html" `
+            -Domain "contoso.com"
+    .EXAMPLE
+        # Folder form - picks the newest AD_Security_Audit_*.json in it:
+        Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports\recreated.html"
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FindingsPath,
+
+        [Parameter(Mandatory)]
+        [string]$OutputPath,
+
+        [Parameter()]
+        [string]$Domain = 'Unknown (recreated from JSON export - Domain was not persisted in AD_Security_Audit_*.json)',
+
+        [Parameter()]
+        [timespan]$Duration = [timespan]::Zero,
+
+        [Parameter()]
+        [ValidateSet('Live', 'Offline (Snapshot)')]
+        [string]$RunMode = 'Live',
+
+        [Parameter()]
+        [Nullable[datetime]]$SnapshotCollectedDate = $null
+    )
+
+    $findingsFile = Resolve-ADRetestReportFile -Path $FindingsPath
+
+    try {
+        $findings = @(Get-Content -Path $findingsFile.FullName -Raw | ConvertFrom-Json)
+    }
+    catch {
+        throw "Failed to parse findings export '$($findingsFile.FullName)': $_"
+    }
+
+    # Defensive flatten, same reasoning as Get-ADRetestComparison - a no-op
+    # for a normal, already-flat export.
+    $findings = ConvertTo-ADFlatFindingsArray -Findings $findings
+
+    Write-Verbose "Recomputing risk score for the recreated report under the current Get-ADRiskScore mapping table (never the original sidecar value, if one exists)..."
+    $riskScore = Get-ADRiskScore -Findings $findings
+
+    # Mirrors Main.ps1's own $summary construction exactly, so the recreated
+    # report's Executive Summary counts match what a live run would have shown.
+    $summary = @{
+        Critical = @($findings | Where-Object { $_.Severity -eq 'Critical' }).Count
+        High     = @($findings | Where-Object { $_.Severity -eq 'High' }).Count
+        Medium   = @($findings | Where-Object { $_.Severity -eq 'Medium' }).Count
+        Low      = @($findings | Where-Object { $_.Severity -eq 'Low' }).Count
+    }
+
+    Write-Verbose "Recreating HTML report from '$($findingsFile.FullName)' ($($findings.Count) finding(s))..."
+    Export-ADSecurityReportHTML -Findings $findings -OutputPath $OutputPath -Domain $Domain -Summary $summary `
+        -Duration $Duration -RiskScore $riskScore -RunMode $RunMode -SnapshotCollectedDate $SnapshotCollectedDate `
+        -PrivilegedUsers $null -OfflineSkipNotes @()
+
+    Write-Verbose "Recreated HTML report written to '$OutputPath'."
+}
+
 function Export-ADSecurityReportHTML {
     [CmdletBinding()]
     param(

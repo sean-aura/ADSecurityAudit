@@ -493,9 +493,18 @@ function Start-ADSecurityAudit {
             # Export to CSV with formula injection protection
             # NOTE (output contract): existing columns are never reordered or
             # removed. New flat fields are APPENDED after DetectedDate.
+            #
+            # SeverityLevel and Details were previously missing entirely from
+            # this Select-Object list despite existing on every finding (and
+            # therefore in the JSON export) - the CSV silently carried less
+            # information than the JSON it's supposed to be a flat view of.
+            # Appended at the end (after Weight, the last existing column)
+            # rather than inserted after DetectedDate, so this fix itself
+            # doesn't reorder/renumber any pre-existing column a downstream
+            # consumer may reference positionally.
             Write-Progress -Activity "Exporting Audit Reports" -Status "Writing CSV report..." -PercentComplete 70
             $csvPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.csv"
-            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight |
+            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight, SeverityLevel, Details |
                 ForEach-Object {
                     [PSCustomObject]@{
                         Category = $_.Category | ConvertTo-SafeCsvValue
@@ -509,6 +518,14 @@ function Start-ADSecurityAudit {
                         MitreTechnique = $_.MitreTechnique | ConvertTo-SafeCsvValue
                         AnssiControl = $_.AnssiControl | ConvertTo-SafeCsvValue
                         Weight = $_.Weight
+                        SeverityLevel = $_.SeverityLevel
+                        # Compact JSON string, not a native CSV column-per-key -
+                        # Details is an open-ended per-check hashtable (different
+                        # keys per Issue), so there's no fixed column set to
+                        # flatten it into without the schema changing per-check.
+                        # Still sanitized against formula injection like every
+                        # other free-text column.
+                        Details = ($_.Details | ConvertTo-Json -Compress -Depth 5) | ConvertTo-SafeCsvValue
                     }
                 } |
                 Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8

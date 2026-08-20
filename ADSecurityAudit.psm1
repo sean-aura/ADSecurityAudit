@@ -122,6 +122,7 @@ Export-ModuleMember -Function @(
     'Get-ADRemediationState',
     'Get-ADMaturityTrend',
     'Export-ADMaturityTrendHTML',
+    'Export-ADSecurityReportHTMLFromJson',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',

@@ -132,6 +132,7 @@ function Test-ADPrivilegedGroups {
     try {
         $groupCount = $groupsToCheck.Count
         $currentGroup = 0
+        $forestRootOnlyGroups = @('Enterprise Admins', 'Schema Admins')
         
         foreach ($groupName in $groupsToCheck) {
             $currentGroup++
@@ -147,9 +148,39 @@ function Test-ADPrivilegedGroups {
                     Write-Verbose "Failed to get group '$groupName': $_"
                 }
 
+                if (-not $group -and $groupName -in $forestRootOnlyGroups) {
+                    # Enterprise Admins/Schema Admins exist ONLY in the
+                    # forest root domain - a lookup scoped to a child
+                    # domain (via the active -Server override) correctly
+                    # finds nothing there, and previously that meant this
+                    # group was silently skipped for every non-root domain
+                    # audited, with no finding and no indication why.
+                    # Resolve the forest root explicitly and re-query
+                    # there instead.
+                    try {
+                        $forestRootDomain = (Get-ADForest -ErrorAction Stop).RootDomain
+                        if ($forestRootDomain) {
+                            Write-Verbose "Test-ADPrivilegedGroups: '$groupName' not found in the target domain (expected - it's forest-root-only); re-querying against the forest root '$forestRootDomain' instead."
+                            $group = Get-ADGroup -Filter "Name -eq '$groupName'" -Server $forestRootDomain -Properties Members, MemberOf -ErrorAction Stop
+                        }
+                    }
+                    catch {
+                        Write-Verbose "Failed to resolve '$groupName' via the forest root domain: $_"
+                    }
+                }
+
                 if (-not $group) {
                     continue
                 }
+
+                # The domain the group object ITSELF actually landed in -
+                # normally the audited domain, but the forest root for
+                # Enterprise Admins/Schema Admins per the fallback above.
+                # Get-ADGroupMember is called with -Identity $group below,
+                # which binds it to this same domain regardless of the
+                # ambient -Server default, so member lookups stay
+                # consistent with wherever the group actually is.
+                $groupDomainDN = if ($group.DistinguishedName -match '(DC=.+)$') { $matches[1] } else { $null }
 
                 # Get recursive members for total count and user analysis
                 $recursiveMembers = $null
@@ -172,6 +203,47 @@ function Test-ADPrivilegedGroups {
 
                 if (-not $recursiveMembers -and -not $directMembers) {
                     continue
+                }
+
+                # --- Cross-domain membership visibility -----------------
+                # Get-ADGroupMember -Recursive can return members from a
+                # DIFFERENT domain than the group itself (a universal group,
+                # or - in a multi-domain forest where the auditor's own
+                # machine is joined to a different domain than the one
+                # being audited - membership resolved via a Global Catalog
+                # can legitimately include full objects from other domains
+                # too). Neither case is inherently wrong, but it was
+                # previously invisible: nothing recorded which domain a
+                # member actually belonged to. This doesn't change the
+                # membership counts/thresholds below (a cross-domain member
+                # is still a real member) - it only adds visibility.
+                if ($groupDomainDN -and $recursiveMembers) {
+                    $membershipSplit = Split-ADObjectByTargetDomain -InputObject @($recursiveMembers) -TargetDomainDN $groupDomainDN
+                    if (@($membershipSplit.Foreign).Count -gt 0) {
+                        Write-Warning "Test-ADPrivilegedGroups: '$groupName' has $(@($membershipSplit.Foreign).Count) member(s) from a domain other than the group's own ($groupDomainDN). If this domain wasn't the one you intended to audit, verify -Server/DNS resolution - see the 'Cross-Domain Privileged Group Membership' finding for the affected accounts."
+                        $finding = [ADSecurityFinding]::new()
+                        $finding.Category = 'Privileged Groups'
+                        $finding.Issue = 'Cross-Domain Privileged Group Membership'
+                        # 'Low', not a true Info bucket - Export-ADSecurityReportHTML
+                        # only renders Critical/High/Medium/Low sections, so an
+                        # 'Info' severity here would be counted in JSON/CSV but
+                        # invisible in the HTML report itself, defeating the
+                        # point of surfacing it. Low keeps its scoring impact
+                        # minimal while still making it visible where an
+                        # operator will actually see it.
+                        $finding.Severity = 'Low'
+                        $finding.SeverityLevel = 1
+                        $finding.AffectedObject = $groupName
+                        $finding.Description = "The '$groupName' group (domain: $groupDomainDN) has $(@($membershipSplit.Foreign).Count) member(s) whose own DistinguishedName belongs to a different domain."
+                        $finding.Impact = "This can be legitimate (a universal group, or intentional cross-domain nesting in this forest) - but if this domain was not the one you intended to audit (-Server), it can also indicate the audit is unexpectedly reading data from another domain in the forest."
+                        $finding.Remediation = "Review the listed accounts' domains. If this is unintentional, verify -Server was resolved to the intended domain (check the run's 'Server override:' console/verbose output) and that DNS for the target domain resolves correctly from this machine."
+                        $finding.Details = @{
+                            GroupDN         = $group.DistinguishedName
+                            ForeignDomains  = @($membershipSplit.Foreign | ForEach-Object { if ($_.DistinguishedName -match '(DC=.+)$') { $matches[1] } }) | Select-Object -Unique
+                            ForeignMembers  = ($membershipSplit.Foreign | Select-Object -ExpandProperty SamAccountName) -join '; '
+                        }
+                        $findings += $finding
+                    }
                 }
                 
                 # Check for excessive membership (using recursive count)

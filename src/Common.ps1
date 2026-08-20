@@ -353,6 +353,111 @@ function Get-ADRootDSEValue {
 # directly against it; otherwise fall back to -Discover" logic Main.ps1
 # already applies to its own DC connectivity check, so every other
 # live-probe call site gets the same correctness for free.
+function Get-ADSecurityAuditActiveServerOverride {
+    <#
+    .SYNOPSIS
+        Returns the -Server value currently installed by
+        Set-ADSecurityAuditTargetServer, or $null if no override is active.
+    .DESCRIPTION
+        A few call sites (forest-root-only group lookups, anonymous-bind/
+        zone-transfer probes) need to know and explicitly reuse the ACTUAL
+        override value - not just rely on $PSDefaultParameterValues to
+        auto-supply it - because they either can't use a plain Get-AD*
+        cmdlet call (raw network probes) or need to deliberately query a
+        DIFFERENT server for one specific lookup (e.g. the forest root
+        instead of the audited child domain) without losing track of what
+        the "normal" override value was. Centralized here instead of each
+        caller re-reading $Global:PSDefaultParameterValues directly.
+    .OUTPUTS
+        [string] the active -Server override, or $null.
+    #>
+    [CmdletBinding()]
+    param()
+
+    if ($Global:PSDefaultParameterValues -and $Global:PSDefaultParameterValues.ContainsKey('Get-AD*:Server')) {
+        return $Global:PSDefaultParameterValues['Get-AD*:Server']
+    }
+    return $null
+}
+
+function Split-ADObjectByTargetDomain {
+    <#
+    .SYNOPSIS
+        Splits a set of AD objects into those that belong to the domain
+        currently being audited and those that don't, instead of silently
+        mixing cross-domain objects into a single-domain audit's results.
+    .DESCRIPTION
+        -Server pins a Get-AD* cmdlet CALL to one domain, but doesn't
+        guarantee every OBJECT that call returns actually belongs to that
+        domain. The clearest case in this module: Get-ADGroupMember
+        -Recursive walks nested group membership, and in a multi-domain
+        forest a privileged group can legitimately contain members from
+        OTHER domains (a universal group, or a child domain's Domain Admins
+        nested into the forest root's Enterprise Admins). Get-ADGroupMember
+        does not filter these out or flag them - they come back as
+        ordinary member objects, indistinguishable from same-domain members
+        unless something checks their own DistinguishedName.
+
+        This is exactly the shape of the "wrong domain" failure mode this
+        module's -Server override exists to prevent: an operator scoped to
+        Domain B can still end up with Domain A objects quietly folded into
+        Domain B's findings/report if nothing validates membership at this
+        level - particularly plausible if Domain A happens to be the
+        forest root (Enterprise Admins/Schema Admins live there) or the
+        machine's own joined domain. Call sites that walk group membership
+        should use this to make any cross-domain leakage visible (a
+        Write-Warning and/or a dedicated finding) rather than silent.
+    .PARAMETER InputObject
+        AD objects to check (anything with a DistinguishedName property -
+        users, computers, groups).
+    .PARAMETER TargetDomainDN
+        The DistinguishedName of the domain being audited (e.g.
+        $domain.DistinguishedName). An object is considered in-scope only
+        if its own DistinguishedName ends with this.
+    .OUTPUTS
+        PSCustomObject: InScope (array), Foreign (array).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [AllowNull()]
+        [array]$InputObject = @(),
+
+        [Parameter(Mandatory)]
+        [string]$TargetDomainDN
+    )
+
+    $inScope = @()
+    $foreign = @()
+    foreach ($obj in @($InputObject)) {
+        if (-not $obj -or -not $obj.DistinguishedName) {
+            # Can't determine domain membership without a DN. Treated as
+            # in-scope rather than silently dropped - this guard is a
+            # safety net for detecting cross-domain contamination, not a
+            # general-purpose filter, and a DN-less object is a different
+            # (pre-existing) problem it isn't meant to paper over.
+            $inScope += $obj
+            continue
+        }
+        # Suffix match on the DN, not an exact/case-sensitive comparison -
+        # DNs are case-insensitive in AD and TargetDomainDN is itself a
+        # suffix of every in-domain object's own DN (e.g. an object DN of
+        # "CN=user1,OU=Users,DC=domainb,DC=corp,DC=com" against a
+        # TargetDomainDN of "DC=domainb,DC=corp,DC=com").
+        if ($obj.DistinguishedName.ToString().ToLowerInvariant().EndsWith($TargetDomainDN.ToLowerInvariant())) {
+            $inScope += $obj
+        }
+        else {
+            $foreign += $obj
+        }
+    }
+
+    return [PSCustomObject]@{
+        InScope = @($inScope)
+        Foreign = @($foreign)
+    }
+}
+
 function Get-ADTargetDomainController {
     <#
     .SYNOPSIS
@@ -367,10 +472,7 @@ function Get-ADTargetDomainController {
     [CmdletBinding()]
     param()
 
-    $overrideServer = $null
-    if ($Global:PSDefaultParameterValues -and $Global:PSDefaultParameterValues.ContainsKey('Get-AD*:Server')) {
-        $overrideServer = $Global:PSDefaultParameterValues['Get-AD*:Server']
-    }
+    $overrideServer = Get-ADSecurityAuditActiveServerOverride
 
     try {
         if ($overrideServer) {
@@ -913,4 +1015,66 @@ function ConvertTo-SafeCsvValue {
 
         return $Value
     }
+}
+
+function ConvertTo-ADFriendlyDateText {
+    <#
+    .SYNOPSIS
+        Normalizes a GeneratedDate-style value read back from a
+        ConvertFrom-Json'd sidecar/report into a clean, human-readable date
+        string.
+    .DESCRIPTION
+        Every "GeneratedDate = Get-Date" in this module is meant to end up as
+        a plain, re-parseable date string once ConvertTo-Json/Out-File has
+        written it to disk. Prior to this fix, several of those assignments
+        stored the raw [datetime] object instead of a string. PowerShell's
+        JSON serializer expands a raw [datetime] using its own ETS note
+        properties (DisplayHint/DateTime/value) rather than a plain string,
+        so ConvertFrom-Json hands back a PSCustomObject that renders as
+        "@{value=...; DisplayHint=2; DateTime=...}" wherever it's dropped
+        directly into a report - never a real error, just useless text.
+
+        This helper is defensive on BOTH sides of that fix: it recovers a
+        clean date from the old corrupted shape (so already-generated
+        sidecars/exports don't need to be regenerated), and it's a no-op
+        pass-through for the plain ISO-8601 strings the fixed code now
+        writes.
+    .PARAMETER Value
+        The raw value as read from a ConvertFrom-Json'd object. Any of:
+        $null/empty, a [datetime], a plain (parseable) string, or the
+        corrupted PSCustomObject shape described above.
+    .OUTPUTS
+        A "yyyy-MM-dd HH:mm:ss" string, or $null if $Value was empty. If the
+        value can't be parsed as a date at all, its best-effort string form
+        is returned rather than throwing, so a report can still show
+        *something* instead of failing to render.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if (-not $Value) { return $null }
+
+    if ($Value -is [datetime]) {
+        return $Value.ToString('yyyy-MM-dd HH:mm:ss')
+    }
+
+    # The corrupted legacy shape: ConvertTo-Json expanded a raw [datetime]
+    # into its own DisplayHint/DateTime/value note properties instead of a
+    # plain string. Recover the actual date from 'value' (the underlying
+    # DateTime's own value, most reliable) or fall back to 'DateTime' (the
+    # pre-formatted display string).
+    if ($Value.PSObject -and ($Value.PSObject.Properties.Name -contains 'DisplayHint') -and
+        (($Value.PSObject.Properties.Name -contains 'value') -or ($Value.PSObject.Properties.Name -contains 'DateTime'))) {
+        $raw = if ($Value.PSObject.Properties.Name -contains 'value') { $Value.value } else { $Value.DateTime }
+        try { return ([datetime]$raw).ToString('yyyy-MM-dd HH:mm:ss') }
+        catch { return "$raw" }
+    }
+
+    # Plain string (the fixed, current format) or anything else stringy.
+    try { return ([datetime]$Value).ToString('yyyy-MM-dd HH:mm:ss') }
+    catch { return "$Value" }
 }

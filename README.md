@@ -151,6 +151,15 @@ Get-ADSnapshot -Server domainb.corp.com -ToJson "C:\Snapshots\domainb.json"
 This override is applied consistently everywhere the module talks to AD: every `Get-AD*`/`Set-AD*` cmdlet call across every test module (via a shared `$PSDefaultParameterValues` mechanism, so no individual test had to be hand-edited), plus two classes of call that don't go through the normal AD-cmdlet path and would otherwise silently ignore `-Server`:
 - A handful of files read `RootDSE` via a raw ADSI bind (`[ADSI]"LDAP://RootDSE"`) rather than `Get-ADRootDSE`; ADSI binds are COM object construction, not cmdlet calls, so they're invisible to the override mechanism above and would keep resolving to the calling machine's own domain regardless. These now go through `Get-ADRootDSE` instead.
 - A few live-network-probe checks (the anonymous-bind test, DNS-cmdlet target resolution) called `Get-ADDomainController -Discover` directly, which is a different parameter set than `-Server` and would otherwise throw and silently skip the check under an active override. These now resolve directly against the override when one is set.
+- `Test-ADPrivilegedGroups`'s Enterprise Admins/Schema Admins checks: these two groups exist ONLY in the forest root domain, so a lookup scoped to a child domain via `-Server` always found nothing and silently skipped the group with no finding and no indication why. This now resolves the forest root (`Get-ADForest`) and re-queries there when the initial, target-domain-scoped lookup comes back empty.
+
+**If you've set `-Server` and are still seeing data that looks like it came from the wrong domain** (e.g. an account logged into/authenticated against one domain, on a machine joined to a different domain in the same forest, and the report reads like the machine's own domain rather than the one you targeted), work through these in order:
+
+1. **Confirm the override is actually taking effect.** Run with `-Verbose` and look for the console line `Server override: forcing all AD queries to target '<value>' (...)` near the start of the run. If the value shown isn't what you expected, the problem is in what was passed in, not in how it's applied downstream.
+2. **Pass a specific DC FQDN, not just the domain name**, e.g. `-Server dc01.domainb.corp.com` rather than `-Server domainb.corp.com`. A bare domain name still goes through DNS-based DC-locator SRV resolution, which depends on the *querying* machine's own DNS servers correctly resolving the target domain's zone - in a forest where that isn't fully configured (e.g. missing conditional forwarders between domains' DNS zones), locator resolution can silently fall back to a DC in the machine's own domain instead of erroring. Pinning to a specific DC FQDN removes that resolution step entirely.
+3. **Confirm `-Server` is passed on the SAME invocation that produced the report you're looking at**, not a separate call. The override is installed and cleared entirely inside a single `Start-ADSecurityAudit` (or standalone `Get-ADSnapshot`/`Test-ADMachineAccountQuota`) call - it does not persist across separate commands in the same session. Calling an individual `Test-AD*` function directly, on its own, has no `-Server` parameter at all (only `Test-ADMachineAccountQuota` and `Get-ADSnapshot` do) and will silently use the ambient/serverless bind if `Start-ADSecurityAudit` isn't the thing that ran it.
+4. **Check the new "Cross-Domain Privileged Group Membership" finding** (see the Changelog) if the wrong-domain data specifically shows up as *group members* (privileged users/groups sections). Nested/universal group membership in a forest can legitimately span domains - this finding now surfaces exactly which domain(s) a privileged group's members actually belong to, which tells you definitively whether what you're seeing is cross-domain membership being correctly reported (working as intended) versus the audit itself querying the wrong domain (the `Server override:` line from step 1 not matching your target).
+5. If you used `runas /netonly` or an equivalent alternate-credential technique, see the Known Limitation note above - pass `-Server` explicitly rather than relying on the `$env:USERDNSDOMAIN` default in that scenario.
 
 ### Offline / Snapshot-Based Audit
 Collect once, analyze later or elsewhere, with no live AD access at analysis time:
@@ -166,6 +175,33 @@ The script generates these report formats:
 - **CSV Export**: Detailed findings in spreadsheet format for analysis (now includes appended `MitreTechnique`, `AnssiControl`, and `Weight` columns)
 - **JSON Export**: Machine-readable findings (the new metadata fields serialize automatically)
 - **Score sidecar (JSON)**: `AD_Security_Score_<timestamp>.json` containing the global risk score, per-category sub-scores, maturity level, and MITRE roll-up
+
+### Recreating the main HTML report from an existing JSON export
+
+If you have an `AD_Security_Audit_<timestamp>.json` findings export - from a prior run, restored from backup, whatever - but the matching `.html` is missing or was never generated, `Export-ADSecurityReportHTMLFromJson` rebuilds the HTML report directly from that JSON, with **no live Active Directory access and no re-run of the audit**:
+
+```powershell
+Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00.json" `
+    -OutputPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00-recreated.html" `
+    -Domain "contoso.com"
+
+# Folder form also works - picks the newest AD_Security_Audit_*.json in it,
+# same resolution idiom as Get-ADRetestComparison's -BaselinePath/-RetestPath:
+Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports\recreated.html"
+```
+
+**This is a different feature from the Retest Comparison JSON-recreate above** - that one (`Get-ADRetestComparison -ToJson` → `Export-ADRetestComparisonHTML`) rebuilds the two-run *comparison* report. This one rebuilds the ordinary single-run audit report you'd otherwise only get by re-running `Start-ADSecurityAudit` (or by hand-loading the JSON and calling the module's own report renderer, which this function does for you).
+
+**Know the gaps before you rely on this:** `AD_Security_Audit_<timestamp>.json` only ever contains the flat findings array. Everything else the HTML report normally shows - `Domain`, `Duration`, `RunMode` (Live vs. Offline/Snapshot), `SnapshotCollectedDate`, `OfflineSkipNotes`, and the privileged-users section - is computed in-memory during a live run and was **never written to that JSON file**, so this function can't recover it:
+
+- **Domain** - not present in the finding schema itself; pass `-Domain` if you know it, otherwise the header shows an explicit placeholder rather than guessing.
+- **Duration** - defaults to 0 seconds unless you pass `-Duration`.
+- **RunMode / SnapshotCollectedDate** - default to `Live` / none; pass both if you know the original run was `-FromSnapshot` and want that reflected.
+- **Offline Mode Coverage Notes** - not recoverable at all; the recreated report will not show this section even if the original run had it.
+- **Privileged Users section** - not recoverable; that data was only ever written to a separate `AD_Privileged_Users_<timestamp>.csv`, not JSON, so it isn't wired into this function.
+- **Risk score / maturity / MITRE roll-up** - these ARE recovered, but always freshly **recomputed** from the findings via `Get-ADRiskScore` rather than read back from the `AD_Security_Score_<timestamp>.json` sidecar (same "never trust a stored sidecar score" rule `Get-ADRetestComparison` follows) - so a JSON export originally scored under an older module version is rescored under whichever version you run this with.
+
+If you still have the original `.html`, it already has all of the above baked in and this function has nothing to add - it exists specifically for the "I only kept the JSON" case.
 
 ## Scoring & Maturity
 
@@ -263,6 +299,24 @@ Get-ADRetestComparison -BaselinePath "C:\Reports\Pre" -RetestPath "C:\Reports\Po
 ```
 
 `-BaselinePath`/`-RetestPath` each accept either an explicit `AD_Security_Audit_<timestamp>.json` file or a folder (the newest matching export in it is used, same resolution idiom as Forest Consolidation's `-ReportPath`). A sibling `AD_Security_Score_<timestamp>.json` is read for each side, when present, purely for the informational `ModuleVersion`/`GeneratedDate` shown in the report header - it is never used as the authoritative score.
+
+### Recreating the HTML report from a saved `-ToJson` file
+
+*(This is for the retest-comparison report specifically. To recreate the ordinary single-run audit report from an `AD_Security_Audit_<timestamp>.json` findings export instead, see [Recreating the main HTML report from an existing JSON export](#recreating-the-main-html-report-from-an-existing-json-export) below - don't run a retest comparison just to regenerate that.)*
+
+If you already ran `Get-ADRetestComparison -ToJson ...` (or just still have that file from a previous run) and want the HTML report without re-reading the two original findings exports, load the JSON back in and pipe it straight into `Export-ADRetestComparisonHTML` - no need to re-run the comparison itself:
+
+```powershell
+$comparison = Get-Content -Path "C:\Reports\AD_Retest_Comparison_2026-08-01.json" -Raw | ConvertFrom-Json
+Export-ADRetestComparisonHTML -Comparison $comparison -OutputPath "C:\Reports\retest-report.html"
+
+# or, equivalently, via the pipeline:
+Get-Content -Path "C:\Reports\AD_Retest_Comparison_2026-08-01.json" -Raw |
+    ConvertFrom-Json |
+    Export-ADRetestComparisonHTML -OutputPath "C:\Reports\retest-report.html"
+```
+
+This works because `-ToJson` persists the exact object `Get-ADRetestComparison` returns, and `Export-ADRetestComparisonHTML` only ever reads properties off that object - it doesn't care whether it arrived fresh from `Get-ADRetestComparison` or round-tripped through `ConvertFrom-Json`. The same idiom works for `Get-ADForestConsolidation`/`Export-ADForestConsolidationHTML` and `Get-ADMaturityTrend`/`Export-ADMaturityTrendHTML` - every `-ToJson`-capable command in this module pairs with an `Export-...HTML` command that accepts the reloaded object the same way.
 
 PingCastle does not publicly ship an equivalent retest-delta report - this is comparison tooling over this module's own prior exports, implemented independently.
 

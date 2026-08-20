@@ -95,7 +95,12 @@ function Get-ADRetestSidecarMeta {
             $sc = Get-Content -Path $scorePath -Raw | ConvertFrom-Json
             $meta.ScorePath = $scorePath
             if ($sc.PSObject.Properties.Name -contains 'ModuleVersion') { $meta.ModuleVersion = $sc.ModuleVersion }
-            if ($sc.PSObject.Properties.Name -contains 'GeneratedDate') { $meta.GeneratedDate = $sc.GeneratedDate }
+            # Normalized through ConvertTo-ADFriendlyDateText (Common.ps1) so
+            # this renders as a clean date even against an older score
+            # sidecar written before GeneratedDate was stored as a string
+            # (see Scoring.ps1) - otherwise the header shows the raw
+            # "@{value=...; DisplayHint=2; DateTime=...}" PowerShell dump.
+            if ($sc.PSObject.Properties.Name -contains 'GeneratedDate') { $meta.GeneratedDate = ConvertTo-ADFriendlyDateText -Value $sc.GeneratedDate }
             if ($sc.PSObject.Properties.Name -contains 'TotalScore') { $meta.OriginalTotalScore = $sc.TotalScore }
             if ($sc.PSObject.Properties.Name -contains 'MaturityLevel') { $meta.OriginalMaturityLevel = $sc.MaturityLevel }
         }
@@ -310,7 +315,9 @@ function Get-ADRetestComparison {
     }
 
     $result = [PSCustomObject]@{
-        GeneratedDate      = Get-Date
+        # String, not a raw [datetime] - see the Scoring.ps1 comment on why;
+        # this object can itself be written out via -ToJson below.
+        GeneratedDate      = (Get-Date).ToString('o')
         BaselineMeta       = $baselineMeta
         RetestMeta         = $retestMeta
         BaselineScore      = $baselineScore
@@ -583,6 +590,13 @@ function Export-ADRetestComparisonHTML {
     $baselineVerText  = if ($Comparison.BaselineMeta.ModuleVersion) { $Comparison.BaselineMeta.ModuleVersion } else { 'unknown' }
     $retestVerText    = if ($Comparison.RetestMeta.ModuleVersion) { $Comparison.RetestMeta.ModuleVersion } else { 'unknown' }
 
+    # Finding-count context, mirroring TOTAL FINDINGS in the main report's
+    # own header-info block (Reporting.ps1) - unlike GeneratedDate/
+    # ModuleVersion these come from the recomputed score, not the sidecar,
+    # so they're always available even when no sidecar exists.
+    $baselineFindingsText = [int]$Comparison.BaselineScore.FindingCount
+    $retestFindingsText   = [int]$Comparison.RetestScore.FindingCount
+
     $baselineGaugeColor = Get-GaugeColor([int]$Comparison.BaselineScore.TotalScore)
     $retestGaugeColor   = Get-GaugeColor([int]$Comparison.RetestScore.TotalScore)
     $baselineGaugeSvg = Get-ADSvgGauge -Score ([int]$Comparison.BaselineScore.TotalScore) -Color $baselineGaugeColor
@@ -774,8 +788,10 @@ function Export-ADRetestComparisonHTML {
         <div class="header-info">
             <div><strong>BASELINE GENERATED</strong>$baselineDateText</div>
             <div><strong>BASELINE MODULE VERSION</strong>$baselineVerText</div>
+            <div><strong>BASELINE FINDINGS</strong>$baselineFindingsText</div>
             <div><strong>RETEST GENERATED</strong>$retestDateText</div>
             <div><strong>RETEST MODULE VERSION</strong>$retestVerText</div>
+            <div><strong>RETEST FINDINGS</strong>$retestFindingsText</div>
             <div><strong>REPORT GENERATED</strong>$reportDate</div>
         </div>
 
