@@ -66,6 +66,25 @@ function Start-ADSecurityAudit {
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
     $effectiveServer = $null
 
+    # Fixed: -ExportPath (e.g. ".\foldername") was passed straight into
+    # Join-Path/[System.IO.File]::WriteAllText below while still relative.
+    # See Resolve-ADSecurityAuditPath in Common.ps1 for the full
+    # explanation - short version: a later raw .NET write-test call
+    # resolves relative paths differently than the PowerShell cmdlets
+    # above it do, so a perfectly valid relative -ExportPath could
+    # silently be checked against the wrong directory and throw "Export
+    # path is not writable". Resolving to an absolute path up front (pure
+    # string computation, doesn't require the path to exist) avoids that
+    # entirely, and makes every downstream Join-Path/New-Item/Write-Host
+    # message operate on (and print) an unambiguous absolute path.
+    try {
+        $ExportPath = Resolve-ADSecurityAuditPath -Path $ExportPath
+    }
+    catch {
+        Write-Error "Could not resolve -ExportPath '$ExportPath' to an absolute path: $_"
+        return
+    }
+
     # Reset the offline-skip-note tracker (v1.19.1) so notes from a
     # previous Start-ADSecurityAudit call in the same PowerShell session
     # never leak into this run's HTML report.

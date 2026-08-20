@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed
+- **`-ExportPath ".\foldername"` (or any relative path) threw "Export path
+  is not writable" even for a valid, writable folder.** `Join-Path`/
+  `Test-Path`/`New-Item` are PowerShell-provider-aware and correctly
+  resolve a relative path against `$PWD` (the shell's own current
+  location), but the writability probe a few lines later used a raw .NET
+  call (`[System.IO.File]::WriteAllText`), and .NET resolves relative
+  paths against `[Environment]::CurrentDirectory` instead - which many
+  hosts (IDE integrated terminals, scheduled tasks, some launch shortcuts)
+  leave pointing at the user's profile folder rather than keeping synced
+  to `$PWD`. A relative `-ExportPath` would resolve correctly for the
+  directory-creation check, then silently resolve against the profile
+  folder for the write-test and fail. Fixed by resolving `-ExportPath` to
+  a fully-qualified absolute path immediately on entry, via a new
+  `Resolve-ADSecurityAuditPath` helper (`Common.ps1`) that uses
+  PowerShell's own path resolution (always honors `$PWD`) rather than raw
+  .NET path handling. Added Pester coverage that deliberately desyncs
+  `[Environment]::CurrentDirectory` from `$PWD` to reproduce the exact
+  failure condition.
 ### Added
 - **`-Server` now defaults to the current user's own domain**
   (`$env:USERDNSDOMAIN`) when omitted, instead of leaving "no `-Server`"

@@ -130,6 +130,45 @@ function Invoke-ADQueryWithRetry {
     return $null
 }
 
+# Fixed: -ExportPath (and any other user-supplied path in this module) was
+# being handed, while still possibly relative, to raw .NET file APIs
+# ([System.IO.File]::WriteAllText, etc.) elsewhere. PowerShell cmdlets like
+# Join-Path/Test-Path/New-Item are provider-aware and correctly resolve a
+# relative path against $PWD (the shell's own current location) - but raw
+# .NET APIs resolve relative paths against [Environment]::CurrentDirectory
+# instead, and the two are frequently out of sync (many hosts - IDE
+# integrated terminals, scheduled tasks, some launch shortcuts - leave
+# [Environment]::CurrentDirectory pointing at the user's profile folder
+# rather than keeping it synced to $PWD). The reported symptom: passing
+# -ExportPath ".\foldername" resolved fine for the Join-Path/Test-Path
+# calls, but the raw .NET write-test a few lines later in Main.ps1 silently
+# resolved against the profile directory instead and threw "Export path is
+# not writable" for a perfectly valid, writable relative path.
+function Resolve-ADSecurityAuditPath {
+    <#
+    .SYNOPSIS
+        Resolves a possibly-relative, possibly-nonexistent path to a
+        fully-qualified absolute path, using PowerShell's own current
+        location ($PWD) rather than .NET's [Environment]::CurrentDirectory.
+    .DESCRIPTION
+        Uses the PowerShell engine's own path resolution
+        (GetUnresolvedProviderPathFromPSPath), which always honors $PWD.
+        Works whether the path exists yet or not (string computation only -
+        no filesystem access) and whether it was already absolute or not
+        (a no-op in that case, aside from normalization).
+    .PARAMETER Path
+        The (possibly relative) path to resolve.
+    .OUTPUTS
+        [string] the fully-qualified absolute path.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+    return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+
 # --- Multi-domain / multi-forest target override ---
 #
 # PROBLEM: none of the Get-AD*/Set-AD* calls anywhere in this module pass
