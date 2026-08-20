@@ -76,3 +76,37 @@ Describe 'Test-ADMachineAccountQuota (live mode)' {
         $findings.Count | Should -Be 0
     }
 }
+
+Describe 'Test-ADMachineAccountQuota (-Server override, multi-domain-forest fix)' {
+    It 'passes -Server through to both Get-ADDomain and Get-ADObject when supplied' {
+        $script:capturedDomainServer = $null
+        $script:capturedObjectServer = $null
+
+        function Get-ADDomain {
+            param($Server, $ErrorAction)
+            $script:capturedDomainServer = $Server
+            [PSCustomObject]@{ DistinguishedName = 'DC=domainb,DC=corp,DC=com' }
+        }
+        function Get-ADObject {
+            param($Identity, $Properties, $Server, $ErrorAction)
+            $script:capturedObjectServer = $Server
+            [PSCustomObject]@{ 'ms-DS-MachineAccountQuota' = 10 }
+        }
+
+        $findings = Test-ADMachineAccountQuota -Server 'domainb.corp.com'
+
+        $script:capturedDomainServer | Should -Be 'domainb.corp.com'
+        $script:capturedObjectServer | Should -Be 'domainb.corp.com'
+        $findings[0].AffectedObject | Should -Be 'DC=domainb,DC=corp,DC=com'
+    }
+
+    It 'does not pass a -Server parameter at all when none is supplied (backward compatible)' {
+        function Get-ADDomain { [PSCustomObject]@{ DistinguishedName = 'DC=contoso,DC=com' } }
+        function Get-ADObject { param($Identity, $Properties) [PSCustomObject]@{ 'ms-DS-MachineAccountQuota' = 0 } }
+
+        # These shadow functions declare no -Server parameter at all; if the
+        # code under test always spliced -Server (even $null/empty) onto the
+        # splat, this would throw a parameter-binding error.
+        { Test-ADMachineAccountQuota } | Should -Not -Throw
+    }
+}

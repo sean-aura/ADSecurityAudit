@@ -32,13 +32,26 @@ function Test-ADMachineAccountQuota {
         Optional snapshot hashtable (from Get-ADSnapshot). When supplied and
         it contains a 'MachineAccountQuota' key, that value is used instead
         of a live AD query.
+    .PARAMETER Server
+        Optional override for which domain/DC to query, as a domain FQDN
+        (e.g. 'domainb.corp.com') or a specific DC FQDN/hostname. Use this
+        in a multi-domain forest when the account running the audit is not
+        from the domain you intend to check - without it, Get-ADDomain
+        performs a "serverless" bind that resolves against the invoking
+        account's own logon domain, not necessarily the target domain,
+        which is exactly the "checks Domain A instead of Domain B" symptom
+        this parameter exists to fix. Ignored when -Snapshot is supplied
+        (no live AD access is performed in that mode).
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        [Parameter()]
+        [string]$Server
     )
 
     Write-Verbose "Starting Machine Account Quota audit..."
@@ -66,9 +79,22 @@ function Test-ADMachineAccountQuota {
             Write-Verbose "Test-ADMachineAccountQuota: -Snapshot supplied but MachineAccountQuota is missing/null; skipping (no live AD access performed)."
         }
         else {
-            $domain = Get-ADDomain -ErrorAction Stop
+            # Fixed: previously called Get-ADDomain/Get-ADObject with no
+            # -Server, which performs a "serverless" bind that resolves
+            # against the invoking account's own logon domain rather than
+            # necessarily the intended target domain - in a multi-domain
+            # forest this is what causes the quota check to silently read
+            # the wrong domain. When -Server is supplied, splat it onto
+            # both calls explicitly; when it isn't, behavior is unchanged
+            # from before (default AD-module resolution).
+            $domainParams = @{ ErrorAction = 'Stop' }
+            if ($Server) { $domainParams['Server'] = $Server }
+            $domain = Get-ADDomain @domainParams
             $domainDN = $domain.DistinguishedName
-            $domainObject = Get-ADObject -Identity $domainDN -Properties 'ms-DS-MachineAccountQuota' -ErrorAction Stop
+
+            $objectParams = @{ Identity = $domainDN; Properties = 'ms-DS-MachineAccountQuota'; ErrorAction = 'Stop' }
+            if ($Server) { $objectParams['Server'] = $Server }
+            $domainObject = Get-ADObject @objectParams
             $quota = $domainObject.'ms-DS-MachineAccountQuota'
         }
 

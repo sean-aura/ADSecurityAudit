@@ -123,6 +123,27 @@ Customize the audit with additional parameters:
 Start-ADSecurityAudit -ExportPath "C:\ADReports" -Verbose
 ```
 
+### Multi-Domain Forest: Overriding the Target Domain/DC
+
+In a multi-domain forest, every `Get-AD*`/`Set-AD*` call the AD PowerShell module makes without an explicit `-Server` performs a "serverless" bind - it resolves against the account running the audit's own logon domain (or whatever DC AD's client-side locator picks), not necessarily the domain you intend to audit. If you're running the audit as an account from Domain A against a machine that's actually in Domain B, this can silently produce results scoped to Domain A instead - most visibly in `Test-ADMachineAccountQuota`, since `ms-DS-MachineAccountQuota` lives on the domain object itself.
+
+Pass `-Server` (a domain FQDN or a specific DC FQDN/hostname) to force the entire run - domain lookup, DC discovery, and every individual test - to target the domain you actually mean:
+
+```powershell
+Start-ADSecurityAudit -Server domainb.corp.com -ExportPath "C:\ADReports"
+# or target one specific DC directly:
+Start-ADSecurityAudit -Server dc01.domainb.corp.com -ExportPath "C:\ADReports"
+```
+
+The same override is available standalone, independent of a full audit run:
+
+```powershell
+Test-ADMachineAccountQuota -Server domainb.corp.com
+Get-ADSnapshot -Server domainb.corp.com -ToJson "C:\Snapshots\domainb.json"
+```
+
+`-Server` is ignored (with a warning) when combined with `-FromSnapshot`, since offline mode performs no live AD access at all - there's no domain to override.
+
 ### Offline / Snapshot-Based Audit
 Collect once, analyze later or elsewhere, with no live AD access at analysis time:
 
@@ -575,6 +596,7 @@ Always:
 
 Full details for every release live in [CHANGELOG.md](./CHANGELOG.md). Recent highlights:
 
+- **Unreleased** - Fixed a multi-domain-forest bug: no `Get-AD*`/`Set-AD*` call anywhere in the module passed `-Server`, so every query relied on the AD module's default serverless bind, which resolves against the invoking account's own logon domain rather than necessarily the target domain - reported as `Test-ADMachineAccountQuota` silently checking Domain A instead of Domain B when run by a Domain A account. Added a `-Server` parameter to `Start-ADSecurityAudit`, `Get-ADSnapshot`, and `Test-ADMachineAccountQuota`, backed by a shared `Set-/Clear-ADSecurityAuditTargetServer` helper (`Common.ps1`) that installs a `$PSDefaultParameterValues` override so the fix applies to every audit test's AD queries module-wide, not just the call sites touched directly.
 - **v1.20.5** - Closed another real documentation/code drift, found via the same header-vs-code audit as v1.20.4: `DomainHardeningAudits.ps1`'s header comment had claimed `A-NullSession`-comparable coverage since the file was written, but no logic anywhere in the module read `RestrictNullSessAccess`/`NullSessionPipes`/`NullSessionShares`. Added a fourth check to `Test-ADDomainHardeningFlags` that audits null-session (unauthenticated) access to named pipes/shares, reusing `LegacyAuthAudits.ps1`'s existing GPO-linked-policy-then-live-per-DC-registry-fallback resolver instead of duplicating it (the shared per-DC registry fallback helper was promoted from a private, nested function to `Common.ps1` so both modules can call the same implementation). Registry-value read only; no live SMB/null-session connection is attempted; live-only and skipped under `-Snapshot` like this file's existing anonymous-bind check.
 - **v1.20.4** - Closed a real documentation/code drift: `GpoSecretsAudits.ps1`'s header comment had claimed `A-AnonymousAuthorizedGPO`-comparable coverage since the file was written, but no logic anywhere in the module implemented it. Added a fourth check to `Test-ADGpoDeployedSecrets` that parses each GPO's `GptTmpl.inf` `[Privilege Rights]` section for `SeNetworkLogonRight`/`SeRemoteInteractiveLogonRight` grants to Everyone/ANONYMOUS LOGON/Authenticated Users (matched by SID), reported as its own always-Critical finding consistent with this module's broad-principal severity convention. Read-only; no schema changes.
 - **v1.20.3** - Fixed a real, user-reported dashboard bug: the finding-detail modal rendered open and empty on every page load (and its close button appeared broken) because `.modal { display: grid; }` had the same CSS specificity as the browser's built-in `[hidden]` rule and was winning the cascade regardless of the `hidden` attribute - a pre-existing bug that predates v1.20.0 and went unnoticed since nothing in earlier testing loaded the page without deliberately opening the modal first. Added an explicit `.modal[hidden] { display: none; }` override. Every other `hidden`-toggled element in the dashboard was audited and does not share this problem.

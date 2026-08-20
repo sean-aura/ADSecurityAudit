@@ -159,6 +159,14 @@ function Get-ADSnapshot {
         Optional path. When supplied, the snapshot is also serialised to
         this path (ConvertTo-Json -Depth 12) for later offline re-analysis
         via Start-ADSecurityAudit -FromSnapshot.
+    .PARAMETER Server
+        Optional override for which domain/DC every query in this
+        collection pass targets - a domain FQDN (e.g. 'domainb.corp.com')
+        or a specific DC FQDN/hostname. Use this in a multi-domain forest
+        when the account running the collection is not from the domain you
+        intend to snapshot; without it, every Get-AD* call here performs a
+        "serverless" bind that resolves against the invoking account's own
+        logon domain rather than necessarily the target domain.
     .OUTPUTS
         [hashtable] with keys: CollectedDate, Domain, DomainControllers,
         Users, Computers, Groups, GPOs, ACLs, ADCS, DnsZones, Trusts,
@@ -171,10 +179,22 @@ function Get-ADSnapshot {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [string]$ToJson
+        [string]$ToJson,
+
+        [Parameter()]
+        [string]$Server
     )
 
     Write-Verbose "Starting collect-once AD snapshot..."
+
+    # See Set-ADSecurityAuditTargetServer in Common.ps1: forces every
+    # Get-AD*/Set-AD* call in this collection pass to explicitly target
+    # $Server instead of the default serverless bind. Cleared before every
+    # exit point below (including the early return just after this).
+    if ($Server) {
+        Write-Verbose "Get-ADSnapshot: -Server '$Server' supplied; all AD queries in this collection pass will explicitly target it."
+        Set-ADSecurityAuditTargetServer -Server $Server
+    }
 
     # Auto-create the -ToJson output directory up front, the same way
     # Start-ADSecurityAudit now handles -ExportPath, so a bad/missing path
@@ -189,6 +209,7 @@ function Get-ADSnapshot {
             }
             catch {
                 Write-Error "Get-ADSnapshot: could not create -ToJson output directory '$toJsonDir': $_"
+                if ($Server) { Clear-ADSecurityAuditTargetServer }
                 return
             }
         }
@@ -1035,6 +1056,7 @@ function Get-ADSnapshot {
     }
 
     Write-Verbose "Get-ADSnapshot: collection pass complete."
+    if ($Server) { Clear-ADSecurityAuditTargetServer }
     return $snapshot
 }
 

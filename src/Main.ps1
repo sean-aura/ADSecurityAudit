@@ -21,6 +21,21 @@ function Start-ADSecurityAudit {
         [Parameter()]
         [switch]$IncludePrivilegedUsersReport,
 
+        # Multi-domain-forest override: forces every AD query in this run
+        # (domain lookup, DC discovery, and every audit test) to explicitly
+        # target this domain/DC rather than letting the AD module's default
+        # "serverless" bind resolve against the invoking account's own
+        # logon domain. Accepts a domain FQDN (e.g. 'domainb.corp.com') or
+        # a specific DC FQDN/hostname (e.g. 'dc01.domainb.corp.com'). Use
+        # this when the account running the audit is from a different
+        # domain than the one you intend to check - without it, in a
+        # multi-domain forest, tests like MachineAccountQuota can silently
+        # read the wrong domain's data. Ignored (with a warning) if
+        # combined with -FromSnapshot, since that mode performs no live AD
+        # access at all.
+        [Parameter()]
+        [string]$Server,
+
         # Added in v1.3.0 (collect-once snapshot contract, see
         # docs/features/02-domain-snapshot.md). Path to a JSON snapshot
         # produced by Get-ADSnapshot -ToJson. When supplied, the audit is
@@ -81,6 +96,9 @@ function Start-ADSecurityAudit {
         Write-Host "Start Time: $startTime`n" -ForegroundColor Gray
         
         if ($FromSnapshot) {
+            if ($Server) {
+                Write-Warning "-Server '$Server' was supplied together with -FromSnapshot; ignoring it, since offline/-FromSnapshot mode performs no live AD access."
+            }
             # --- Offline re-analysis path (v1.3.0): no live AD access ---
             Write-Host "Offline mode: re-analysing snapshot '$FromSnapshot' (no live AD access)`n" -ForegroundColor Cyan
 
@@ -152,23 +170,51 @@ function Start-ADSecurityAudit {
         }
         
         Import-Module ActiveDirectory -ErrorAction Stop
-        
+
+        # Multi-domain-forest override (see -Server param comment above):
+        # installs a -Server default for every Get-AD*/Set-AD* call made
+        # anywhere in this run - not just the two calls immediately below,
+        # but every audit test's own Get-ADDomain/Get-ADObject/Get-ADUser/
+        # Get-ADComputer/etc. calls too - so the whole run targets the
+        # domain the operator specified instead of whatever domain the
+        # invoking account's default AD binding would otherwise resolve to.
+        # Always cleared in the outer finally block below, so it never
+        # leaks into a later Start-ADSecurityAudit call in the same session.
+        if ($Server) {
+            Write-Host "Server override: forcing all AD queries to target '$Server'`n" -ForegroundColor Cyan
+            Set-ADSecurityAuditTargetServer -Server $Server
+        }
+
         Write-Verbose "Testing Domain Controller connectivity..."
         try {
-            $domain = Get-ADDomain -ErrorAction Stop
+            $domainParams = @{ ErrorAction = 'Stop' }
+            if ($Server) { $domainParams['Server'] = $Server }
+            $domain = Get-ADDomain @domainParams
 
             # Attempt to discover multiple DCs for failover
             $domainControllers = @()
             try {
-                $domainControllers = Get-ADDomainController -Filter * -ErrorAction SilentlyContinue |
-                    Select-Object -First 3
+                $dcFilterParams = @{ Filter = '*'; ErrorAction = 'SilentlyContinue' }
+                if ($Server) { $dcFilterParams['Server'] = $Server }
+                $domainControllers = Get-ADDomainController @dcFilterParams | Select-Object -First 3
             }
             catch {
                 Write-Verbose "Could not enumerate all DCs, falling back to discovery: $_"
             }
 
             if (-not $domainControllers -or $domainControllers.Count -eq 0) {
-                $domainControllers = @(Get-ADDomainController -Discover -ErrorAction Stop)
+                if ($Server) {
+                    # -Server was explicitly given: do NOT fall back to
+                    # -Discover here. DC Locator's -Discover uses subnet/
+                    # site mapping (or the caller's own logon domain) to
+                    # pick a DC, which is the exact "resolves to the wrong
+                    # domain" behavior -Server exists to bypass. Resolve
+                    # directly against the requested target instead.
+                    $domainControllers = @(Get-ADDomainController -Identity $Server -Server $Server -ErrorAction Stop)
+                }
+                else {
+                    $domainControllers = @(Get-ADDomainController -Discover -ErrorAction Stop)
+                }
             }
 
             # Find a reachable DC
@@ -217,7 +263,7 @@ function Start-ADSecurityAudit {
             'AuditPolicyConfiguration' = { Test-AuditPolicyConfiguration }
             'ConstrainedDelegation' = { Test-ConstrainedDelegation }
             'DomainAdminEquivalence' = { Test-ADDomainAdminEquivalence }
-            'MachineAccountQuota' = { Test-ADMachineAccountQuota }
+            'MachineAccountQuota' = { Test-ADMachineAccountQuota -Server $Server }
             'DomainHardeningFlags' = { Test-ADDomainHardeningFlags }
             'CoercionAndRelayExposure' = { Test-ADCoercionAndRelayExposure }
             'DnsSecurity' = { Test-ADDnsSecurity }
@@ -456,6 +502,9 @@ function Start-ADSecurityAudit {
         return $allFindings
     }
     finally {
+        if ($Server) {
+            Clear-ADSecurityAuditTargetServer
+        }
         Stop-Transcript
     }
 }

@@ -5,6 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Fixed
+- **Multi-domain-forest server confusion**: no `Get-AD*`/`Set-AD*` call
+  anywhere in the module passed `-Server`, so every one of them relied on
+  the AD PowerShell module's default "serverless" bind - which resolves
+  against the invoking account's own logon domain rather than necessarily
+  the domain the operator intends to audit. In a multi-domain forest this
+  produced the reported symptom: an account from Domain A running the
+  audit against/on a Domain B machine would silently read Domain A's
+  domain object, DCs, users, etc. `Test-ADMachineAccountQuota` (the check
+  first noticed) was the most visible instance, but the same root cause
+  applied module-wide.
+### Added
+- **`-Server` parameter on `Start-ADSecurityAudit`**: forces the entire live
+  audit run - domain lookup, DC discovery, and every individual test - to
+  explicitly target a specified domain FQDN or DC hostname, instead of the
+  default serverless resolution. Ignored (with a warning) when combined
+  with `-FromSnapshot`, since offline mode performs no live AD access.
+- **`-Server` parameter on `Get-ADSnapshot`** for the same override when
+  collecting a snapshot standalone, outside `Start-ADSecurityAudit`.
+- **`-Server` parameter on `Test-ADMachineAccountQuota`** directly, for
+  standalone/unit-test use independent of `Start-ADSecurityAudit`.
+- **`Set-ADSecurityAuditTargetServer` / `Clear-ADSecurityAuditTargetServer`**
+  (`Common.ps1`): the shared mechanism behind the above. Installs (and
+  removes) a `$PSDefaultParameterValues` entry that auto-supplies `-Server`
+  on every `Get-AD*`/`Set-AD*`/`New-AD*`/`Remove-AD*` call for the rest of
+  the session, so the fix applies to every audit test's own AD queries -
+  not just the handful of call sites touched directly - without having to
+  edit each of the ~40 source files individually.
+
 ## [1.23.2]
 ### Fixed
 - **`Get-ADRetestComparison` (and `Get-ADRiskScore`, called from it) could

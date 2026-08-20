@@ -130,6 +130,74 @@ function Invoke-ADQueryWithRetry {
     return $null
 }
 
+# --- Multi-domain / multi-forest target override ---
+#
+# PROBLEM: none of the Get-AD*/Set-AD* calls anywhere in this module pass
+# -Server. Without it, the AD PowerShell module uses a "serverless" bind
+# that resolves against the invoking account's own logon domain (or
+# whatever DC AD's client-side locator happens to pick), NOT necessarily
+# the domain the operator actually intends to audit. In a multi-domain
+# forest this produces exactly the reported symptom: an account from
+# Domain A running the audit against/on a Domain B machine ends up reading
+# Domain A's domain object, DCs, users, etc. instead of Domain B's.
+#
+# FIX: rather than patch every Get-AD*/Set-AD* call site individually
+# (fragile - a single missed call silently reintroduces the bug),
+# Set-ADSecurityAuditTargetServer installs a $PSDefaultParameterValues
+# entry that auto-supplies -Server on every Get-AD*/Set-AD* cmdlet call for
+# the rest of the session, until Clear-ADSecurityAuditTargetServer removes
+# it. Start-ADSecurityAudit calls these around the live audit run when its
+# own -Server parameter is supplied; see src/Main.ps1.
+#
+# $PSDefaultParameterValues is looked up by the engine at parameter-binding
+# time in whatever scope is active when the cmdlet is invoked, so setting
+# it at Global scope here means it applies inside every dot-sourced audit
+# function in src/*.ps1, not just code in this file.
+function Set-ADSecurityAuditTargetServer {
+    <#
+    .SYNOPSIS
+        Forces every Get-AD*/Set-AD* cmdlet call for the rest of the
+        session to explicitly target one domain/DC, instead of the default
+        serverless bind that can silently resolve to the wrong domain in a
+        multi-domain forest.
+    .PARAMETER Server
+        A domain FQDN (e.g. 'domainb.corp.com') or a specific DC FQDN/
+        hostname (e.g. 'dc01.domainb.corp.com'). Either is accepted by
+        -Server on the AD cmdlets.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Server
+    )
+    if (-not $Global:PSDefaultParameterValues) {
+        $Global:PSDefaultParameterValues = @{}
+    }
+    $Global:PSDefaultParameterValues['Get-AD*:Server'] = $Server
+    $Global:PSDefaultParameterValues['Set-AD*:Server'] = $Server
+    $Global:PSDefaultParameterValues['New-AD*:Server'] = $Server
+    $Global:PSDefaultParameterValues['Remove-AD*:Server'] = $Server
+    Write-Verbose "Set-ADSecurityAuditTargetServer: Get-AD*/Set-AD*/New-AD*/Remove-AD* cmdlets will now explicitly target '$Server' for the rest of this session."
+}
+
+function Clear-ADSecurityAuditTargetServer {
+    <#
+    .SYNOPSIS
+        Removes the -Server override installed by
+        Set-ADSecurityAuditTargetServer. Safe to call even if it was never
+        set (no-op).
+    #>
+    [CmdletBinding()]
+    param()
+    if ($Global:PSDefaultParameterValues) {
+        $Global:PSDefaultParameterValues.Remove('Get-AD*:Server')
+        $Global:PSDefaultParameterValues.Remove('Set-AD*:Server')
+        $Global:PSDefaultParameterValues.Remove('New-AD*:Server')
+        $Global:PSDefaultParameterValues.Remove('Remove-AD*:Server')
+    }
+}
+
 # Live per-DC registry fallback helper, used by any check that follows the
 # "GPO-linked policy first, then a direct per-DC registry read if no linked
 # GPO defines the value" pattern (SMBv1/signing/LmCompatibilityLevel/LLMNR/
