@@ -6,6 +6,39 @@ The repository also includes a responsive web dashboard (in `ui/`) that visualiz
 
 > **Independence note:** ADSecurityAudit is an independent, MIT-licensed project. Throughout this README, the CHANGELOG, and the source code, you'll see notes like "PingCastle-comparable check" or "similar in spirit to PingCastle's approach" — these describe feature comparisons only (which known AD security concept a given check maps to), not affiliation, endorsement, or shared code. ADSecurityAudit is not produced by, affiliated with, or endorsed by Netwrix/PingCastle.
 
+## Table of Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Basic Audit](#basic-audit)
+  - [Advanced Options](#advanced-options)
+  - [Targeting a Specific Domain or DC](#targeting-a-specific-domain-or-dc-multi-domain-forests)
+  - [Offline / Snapshot-Based Audit](#offline--snapshot-based-audit)
+  - [Output Formats](#output-formats)
+- [Scoring & Maturity](#scoring--maturity)
+- [Collect-Once Snapshot & Offline Analysis](#collect-once-snapshot--offline-analysis)
+- [Multi-Domain / Forest `-Server` Targeting - Reference](#multi-domain--forest--server-targeting---reference)
+- [Multi-Domain / Forest Consolidation](#multi-domain--forest-consolidation)
+- [Retest / Maturity-Delta Comparison](#retest--maturity-delta-comparison)
+- [Recreating Reports from JSON (No Re-Scan)](#recreating-reports-from-json-no-re-scan)
+- [Multi-run Maturity Trend History](#multi-run-maturity-trend-history)
+- [Exception / Remediation-State Tracking](#exception--remediation-state-tracking)
+- [Security Findings Categories](#security-findings-categories)
+- [Report Interpretation](#report-interpretation)
+- [Common Security Issues Detected](#common-security-issues-detected)
+- [Troubleshooting](#troubleshooting)
+- [Security Best Practices](#security-best-practices)
+- [Automation & Integration](#automation--integration)
+- [Visual Dashboard for JSON Outputs](#visual-dashboard-for-json-outputs)
+- [Contributing](#contributing)
+- [License](#license)
+- [Disclaimer](#disclaimer)
+- [Version History](#version-history)
+- [Support](#support)
+- [Acknowledgments](#acknowledgments)
+
 ## Features
 
 ### Core Auditing Capabilities
@@ -106,7 +139,6 @@ Copy-Item -Path ".\src" -Destination "$modulePath\src" -Recurse -Force
 (Get-Module ADSecurityAudit).Version
 ```
 
-
 ## Usage
 
 ### Basic Audit
@@ -123,58 +155,19 @@ Customize the audit with additional parameters:
 Start-ADSecurityAudit -ExportPath "C:\ADReports" -Verbose
 ```
 
-### Multi-Domain Forest: Overriding the Target Domain/DC
+### Targeting a Specific Domain or DC (Multi-Domain Forests)
 
-In a multi-domain forest, every `Get-AD*`/`Set-AD*` call the AD PowerShell module makes without an explicit `-Server` performs a "serverless" bind - it resolves against the account running the audit's own logon domain (or whatever DC AD's client-side locator picks), not necessarily the domain you intend to audit. If you're running the audit as an account from Domain A against a machine that's actually in Domain B, this can silently produce results scoped to Domain A instead - most visibly in `Test-ADMachineAccountQuota`, since `ms-DS-MachineAccountQuota` lives on the domain object itself.
-
-**Default behavior (no `-Server` needed for the common case):** when `-Server` is omitted, it now defaults automatically to the current user's own domain (`$env:USERDNSDOMAIN` - the DNS domain of the account actually running the session, not the machine's joined domain), rather than leaving that ambiguous. For most operators auditing their own domain, this "just works" with no parameter needed at all.
-
-**Whatever that resolves to (explicit `-Server`, or the `$env:USERDNSDOMAIN` default) is then resolved one further step: to that domain's PDC Emulator specifically**, not left as a bare domain name or handed to the AD client's own DC-locator to pick "a" DC arbitrarily. A domain FQDN was never a valid identity for the small number of live network probes that need one concrete DC to connect to directly, and letting DC-locator resolve a domain name to a DC depends on the *auditing machine's* own site/subnet mapping - exactly the kind of non-deterministic, potentially-wrong-domain-in-a-forest resolution `-Server` exists to bypass. Resolving to the PDC Emulator once, up front, means every `Get-AD*` call for the rest of the run targets the exact same, well-defined DC - you'll see this in `-Verbose` output as `resolved '<what you asked for>' to its PDC Emulator '<FQDN>'`.
-
-Pass `-Server` explicitly only when you need to target a domain **other** than your own account's - e.g. auditing Domain B while logged in as (or running under) a Domain A account:
+By default, an audit targets your own account's domain (`$env:USERDNSDOMAIN`) - no extra parameter needed. Pass `-Server` only when auditing a **different** domain in the same forest, or when only one specific DC is reachable for the engagement:
 
 ```powershell
 Start-ADSecurityAudit -Server domainb.corp.com -ExportPath "C:\ADReports"
-# or target one specific DC directly - still resolved to ITS domain's PDC Emulator, not necessarily this exact DC:
+# or target one specific DC directly - honored exactly as given:
 Start-ADSecurityAudit -Server dc01.domainb.corp.com -ExportPath "C:\ADReports"
 ```
 
-The same override (and the same user-domain default and PDC Emulator resolution) is available standalone, independent of a full audit run - every individual audit function accepts its own `-Server` now, not just `Test-ADMachineAccountQuota`/`Get-ADSnapshot`:
+Every standalone audit function (`Get-ADSnapshot`, `Test-ADMachineAccountQuota`, `Test-ADUserSecurity`, and others) accepts the same `-Server` parameter independently of a full `Start-ADSecurityAudit` run.
 
-```powershell
-Test-ADMachineAccountQuota -Server domainb.corp.com
-Get-ADSnapshot -Server domainb.corp.com -ToJson "C:\Snapshots\domainb.json"
-Test-ADUserSecurity -Server domainb.corp.com
-Get-ADPrivilegedUsers -Server domainb.corp.com
-Test-ADPrivilegedGroups -Server domainb.corp.com
-Test-ADDomainAdminEquivalence -Server domainb.corp.com
-Test-ADRodcSecurity -Server domainb.corp.com
-```
-
-Calling one of these standalone installs the override for the duration of that one call only, and only if a `Start-ADSecurityAudit -Server` run isn't already active around it (so nesting is unaffected either way). The remaining audit functions don't have their own `-Server` parameter yet - calling those standalone still depends on an override already being active from something else in the same session.
-
-`-Server` (and its user-domain default) is ignored (with a warning if passed explicitly) when combined with `-FromSnapshot`, since offline mode performs no live AD access at all - there's no domain to override.
-
-**Known limitation:** if you use `runas /netonly` (or an equivalent alternate-credential technique) to run under a *different* domain's credentials than the one you're locally logged into, `$env:USERDNSDOMAIN` still reflects your original interactive logon's domain, not the alternate credential's domain - pass `-Server` explicitly in that case.
-
-This override is applied consistently everywhere the module talks to AD: every `Get-AD*`/`Set-AD*` cmdlet call across every test module (via a shared `$PSDefaultParameterValues` mechanism, so no individual test had to be hand-edited), plus several classes of call that don't go through the normal AD-cmdlet path (or don't behave the way you'd expect even though they DO go through it) and would otherwise silently ignore `-Server` or silently query the wrong scope:
-- **The GroupPolicy module - a SEPARATE PowerShell module from ActiveDirectory - was not covered at all.** `Get-GPO`, `Get-GPInheritance`, `Get-GPPermission`, and `Get-GPRegistryValue` (used by `Test-ADGroupPolicies` directly, and by `Test-ADLegacyAuthSurface`/`Test-ADDomainHardeningFlags`/`Test-ADKerberosHardening` via shared GPO-reading helpers, plus `Get-ADSnapshot`'s GPO collection) start with `Get-GP`, not `Get-AD` - the `Get-AD*:Server` wildcard never matched them, so every GPO-related check was completely unscoped by `-Server`, independent of whether the override was correctly working for every AD cmdlet in the same run. If GPO-derived findings (linked-GPO permission checks, SMB signing/LDAP signing/LLMNR/NTLM policy reads via GPO, etc.) looked like they came from the wrong domain while everything else looked correct, this was almost certainly why. Fixed by installing the equivalent `Get-GP*`/`Set-GP*`/`New-GP*`/`Remove-GP*` wildcards alongside the AD ones - no call-site changes needed, since these cmdlets already accept `-Server` and derive the target domain from it the same way the AD cmdlets do.
-- **Certificate template (ESC4) and CA object (ESC7) ACL reads used `Get-Acl -Path "AD:$dn"` - which has no `-Server` parameter at all.** `Get-Acl` is a generic PowerShell provider cmdlet, not a `Get-AD*` cmdlet; reading via the `AD:` PSDrive path uses that drive's own ambient default domain/DC, bypassing the `-Server` override entirely regardless of every other fix above. `Test-AdminSDHolder`/`Test-ADDangerousPermissions`/`Get-ADControlPathGraph` were already avoiding this correctly (`Get-ADObject -Properties nTSecurityDescriptor` - a real, `-Server`-aware cmdlet returning the identical ACL object shape); the Certificate Services checks and `Get-ADSnapshot`'s ADCS collection now do the same.
-- **SYSVOL UNC paths were built from the bare domain DNS name** (`Test-ADGroupPolicies`'s permission check, `Test-ADGpoDeployedSecrets`'s policy root) - `\\domain.tld\SYSVOL\...` resolves via DFS Namespace referral, picking a DC based on the *calling machine's* own site/subnet proximity, the same ambiguity DC-locator has for AD queries. `Get-Acl` on a UNC path has no `-Server` to fix this with; both now put the resolved `-Server` override directly in the path instead (falling back to the domain name, as before, when no override is set).
-- A handful of files read `RootDSE` via a raw ADSI bind (`[ADSI]"LDAP://RootDSE"`) rather than `Get-ADRootDSE`; ADSI binds are COM object construction, not cmdlet calls, so they're invisible to the override mechanism above and would keep resolving to the calling machine's own domain regardless. These now go through `Get-ADRootDSE` instead.
-- A few live-network-probe checks (the anonymous-bind test, DNS-cmdlet target resolution) called `Get-ADDomainController -Discover` directly, which is a different parameter set than `-Server` and would otherwise throw and silently skip the check under an active override. These now resolve directly against the override when one is set.
-- Those same live-network-probe checks' shared DC-resolution helper (`Get-ADTargetDomainController`) previously passed the active `-Server` override straight to `Get-ADDomainController -Identity`, which requires an actual DC identity (GUID/Name/IPv4Address/DNS host name of the DC itself) - not a domain FQDN, which is this module's own documented, encouraged form of `-Server`. This threw `Cannot find directory server with identity: <domain FQDN>` and silently skipped the probe every time `-Server` was given as a domain name rather than a specific DC. Now resolves via the same domain-scoped DC enumeration described below.
-- `Test-ADPrivilegedGroups`'s Enterprise Admins/Schema Admins checks: these two groups exist ONLY in the forest root domain, so a lookup scoped to a child domain via `-Server` always found nothing and silently skipped the group with no finding and no indication why. This now resolves the forest root (`Get-ADForest`) and re-queries there when the initial, target-domain-scoped lookup comes back empty.
-- **Every per-DC probe in this module enumerated Domain Controllers via a bare `Get-ADDomainController -Filter *` - the actual root cause of "wrong domain" reports in a multi-domain forest.** `-Filter` is a fundamentally different code path than `-Identity`/`-Discover`: it queries the forest-wide `CN=Sites,CN=Configuration,...` container, which is replicated to every DC in the forest - so `-Server` only controlled *which DC answered the query*, never the query's *scope*. This is completely independent of whether the `-Server` override itself was working (it was) - the query it fed into was never domain-scoped to begin with, so a multi-domain-forest run could silently enumerate, and then probe/report on, DCs from a domain other than the one `-Server` was explicitly set to. This affected the anonymous-bind, null-session, Kerberos hardening, legacy auth, audit policy, known-DC-vulnerability, stale-object-depth, RODC security, control-path-graph, and coercion/relay checks, the main run's own DC connectivity check, and `Get-ADSnapshot`'s DC inventory collection (meaning it was also baked into offline snapshots, not just live runs). All of these now go through a new `Get-ADSecurityAuditDomainController` helper, which filters the same enumeration down to DCs whose own `.Domain` property actually matches the resolved target domain.
-
-**If you've set `-Server` and are still seeing data that looks like it came from the wrong domain** (e.g. an account logged into/authenticated against one domain, on a machine joined to a different domain in the same forest, and the report reads like the machine's own domain rather than the one you targeted):
-
-1. **Update first.** If you were on a version before this fix, the `Get-ADDomainController -Filter *` forest-wide-enumeration bug above is the most likely cause, particularly if the wrong-domain data shows up specifically in DC-level findings (anonymous bind, null session, Kerberos/legacy-auth/audit-policy checks, RODC security) - and if it shows up specifically in **GPO-derived findings** (`Test-ADGroupPolicies`, or any GPO-based policy read inside `Test-ADLegacyAuthSurface`/`Test-ADDomainHardeningFlags`/`Test-ADKerberosHardening`), the GroupPolicy-module gap above is the likely cause instead - update and re-run before investigating further.
-2. **Confirm the override is actually taking effect.** Run with `-Verbose` and look for the console line `Server override: forcing all AD queries to target '<value>' (...)` near the start of the run. If the value shown isn't what you expected, the problem is in what was passed in, not in how it's applied downstream.
-3. **Pass a specific DC FQDN, not just the domain name**, e.g. `-Server dc01.domainb.corp.com` rather than `-Server domainb.corp.com`. A bare domain name still goes through DNS-based DC-locator SRV resolution, which depends on the *querying* machine's own DNS servers correctly resolving the target domain's zone - in a forest where that isn't fully configured (e.g. missing conditional forwarders between domains' DNS zones), locator resolution can silently fall back to a DC in the machine's own domain instead of erroring. Pinning to a specific DC FQDN removes that resolution step entirely.
-4. **Confirm `-Server` is passed on the SAME invocation that produced the report you're looking at**, not a separate call. The override is installed and cleared entirely inside a single `Start-ADSecurityAudit` (or standalone `Get-ADSnapshot`/`Test-ADMachineAccountQuota`) call - it does not persist across separate commands in the same session. Calling an individual `Test-AD*` function directly, on its own, has no `-Server` parameter at all (only `Test-ADMachineAccountQuota` and `Get-ADSnapshot` do) and will silently use the ambient/serverless bind if `Start-ADSecurityAudit` isn't the thing that ran it.
-5. **Check the "Cross-Domain Privileged Group Membership" finding** if the wrong-domain data specifically shows up as *group members* (privileged users/groups sections) rather than DCs. Nested/universal group membership in a forest can legitimately span domains - this finding surfaces exactly which domain(s) a privileged group's members actually belong to, which tells you whether what you're seeing is cross-domain membership being correctly reported (working as intended) versus something upstream querying the wrong domain (the `Server override:` line from step 2 not matching your target).
-6. If you used `runas /netonly` or an equivalent alternate-credential technique, see the Known Limitation note above - pass `-Server` explicitly rather than relying on the `$env:USERDNSDOMAIN` default in that scenario.
+**For defaults, PDC Emulator resolution, the full list of functions/internals this touches, known limitations (`runas /netonly`), and troubleshooting "wrong domain" data, see [Multi-Domain / Forest `-Server` Targeting - Reference](#multi-domain--forest--server-targeting---reference) below.**
 
 ### Offline / Snapshot-Based Audit
 Collect once, analyze later or elsewhere, with no live AD access at analysis time:
@@ -190,33 +183,6 @@ The script generates these report formats:
 - **CSV Export**: Detailed findings in spreadsheet format for analysis (now includes appended `MitreTechnique`, `AnssiControl`, and `Weight` columns)
 - **JSON Export**: Machine-readable findings (the new metadata fields serialize automatically)
 - **Score sidecar (JSON)**: `AD_Security_Score_<timestamp>.json` containing the global risk score, per-category sub-scores, maturity level, and MITRE roll-up
-
-### Recreating the main HTML report from an existing JSON export
-
-If you have an `AD_Security_Audit_<timestamp>.json` findings export - from a prior run, restored from backup, whatever - but the matching `.html` is missing or was never generated, `Export-ADSecurityReportHTMLFromJson` rebuilds the HTML report directly from that JSON, with **no live Active Directory access and no re-run of the audit**:
-
-```powershell
-Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00.json" `
-    -OutputPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00-recreated.html" `
-    -Domain "contoso.com"
-
-# Folder form also works - picks the newest AD_Security_Audit_*.json in it,
-# same resolution idiom as Get-ADRetestComparison's -BaselinePath/-RetestPath:
-Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports\recreated.html"
-```
-
-**This is a different feature from the Retest Comparison JSON-recreate above** - that one (`Get-ADRetestComparison -ToJson` → `Export-ADRetestComparisonHTML`) rebuilds the two-run *comparison* report. This one rebuilds the ordinary single-run audit report you'd otherwise only get by re-running `Start-ADSecurityAudit` (or by hand-loading the JSON and calling the module's own report renderer, which this function does for you).
-
-**Know the gaps before you rely on this:** `AD_Security_Audit_<timestamp>.json` only ever contains the flat findings array. Everything else the HTML report normally shows - `Domain`, `Duration`, `RunMode` (Live vs. Offline/Snapshot), `SnapshotCollectedDate`, `OfflineSkipNotes`, and the privileged-users section - is computed in-memory during a live run and was **never written to that JSON file**, so this function can't recover it:
-
-- **Domain** - not present in the finding schema itself; pass `-Domain` if you know it, otherwise the header shows an explicit placeholder rather than guessing.
-- **Duration** - defaults to 0 seconds unless you pass `-Duration`.
-- **RunMode / SnapshotCollectedDate** - default to `Live` / none; pass both if you know the original run was `-FromSnapshot` and want that reflected.
-- **Offline Mode Coverage Notes** - not recoverable at all; the recreated report will not show this section even if the original run had it.
-- **Privileged Users section** - not recoverable; that data was only ever written to a separate `AD_Privileged_Users_<timestamp>.csv`, not JSON, so it isn't wired into this function.
-- **Risk score / maturity / MITRE roll-up** - these ARE recovered, but always freshly **recomputed** from the findings via `Get-ADRiskScore` rather than read back from the `AD_Security_Score_<timestamp>.json` sidecar (same "never trust a stored sidecar score" rule `Get-ADRetestComparison` follows) - so a JSON export originally scored under an older module version is rescored under whichever version you run this with.
-
-If you still have the original `.html`, it already has all of the above baked in and this function has nothing to add - it exists specifically for the "I only kept the JSON" case.
 
 ## Scoring & Maturity
 
@@ -257,6 +223,55 @@ New audit modules going forward should accept an optional `[hashtable]$Snapshot`
 ### Visual dashboard
 
 Open `ui/index.html` in a browser and either upload your generated JSON report or click **Load sample report** to explore the UI. The dashboard highlights severity distributions, privileged account counts, and provides tap-to-expand detail views with remediation references for each finding.
+
+## Multi-Domain / Forest `-Server` Targeting - Reference
+
+Full detail behind the [Targeting a Specific Domain or DC](#targeting-a-specific-domain-or-dc-multi-domain-forests) summary in Usage: defaults, PDC Emulator resolution, every internal code path this touches, and known limitations. See [Troubleshooting](#troubleshooting) if data still looks like it's coming from the wrong domain after reading this.
+
+In a multi-domain forest, every `Get-AD*`/`Set-AD*` call the AD PowerShell module makes without an explicit `-Server` performs a "serverless" bind - it resolves against the account running the audit's own logon domain (or whatever DC AD's client-side locator picks), not necessarily the domain you intend to audit. If you're running the audit as an account from Domain A against a machine that's actually in Domain B, this can silently produce results scoped to Domain A instead - most visibly in `Test-ADMachineAccountQuota`, since `ms-DS-MachineAccountQuota` lives on the domain object itself.
+
+**Default behavior (no `-Server` needed for the common case):** when `-Server` is omitted, it now defaults automatically to the current user's own domain (`$env:USERDNSDOMAIN` - the DNS domain of the account actually running the session, not the machine's joined domain), rather than leaving that ambiguous. For most operators auditing their own domain, this "just works" with no parameter needed at all.
+
+**Whatever that resolves to (explicit `-Server`, or the `$env:USERDNSDOMAIN` default) is then resolved one further step: to that domain's PDC Emulator specifically**, not left as a bare domain name or handed to the AD client's own DC-locator to pick "a" DC arbitrarily. A domain FQDN was never a valid identity for the small number of live network probes that need one concrete DC to connect to directly, and letting DC-locator resolve a domain name to a DC depends on the *auditing machine's* own site/subnet mapping - exactly the kind of non-deterministic, potentially-wrong-domain-in-a-forest resolution `-Server` exists to bypass. Resolving to the PDC Emulator once, up front, means every `Get-AD*` call for the rest of the run targets the exact same, well-defined DC - you'll see this in `-Verbose` output as `resolved '<what you asked for>' to its PDC Emulator '<FQDN>'`.
+
+Pass `-Server` explicitly only when you need to target a domain **other** than your own account's - e.g. auditing Domain B while logged in as (or running under) a Domain A account:
+
+```powershell
+Start-ADSecurityAudit -Server domainb.corp.com -ExportPath "C:\ADReports"
+# or target one specific DC directly - honored exactly as given, not silently
+# promoted to the domain's PDC Emulator (see the note at the end of this section):
+Start-ADSecurityAudit -Server dc01.domainb.corp.com -ExportPath "C:\ADReports"
+```
+
+The same override (and the same user-domain default and PDC Emulator resolution) is available standalone, independent of a full audit run - every individual audit function accepts its own `-Server` now, not just `Test-ADMachineAccountQuota`/`Get-ADSnapshot`:
+
+```powershell
+Test-ADMachineAccountQuota -Server domainb.corp.com
+Get-ADSnapshot -Server domainb.corp.com -ToJson "C:\Snapshots\domainb.json"
+Test-ADUserSecurity -Server domainb.corp.com
+Get-ADPrivilegedUsers -Server domainb.corp.com
+Test-ADPrivilegedGroups -Server domainb.corp.com
+Test-ADDomainAdminEquivalence -Server domainb.corp.com
+Test-ADRodcSecurity -Server domainb.corp.com
+```
+
+Calling one of these standalone installs the override for the duration of that one call only, and only if a `Start-ADSecurityAudit -Server` run isn't already active around it (so nesting is unaffected either way). The remaining audit functions don't have their own `-Server` parameter yet - calling those standalone still depends on an override already being active from something else in the same session.
+
+`-Server` (and its user-domain default) is ignored (with a warning if passed explicitly) when combined with `-FromSnapshot`, since offline mode performs no live AD access at all - there's no domain to override.
+
+**Known limitation:** if you use `runas /netonly` (or an equivalent alternate-credential technique) to run under a *different* domain's credentials than the one you're locally logged into, `$env:USERDNSDOMAIN` still reflects your original interactive logon's domain, not the alternate credential's domain - pass `-Server` explicitly in that case.
+
+This override is applied consistently everywhere the module talks to AD: every `Get-AD*`/`Set-AD*` cmdlet call across every test module (via a shared `$PSDefaultParameterValues` mechanism, so no individual test had to be hand-edited), plus several classes of call that don't go through the normal AD-cmdlet path (or don't behave the way you'd expect even though they DO go through it) and would otherwise silently ignore `-Server` or silently query the wrong scope:
+- **The GroupPolicy module - a SEPARATE PowerShell module from ActiveDirectory - was not covered at all.** `Get-GPO`, `Get-GPInheritance`, `Get-GPPermission`, and `Get-GPRegistryValue` (used by `Test-ADGroupPolicies` directly, and by `Test-ADLegacyAuthSurface`/`Test-ADDomainHardeningFlags`/`Test-ADKerberosHardening` via shared GPO-reading helpers, plus `Get-ADSnapshot`'s GPO collection) start with `Get-GP`, not `Get-AD` - the `Get-AD*:Server` wildcard never matched them, so every GPO-related check was completely unscoped by `-Server`, independent of whether the override was correctly working for every AD cmdlet in the same run. If GPO-derived findings (linked-GPO permission checks, SMB signing/LDAP signing/LLMNR/NTLM policy reads via GPO, etc.) looked like they came from the wrong domain while everything else looked correct, this was almost certainly why. Fixed by installing the equivalent `Get-GP*`/`Set-GP*`/`New-GP*`/`Remove-GP*` wildcards alongside the AD ones - no call-site changes needed, since these cmdlets already accept `-Server` and derive the target domain from it the same way the AD cmdlets do.
+- **Certificate template (ESC4) and CA object (ESC7) ACL reads used `Get-Acl -Path "AD:$dn"` - which has no `-Server` parameter at all.** `Get-Acl` is a generic PowerShell provider cmdlet, not a `Get-AD*` cmdlet; reading via the `AD:` PSDrive path uses that drive's own ambient default domain/DC, bypassing the `-Server` override entirely regardless of every other fix above. `Test-AdminSDHolder`/`Test-ADDangerousPermissions`/`Get-ADControlPathGraph` were already avoiding this correctly (`Get-ADObject -Properties nTSecurityDescriptor` - a real, `-Server`-aware cmdlet returning the identical ACL object shape); the Certificate Services checks and `Get-ADSnapshot`'s ADCS collection now do the same.
+- **SYSVOL UNC paths were built from the bare domain DNS name** (`Test-ADGroupPolicies`'s permission check, `Test-ADGpoDeployedSecrets`'s policy root) - `\\domain.tld\SYSVOL\...` resolves via DFS Namespace referral, picking a DC based on the *calling machine's* own site/subnet proximity, the same ambiguity DC-locator has for AD queries. `Get-Acl` on a UNC path has no `-Server` to fix this with; both now put the resolved `-Server` override directly in the path instead (falling back to the domain name, as before, when no override is set).
+- A handful of files read `RootDSE` via a raw ADSI bind (`[ADSI]"LDAP://RootDSE"`) rather than `Get-ADRootDSE`; ADSI binds are COM object construction, not cmdlet calls, so they're invisible to the override mechanism above and would keep resolving to the calling machine's own domain regardless. These now go through `Get-ADRootDSE` instead.
+- A few live-network-probe checks (the anonymous-bind test, DNS-cmdlet target resolution) called `Get-ADDomainController -Discover` directly, which is a different parameter set than `-Server` and would otherwise throw and silently skip the check under an active override. These now resolve directly against the override when one is set.
+- Those same live-network-probe checks' shared DC-resolution helper (`Get-ADTargetDomainController`) previously passed the active `-Server` override straight to `Get-ADDomainController -Identity`, which requires an actual DC identity (GUID/Name/IPv4Address/DNS host name of the DC itself) - not a domain FQDN, which is this module's own documented, encouraged form of `-Server`. This threw `Cannot find directory server with identity: <domain FQDN>` and silently skipped the probe every time `-Server` was given as a domain name rather than a specific DC. Now resolves via the same domain-scoped DC enumeration described below.
+- `Test-ADPrivilegedGroups`'s Enterprise Admins/Schema Admins checks: these two groups exist ONLY in the forest root domain, so a lookup scoped to a child domain via `-Server` always found nothing and silently skipped the group with no finding and no indication why. This now resolves the forest root (`Get-ADForest`) and re-queries there when the initial, target-domain-scoped lookup comes back empty.
+- **Every per-DC probe in this module enumerated Domain Controllers via a bare `Get-ADDomainController -Filter *` - the actual root cause of "wrong domain" reports in a multi-domain forest.** `-Filter` is a fundamentally different code path than `-Identity`/`-Discover`: it queries the forest-wide `CN=Sites,CN=Configuration,...` container, which is replicated to every DC in the forest - so `-Server` only controlled *which DC answered the query*, never the query's *scope*. This is completely independent of whether the `-Server` override itself was working (it was) - the query it fed into was never domain-scoped to begin with, so a multi-domain-forest run could silently enumerate, and then probe/report on, DCs from a domain other than the one `-Server` was explicitly set to. This affected the anonymous-bind, null-session, Kerberos hardening, legacy auth, audit policy, known-DC-vulnerability, stale-object-depth, RODC security, control-path-graph, and coercion/relay checks, the main run's own DC connectivity check, and `Get-ADSnapshot`'s DC inventory collection (meaning it was also baked into offline snapshots, not just live runs). All of these now go through a new `Get-ADSecurityAuditDomainController` helper, which filters the same enumeration down to DCs whose own `.Domain` property actually matches the resolved target domain.
+
+> **Since corrected further:** the description above is of the state as of the release that introduced `-Server`/PDC Emulator resolution. Two follow-up fixes refined this further for the case where `-Server` names one **specific** DC rather than a domain: (1) that specific DC is now honored exactly as given, never silently substituted with the domain's PDC Emulator, and (2) every per-DC probe (`Get-ADSecurityAuditDomainController`) now scopes to **only** that named DC instead of still enumerating every DC in the domain. Both matter if the named DC is the only one reachable/in-scope for an engagement - see the CHANGELOG entries for v1.23.4 and v1.23.5.
 
 ## Multi-Domain / Forest Consolidation
 
@@ -315,9 +330,40 @@ Get-ADRetestComparison -BaselinePath "C:\Reports\Pre" -RetestPath "C:\Reports\Po
 
 `-BaselinePath`/`-RetestPath` each accept either an explicit `AD_Security_Audit_<timestamp>.json` file or a folder (the newest matching export in it is used, same resolution idiom as Forest Consolidation's `-ReportPath`). A sibling `AD_Security_Score_<timestamp>.json` is read for each side, when present, purely for the informational `ModuleVersion`/`GeneratedDate` shown in the report header - it is never used as the authoritative score.
 
-### Recreating the HTML report from a saved `-ToJson` file
+## Recreating Reports from JSON (No Re-Scan)
 
-*(This is for the retest-comparison report specifically. To recreate the ordinary single-run audit report from an `AD_Security_Audit_<timestamp>.json` findings export instead, see [Recreating the main HTML report from an existing JSON export](#recreating-the-main-html-report-from-an-existing-json-export) below - don't run a retest comparison just to regenerate that.)*
+Two commands rebuild an HTML report directly from a previously-saved JSON export, with **no live Active Directory access and no re-running the audit/comparison**. Useful when the `.html` is missing (or never generated) but the `.json` survived.
+
+### Recreating the Main Audit Report
+
+If you have an `AD_Security_Audit_<timestamp>.json` findings export - from a prior run, restored from backup, whatever - but the matching `.html` is missing or was never generated, `Export-ADSecurityReportHTMLFromJson` rebuilds the HTML report directly from that JSON, with **no live Active Directory access and no re-run of the audit**:
+
+```powershell
+Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00.json" `
+    -OutputPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00-recreated.html" `
+    -Domain "contoso.com"
+
+# Folder form also works - picks the newest AD_Security_Audit_*.json in it,
+# same resolution idiom as Get-ADRetestComparison's -BaselinePath/-RetestPath:
+Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports\recreated.html"
+```
+
+**This is a different feature from the Retest Comparison JSON-recreate above** - that one (`Get-ADRetestComparison -ToJson` → `Export-ADRetestComparisonHTML`) rebuilds the two-run *comparison* report. This one rebuilds the ordinary single-run audit report you'd otherwise only get by re-running `Start-ADSecurityAudit` (or by hand-loading the JSON and calling the module's own report renderer, which this function does for you).
+
+**Know the gaps before you rely on this:** `AD_Security_Audit_<timestamp>.json` only ever contains the flat findings array. Everything else the HTML report normally shows - `Domain`, `Duration`, `RunMode` (Live vs. Offline/Snapshot), `SnapshotCollectedDate`, `OfflineSkipNotes`, and the privileged-users section - is computed in-memory during a live run and was **never written to that JSON file**, so this function can't recover it:
+
+- **Domain** - not present in the finding schema itself; pass `-Domain` if you know it, otherwise the header shows an explicit placeholder rather than guessing.
+- **Duration** - defaults to 0 seconds unless you pass `-Duration`.
+- **RunMode / SnapshotCollectedDate** - default to `Live` / none; pass both if you know the original run was `-FromSnapshot` and want that reflected.
+- **Offline Mode Coverage Notes** - not recoverable at all; the recreated report will not show this section even if the original run had it.
+- **Privileged Users section** - not recoverable; that data was only ever written to a separate `AD_Privileged_Users_<timestamp>.csv`, not JSON, so it isn't wired into this function.
+- **Risk score / maturity / MITRE roll-up** - these ARE recovered, but always freshly **recomputed** from the findings via `Get-ADRiskScore` rather than read back from the `AD_Security_Score_<timestamp>.json` sidecar (same "never trust a stored sidecar score" rule `Get-ADRetestComparison` follows) - so a JSON export originally scored under an older module version is rescored under whichever version you run this with.
+
+If you still have the original `.html`, it already has all of the above baked in and this function has nothing to add - it exists specifically for the "I only kept the JSON" case.
+
+### Recreating the Retest Comparison Report
+
+*(This is for the retest-comparison report specifically. To recreate the ordinary single-run audit report from an `AD_Security_Audit_<timestamp>.json` findings export instead, see [Recreating the Main Audit Report](#recreating-the-main-audit-report) above - don't run a retest comparison just to regenerate that.)*
 
 If you already ran `Get-ADRetestComparison -ToJson ...` (or just still have that file from a previous run) and want the HTML report without re-reading the two original findings exports, load the JSON back in and pipe it straight into `Export-ADRetestComparisonHTML` - no need to re-run the comparison itself:
 
@@ -571,6 +617,17 @@ Each finding includes:
 - Insufficient logging for privilege escalation detection
 
 ## Troubleshooting
+
+### Multi-Domain Data Looks Wrong
+
+**If you've set `-Server` and are still seeing data that looks like it came from the wrong domain** (e.g. an account logged into/authenticated against one domain, on a machine joined to a different domain in the same forest, and the report reads like the machine's own domain rather than the one you targeted):
+
+1. **Update first.** If you were on a version before this fix, the `Get-ADDomainController -Filter *` forest-wide-enumeration bug above is the most likely cause, particularly if the wrong-domain data shows up specifically in DC-level findings (anonymous bind, null session, Kerberos/legacy-auth/audit-policy checks, RODC security) - and if it shows up specifically in **GPO-derived findings** (`Test-ADGroupPolicies`, or any GPO-based policy read inside `Test-ADLegacyAuthSurface`/`Test-ADDomainHardeningFlags`/`Test-ADKerberosHardening`), the GroupPolicy-module gap above is the likely cause instead - update and re-run before investigating further.
+2. **Confirm the override is actually taking effect.** Run with `-Verbose` and look for the console line `Server override: forcing all AD queries to target '<value>' (...)` near the start of the run. If the value shown isn't what you expected, the problem is in what was passed in, not in how it's applied downstream.
+3. **Pass a specific DC FQDN, not just the domain name**, e.g. `-Server dc01.domainb.corp.com` rather than `-Server domainb.corp.com`. A bare domain name still goes through DNS-based DC-locator SRV resolution, which depends on the *querying* machine's own DNS servers correctly resolving the target domain's zone - in a forest where that isn't fully configured (e.g. missing conditional forwarders between domains' DNS zones), locator resolution can silently fall back to a DC in the machine's own domain instead of erroring. Pinning to a specific DC FQDN removes that resolution step entirely.
+4. **Confirm `-Server` is passed on the SAME invocation that produced the report you're looking at**, not a separate call. The override is installed and cleared entirely inside a single `Start-ADSecurityAudit` (or standalone `Get-ADSnapshot`/`Test-ADMachineAccountQuota`) call - it does not persist across separate commands in the same session. Calling an individual `Test-AD*` function directly, on its own, has no `-Server` parameter at all (only `Test-ADMachineAccountQuota` and `Get-ADSnapshot` do) and will silently use the ambient/serverless bind if `Start-ADSecurityAudit` isn't the thing that ran it.
+5. **Check the "Cross-Domain Privileged Group Membership" finding** if the wrong-domain data specifically shows up as *group members* (privileged users/groups sections) rather than DCs. Nested/universal group membership in a forest can legitimately span domains - this finding surfaces exactly which domain(s) a privileged group's members actually belong to, which tells you whether what you're seeing is cross-domain membership being correctly reported (working as intended) versus something upstream querying the wrong domain (the `Server override:` line from step 2 not matching your target).
+6. If you used `runas /netonly` or an equivalent alternate-credential technique, see the Known Limitation note above - pass `-Server` explicitly rather than relying on the `$env:USERDNSDOMAIN` default in that scenario.
 
 ### Common Issues
 
