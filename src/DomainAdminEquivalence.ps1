@@ -22,9 +22,38 @@ function Test-ADDomainAdminEquivalence {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        # Resolve-ADSecurityAuditTargetServer, not the raw -Server value:
+        # resolves to the domain's PDC Emulator specifically, so this
+        # standalone call targets the exact same single, deterministic DC
+        # Start-ADSecurityAudit itself would use for this domain, not an
+        # arbitrary DC-locator pick.
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+
+    # Resolved once, explicitly passed to every live AD call below - not
+    # relying on the $PSDefaultParameterValues injection alone. $null when
+    # no override is active, which Get-AD* cmdlets treat identically to
+    # -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
+
+    try {
     Write-Verbose "Starting Admin Equivalence Audit"
     $findings = @()
 
@@ -415,11 +444,11 @@ Review and remove the excessive permissions listed in the evidence:
     }
 
     try {
-        $domain = Get-ADDomain
+        $domain = if ($__adServer) { Get-ADDomain -Server $__adServer } else { Get-ADDomain }
         $domainDN = $domain.DistinguishedName
         $domainSID = $domain.DomainSID.Value
         $netBIOSName = $domain.NetBIOSName
-        $configContext = (Get-ADRootDSE).ConfigurationNamingContext
+        $configContext = (Get-ADRootDSE -Server $__adServer).ConfigurationNamingContext
         
         # Explicitly trusted principals that normally require broad control
         $legitimatePrincipals = @(
@@ -475,7 +504,12 @@ Review and remove the excessive permissions listed in the evidence:
         Write-Verbose "Enumerating Domain Controllers..."
         $dcComputers = $null
         try {
-            $dcComputers = Get-ADComputer -Filter "primaryGroupID -eq 516" -Properties nTSecurityDescriptor, OperatingSystem -ErrorAction Stop
+            $dcComputers = if ($__adServer) {
+                Get-ADComputer -Filter "primaryGroupID -eq 516" -Server $__adServer -Properties nTSecurityDescriptor, OperatingSystem -ErrorAction Stop
+            }
+            else {
+                Get-ADComputer -Filter "primaryGroupID -eq 516" -Properties nTSecurityDescriptor, OperatingSystem -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to enumerate Domain Controllers: $_"
@@ -526,7 +560,12 @@ Review and remove the excessive permissions listed in the evidence:
         foreach ($groupName in $sensitiveGroupNames) {
             $group = $null
             try {
-                $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                $group = if ($__adServer) {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get group '$groupName': $_"
@@ -535,7 +574,12 @@ Review and remove the excessive permissions listed in the evidence:
 
             $members = $null
             try {
-                $members = Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop | Where-Object { $_.objectClass -eq 'user' }
+                $members = if ($__adServer) {
+                    Get-ADGroupMember -Identity $group -Recursive -Server $__adServer -ErrorAction Stop | Where-Object { $_.objectClass -eq 'user' }
+                }
+                else {
+                    Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop | Where-Object { $_.objectClass -eq 'user' }
+                }
             }
             catch {
                 Write-Verbose "Failed to get members of group '$groupName': $_"
@@ -555,7 +599,12 @@ Review and remove the excessive permissions listed in the evidence:
         foreach ($groupName in $sensitiveGroupNames) {
             $group = $null
             try {
-                $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                $group = if ($__adServer) {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get protected group '$groupName': $_"
@@ -563,7 +612,12 @@ Review and remove the excessive permissions listed in the evidence:
             if ($group) {
                 $members = $null
                 try {
-                    $members = Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+                    $members = if ($__adServer) {
+                        Get-ADGroupMember -Identity $group -Recursive -Server $__adServer -ErrorAction Stop
+                    }
+                    else {
+                        Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+                    }
                 }
                 catch {
                     Write-Verbose "Failed to get protected group members for '$groupName': $_"
@@ -577,7 +631,12 @@ Review and remove the excessive permissions listed in the evidence:
         # Find users with adminCount=1
         $adminCountUsers = $null
         try {
-            $adminCountUsers = Get-ADUser -LDAPFilter "(adminCount=1)" -Properties adminCount, nTSecurityDescriptor -ErrorAction Stop
+            $adminCountUsers = if ($__adServer) {
+                Get-ADUser -LDAPFilter "(adminCount=1)" -Server $__adServer -Properties adminCount, nTSecurityDescriptor -ErrorAction Stop
+            }
+            else {
+                Get-ADUser -LDAPFilter "(adminCount=1)" -Properties adminCount, nTSecurityDescriptor -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to enumerate adminCount users: $_"
@@ -606,7 +665,12 @@ Review and remove the excessive permissions listed in the evidence:
 
         $shadowCreds = $null
         try {
-            $shadowCreds = Get-ADObject -LDAPFilter "(msDS-KeyCredentialLink=*)" -Properties msDS-KeyCredentialLink, samAccountName, objectClass -ErrorAction Stop
+            $shadowCreds = if ($__adServer) {
+                Get-ADObject -LDAPFilter "(msDS-KeyCredentialLink=*)" -Server $__adServer -Properties msDS-KeyCredentialLink, samAccountName, objectClass -ErrorAction Stop
+            }
+            else {
+                Get-ADObject -LDAPFilter "(msDS-KeyCredentialLink=*)" -Properties msDS-KeyCredentialLink, samAccountName, objectClass -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to scan for Shadow Credentials: $_"
@@ -634,7 +698,12 @@ Review and remove the excessive permissions listed in the evidence:
 
         $criticalComputers = $null
         try {
-            $criticalComputers = Get-ADComputer -Filter * -Properties nTSecurityDescriptor, OperatingSystem -ResultPageSize 500 -ErrorAction Stop
+            $criticalComputers = if ($__adServer) {
+                Get-ADComputer -Filter * -Server $__adServer -Properties nTSecurityDescriptor, OperatingSystem -ResultPageSize 500 -ErrorAction Stop
+            }
+            else {
+                Get-ADComputer -Filter * -Properties nTSecurityDescriptor, OperatingSystem -ResultPageSize 500 -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to enumerate computers for Shadow Credentials check: $_"
@@ -669,7 +738,12 @@ Review and remove the excessive permissions listed in the evidence:
 
             $user = $null
             try {
-                $user = Get-ADUser -Identity $dn -Properties nTSecurityDescriptor -ErrorAction Stop
+                $user = if ($__adServer) {
+                    Get-ADUser -Identity $dn -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
+                else {
+                    Get-ADUser -Identity $dn -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get user '$sam' for Shadow Credentials check: $_"
@@ -703,7 +777,12 @@ Review and remove the excessive permissions listed in the evidence:
 
             $user = $null
             try {
-                $user = Get-ADUser -Identity $dn -Properties nTSecurityDescriptor -ErrorAction Stop
+                $user = if ($__adServer) {
+                    Get-ADUser -Identity $dn -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
+                else {
+                    Get-ADUser -Identity $dn -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get user '$sam' for WriteSPN check: $_"
@@ -733,7 +812,12 @@ Review and remove the excessive permissions listed in the evidence:
 
         $sidHistoryUsers = $null
         try {
-            $sidHistoryUsers = Get-ADUser -LDAPFilter "(sIDHistory=*)" -Properties sIDHistory -ErrorAction Stop
+            $sidHistoryUsers = if ($__adServer) {
+                Get-ADUser -LDAPFilter "(sIDHistory=*)" -Server $__adServer -Properties sIDHistory -ErrorAction Stop
+            }
+            else {
+                Get-ADUser -LDAPFilter "(sIDHistory=*)" -Properties sIDHistory -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to scan for SID History Injection: $_"
@@ -785,7 +869,12 @@ Review and remove the excessive permissions listed in the evidence:
 
         $scriptUsers = $null
         try {
-            $scriptUsers = Get-ADUser -LDAPFilter "(scriptPath=*)" -Properties scriptPath -ErrorAction Stop
+            $scriptUsers = if ($__adServer) {
+                Get-ADUser -LDAPFilter "(scriptPath=*)" -Server $__adServer -Properties scriptPath -ErrorAction Stop
+            }
+            else {
+                Get-ADUser -LDAPFilter "(scriptPath=*)" -Properties scriptPath -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to scan for legacy Logon Scripts: $_"
@@ -823,7 +912,12 @@ Review and remove the excessive permissions listed in the evidence:
         foreach ($target in $controlTargets) {
             $object = $null
             try {
-                $object = Get-ADObject -Identity $target.DistinguishedName -Properties nTSecurityDescriptor -ErrorAction Stop
+                $object = if ($__adServer) {
+                    Get-ADObject -Identity $target.DistinguishedName -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
+                else {
+                    Get-ADObject -Identity $target.DistinguishedName -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get control target '$($target.Name)': $_"
@@ -850,7 +944,12 @@ Review and remove the excessive permissions listed in the evidence:
         Write-Verbose "Performing AdminSDHolder ACL Analysis..."
         $adminSdHolder = $null
         try {
-            $adminSdHolder = Get-ADObject -Identity "CN=AdminSDHolder,CN=System,$domainDN" -Properties nTSecurityDescriptor -ErrorAction Stop
+            $adminSdHolder = if ($__adServer) {
+                Get-ADObject -Identity "CN=AdminSDHolder,CN=System,$domainDN" -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+            }
+            else {
+                Get-ADObject -Identity "CN=AdminSDHolder,CN=System,$domainDN" -Properties nTSecurityDescriptor -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to get AdminSDHolder: $_"
@@ -884,7 +983,12 @@ Review and remove the excessive permissions listed in the evidence:
 
         $delegationRisk = $null
         try {
-            $delegationRisk = Get-ADObject -LDAPFilter "(msDS-AllowedToDelegateTo=*)" -Properties msDS-AllowedToDelegateTo, samAccountName -ErrorAction Stop
+            $delegationRisk = if ($__adServer) {
+                Get-ADObject -LDAPFilter "(msDS-AllowedToDelegateTo=*)" -Server $__adServer -Properties msDS-AllowedToDelegateTo, samAccountName -ErrorAction Stop
+            }
+            else {
+                Get-ADObject -LDAPFilter "(msDS-AllowedToDelegateTo=*)" -Properties msDS-AllowedToDelegateTo, samAccountName -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to check Constrained Delegation: $_"
@@ -909,7 +1013,12 @@ Review and remove the excessive permissions listed in the evidence:
         Write-Verbose "Checking constrained delegation with protocol transition (S4U2Self abuse)..."
         $constrainedDelegation = $null
         try {
-            $constrainedDelegation = Get-ADObject -Filter {msDS-AllowedToDelegateTo -like '*'} -Properties msDS-AllowedToDelegateTo, servicePrincipalName, samAccountName, objectClass -ErrorAction Stop
+            $constrainedDelegation = if ($__adServer) {
+                Get-ADObject -Filter {msDS-AllowedToDelegateTo -like '*'} -Server $__adServer -Properties msDS-AllowedToDelegateTo, servicePrincipalName, samAccountName, objectClass -ErrorAction Stop
+            }
+            else {
+                Get-ADObject -Filter {msDS-AllowedToDelegateTo -like '*'} -Properties msDS-AllowedToDelegateTo, servicePrincipalName, samAccountName, objectClass -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to check constrained delegation with protocol transition: $_"
@@ -919,7 +1028,12 @@ Review and remove the excessive permissions listed in the evidence:
             $allowedServices = $delegator.'msDS-AllowedToDelegateTo'
             $delegatorDetails = $null
             try {
-                $delegatorDetails = Get-ADObject -Identity $delegator.DistinguishedName -Properties TrustedToAuthForDelegation -ErrorAction Stop
+                $delegatorDetails = if ($__adServer) {
+                    Get-ADObject -Identity $delegator.DistinguishedName -Server $__adServer -Properties TrustedToAuthForDelegation -ErrorAction Stop
+                }
+                else {
+                    Get-ADObject -Identity $delegator.DistinguishedName -Properties TrustedToAuthForDelegation -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get delegator details for '$($delegator.samAccountName)': $_"
@@ -948,7 +1062,12 @@ Review and remove the excessive permissions listed in the evidence:
         foreach ($dc in $dcComputers) {
             $dcObj = $null
             try {
-                $dcObj = Get-ADComputer -Identity $dc.DistinguishedName -Properties 'msDS-AllowedToActOnBehalfOfOtherIdentity' -ErrorAction Stop
+                $dcObj = if ($__adServer) {
+                    Get-ADComputer -Identity $dc.DistinguishedName -Server $__adServer -Properties 'msDS-AllowedToActOnBehalfOfOtherIdentity' -ErrorAction Stop
+                }
+                else {
+                    Get-ADComputer -Identity $dc.DistinguishedName -Properties 'msDS-AllowedToActOnBehalfOfOtherIdentity' -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get RBCD info for DC '$($dc.Name)': $_"
@@ -981,7 +1100,12 @@ Review and remove the excessive permissions listed in the evidence:
         foreach ($groupName in @('Print Operators', 'Server Operators', 'Backup Operators', 'Account Operators', 'DnsAdmins')) {
             $group = $null
             try {
-                $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                $group = if ($__adServer) {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get built-in group '$groupName': $_"
@@ -990,7 +1114,12 @@ Review and remove the excessive permissions listed in the evidence:
 
             $members = $null
             try {
-                $members = Get-ADGroupMember -Identity $group -ErrorAction Stop
+                $members = if ($__adServer) {
+                    Get-ADGroupMember -Identity $group -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroupMember -Identity $group -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get members of built-in group '$groupName': $_"
@@ -1064,6 +1193,12 @@ Review and remove the excessive permissions listed in the evidence:
     catch {
         Write-Error "Error during equivalence audit: $_"
         throw
+    }
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
     }
 }
 

@@ -123,8 +123,9 @@ function Test-ADDomainTrusts {
     }
 
     try {
-        $domain = Get-ADDomain
-        $trusts = Get-ADTrust -Filter * -Properties *
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $domain = Get-ADDomain -Server $__adServer
+        $trusts = Get-ADTrust -Filter * -Properties * -Server $__adServer
         
         if (-not $trusts) {
             Write-Verbose "No domain trusts found."

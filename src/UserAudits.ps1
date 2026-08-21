@@ -17,11 +17,33 @@ function Test-ADUserSecurity {
         # compatible: when omitted, this function queries AD live exactly as
         # before.
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
     
     Write-Verbose "Starting user account security audit..."
     $findings = @()
+
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        # Resolve-ADSecurityAuditTargetServer, not the raw -Server value:
+        # resolves to the domain's PDC Emulator specifically, so this
+        # standalone call targets the exact same single, deterministic DC
+        # Start-ADSecurityAudit itself would use for this domain, not an
+        # arbitrary DC-locator pick.
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
     
     try {
         if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
@@ -45,6 +67,12 @@ function Test-ADUserSecurity {
             }
         }
         else {
+        # Resolved once, explicitly passed to every live AD call below -
+        # not relying on Set-ADSecurityAuditTargetServer's
+        # $PSDefaultParameterValues injection alone. $__adServer is $null
+        # when no override is active, which Get-AD*/Get-GP* cmdlets treat
+        # identically to -Server being omitted entirely.
+        $__adServer = Get-ADSecurityAuditActiveServerOverride
         $getUserParams = @{
             Filter = '*'
             ErrorAction = 'Stop'
@@ -56,6 +84,7 @@ function Test-ADUserSecurity {
                 'msDS-SupportedEncryptionTypes', 'userAccountControl'
             )
         }
+        if ($__adServer) { $getUserParams['Server'] = $__adServer }
         
         if ($SearchBase) {
             $getUserParams['SearchBase'] = $SearchBase
@@ -80,7 +109,12 @@ function Test-ADUserSecurity {
         }
         else {
             try {
-                $protectedUsersGroup = Get-ADGroup -Filter "Name -eq 'Protected Users'" -ErrorAction Stop
+                $protectedUsersGroup = if ($__adServer) {
+                    Get-ADGroup -Filter "Name -eq 'Protected Users'" -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroup -Filter "Name -eq 'Protected Users'" -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get Protected Users group: $_"
@@ -367,6 +401,11 @@ function Test-ADUserSecurity {
     catch {
         Write-Error "Error during user account audit: $_"
         throw
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
     }
 }
 

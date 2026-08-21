@@ -178,10 +178,11 @@ function Test-ADDomainSecurity {
     }
 
     try {
-        $domain = Get-ADDomain
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $domain = Get-ADDomain -Server $__adServer
         
         # Check password policy
-        $defaultPasswordPolicy = Get-ADDefaultDomainPasswordPolicy
+        $defaultPasswordPolicy = Get-ADDefaultDomainPasswordPolicy -Server $__adServer
         
         if ($defaultPasswordPolicy.MinPasswordLength -lt 14) {
             $finding = [ADSecurityFinding]::new()
@@ -234,7 +235,7 @@ function Test-ADDomainSecurity {
         
         # Check domain functional level
         $domainLevel = $domain.DomainMode
-        $forestLevel = (Get-ADForest).ForestMode
+        $forestLevel = (Get-ADForest -Server $__adServer).ForestMode
         
         $deprecatedLevels = @('Windows2000Domain', 'Windows2003Domain', 'Windows2008Domain', 'Windows2008R2Domain', 'Windows2012Domain')
         
@@ -257,7 +258,7 @@ function Test-ADDomainSecurity {
         }
         
         # Check for Recycle Bin (best practice)
-        $recycleBinFeature = Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'"
+        $recycleBinFeature = Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'" -Server $__adServer
         if ($recycleBinFeature.EnabledScopes.Count -eq 0) {
             $finding = [ADSecurityFinding]::new()
             $finding.Category = 'Domain Security'
@@ -277,7 +278,7 @@ function Test-ADDomainSecurity {
         
         # Check for computers with old OS versions
         Write-Verbose "Checking for legacy operating systems..."
-        $computers = Get-ADComputer -Filter * -Properties OperatingSystem, OperatingSystemVersion, LastLogonDate
+        $computers = Get-ADComputer -Filter * -Properties OperatingSystem, OperatingSystemVersion, LastLogonDate -Server $__adServer
         
         $legacyOS = @(
             'Windows XP', 'Windows Vista', 'Windows 7', 'Windows 8', 'Windows 8.1',
@@ -315,7 +316,7 @@ function Test-ADDomainSecurity {
 
         # Check AzureADSSOACC password rotation
         Write-Verbose "Checking Azure AD Seamless SSO computer accounts..."
-        $azureSsoAccounts = Get-ADComputer -LDAPFilter "(samaccountname=AZUREADSSOACC$)" -Properties PasswordLastSet, Enabled
+        $azureSsoAccounts = Get-ADComputer -LDAPFilter "(samaccountname=AZUREADSSOACC$)" -Properties PasswordLastSet, Enabled -Server $__adServer
 
         foreach ($account in $azureSsoAccounts) {
             $passwordAge = if ($account.PasswordLastSet) { (Get-Date) - $account.PasswordLastSet } else { [TimeSpan]::MaxValue }

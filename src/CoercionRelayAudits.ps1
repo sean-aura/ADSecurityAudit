@@ -73,7 +73,7 @@ function Test-ADCoercionAndRelayExposure {
             # Get-ADDomainController -Filter * - the latter is forest-wide
             # regardless of -Server; see Common.ps1 for why.
             $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (coercion/relay audit)' -Query {
-                Get-ADSecurityAuditDomainController
+                Get-ADSecurityAuditDomainController -Server (Get-ADSecurityAuditTargetServerValue)
             })
         }
         catch {

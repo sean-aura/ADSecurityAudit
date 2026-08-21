@@ -17,10 +17,38 @@ function Test-ADPrivilegedGroups {
         [string[]]$AdditionalGroups = @(),
 
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        # Resolve-ADSecurityAuditTargetServer, not the raw -Server value:
+        # resolves to the domain's PDC Emulator specifically, so this
+        # standalone call targets the exact same single, deterministic DC
+        # Start-ADSecurityAudit itself would use for this domain, not an
+        # arbitrary DC-locator pick.
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+
+    try {
     Write-Verbose "Starting privileged group audit..."
+    # Resolved once, explicitly passed to every live AD call below - not
+    # relying on the $PSDefaultParameterValues injection alone. $null when
+    # no override is active, which Get-AD* cmdlets treat identically to
+    # -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
     $findings = @()
 
     $groupsToCheck = $Script:ProtectedGroups + $AdditionalGroups
@@ -141,8 +169,14 @@ function Test-ADPrivilegedGroups {
             
             try {
                 $group = $null
+                $groupServer = $__adServer
                 try {
-                    $group = Get-ADGroup -Filter "Name -eq '$groupName'" -Properties Members, MemberOf -ErrorAction Stop
+                    $group = if ($__adServer) {
+                        Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -Properties Members, MemberOf -ErrorAction Stop
+                    }
+                    else {
+                        Get-ADGroup -Filter "Name -eq '$groupName'" -Properties Members, MemberOf -ErrorAction Stop
+                    }
                 }
                 catch {
                     Write-Verbose "Failed to get group '$groupName': $_"
@@ -162,6 +196,14 @@ function Test-ADPrivilegedGroups {
                         if ($forestRootDomain) {
                             Write-Verbose "Test-ADPrivilegedGroups: '$groupName' not found in the target domain (expected - it's forest-root-only); re-querying against the forest root '$forestRootDomain' instead."
                             $group = Get-ADGroup -Filter "Name -eq '$groupName'" -Server $forestRootDomain -Properties Members, MemberOf -ErrorAction Stop
+                            # This group actually lives in the forest root,
+                            # not $__adServer's domain - member lookups
+                            # below must target the same root domain the
+                            # group object itself came from, or
+                            # Get-ADGroupMember -Identity $group would try
+                            # to bind a root-domain object against a
+                            # child-domain server and fail to find it.
+                            $groupServer = $forestRootDomain
                         }
                     }
                     catch {
@@ -185,7 +227,12 @@ function Test-ADPrivilegedGroups {
                 # Get recursive members for total count and user analysis
                 $recursiveMembers = $null
                 try {
-                    $recursiveMembers = Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+                    $recursiveMembers = if ($groupServer) {
+                        Get-ADGroupMember -Identity $group -Recursive -Server $groupServer -ErrorAction Stop
+                    }
+                    else {
+                        Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+                    }
                 }
                 catch {
                     Write-Verbose "Failed to get recursive members of '$groupName': $_"
@@ -195,7 +242,12 @@ function Test-ADPrivilegedGroups {
                 # (Get-ADGroupMember -Recursive only returns leaf objects, not groups)
                 $directMembers = $null
                 try {
-                    $directMembers = Get-ADGroupMember -Identity $group -ErrorAction Stop
+                    $directMembers = if ($groupServer) {
+                        Get-ADGroupMember -Identity $group -Server $groupServer -ErrorAction Stop
+                    }
+                    else {
+                        Get-ADGroupMember -Identity $group -ErrorAction Stop
+                    }
                 }
                 catch {
                     Write-Verbose "Failed to get direct members of '$groupName': $_"
@@ -294,7 +346,20 @@ function Test-ADPrivilegedGroups {
                 foreach ($member in $userMembers) {
                     $userDetails = $null
                     try {
-                        $userDetails = Get-ADUser -Identity $member -Properties Enabled, LastLogonDate -ErrorAction Stop
+                        # $groupServer, not $__adServer: a member can
+                        # legitimately belong to a different domain than
+                        # the group itself (see the Cross-Domain
+                        # Privileged Group Membership finding above) - for
+                        # the common same-domain case this is the correct
+                        # server; a foreign-domain member's lookup fails
+                        # gracefully into the existing catch below, same
+                        # as before this change.
+                        $userDetails = if ($groupServer) {
+                            Get-ADUser -Identity $member -Server $groupServer -Properties Enabled, LastLogonDate -ErrorAction Stop
+                        }
+                        else {
+                            Get-ADUser -Identity $member -Properties Enabled, LastLogonDate -ErrorAction Stop
+                        }
                     }
                     catch {
                         Write-Verbose "Failed to get user details for '$($member.SamAccountName)': $_"
@@ -335,6 +400,12 @@ function Test-ADPrivilegedGroups {
     catch {
         Write-Error "Error during privileged group audit: $_"
         throw
+    }
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
     }
 }
 

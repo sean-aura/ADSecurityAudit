@@ -74,12 +74,27 @@ function Get-ADGpoSecretsSysvolPolicyRoot {
     .DESCRIPTION
         Read-only path resolution helper, consistent with the SYSVOL path
         already used for permission checks in Test-ADGroupPolicies.
+
+        The server component of the UNC path uses the active
+        Set-ADSecurityAuditTargetServer -Server override when one is set,
+        rather than always using the domain's DNS name. A bare domain name
+        in a UNC path (\\domain.tld\SYSVOL\...) is resolved via DFS
+        Namespace referral, which - like DC-locator for AD queries - picks
+        a DC based on the CALLING MACHINE's own site/subnet proximity, not
+        necessarily the domain actually being audited. This is the same
+        "closest DC" ambiguity Get-AD*/Get-GP* cmdlets have via -Server;
+        Get-Acl on a UNC path has no -Server parameter at all, so the only
+        way to pin it to a specific DC is to put that DC directly in the
+        path itself.
     #>
     [CmdletBinding()]
     param()
 
-    $domain = Get-ADDomain
-    return "\\$($domain.DNSRoot)\SYSVOL\$($domain.DNSRoot)\Policies"
+    $__adServer = Get-ADSecurityAuditTargetServerValue
+    $domain = Get-ADDomain -Server $__adServer
+    $sysvolServer = Get-ADSecurityAuditActiveServerOverride
+    if (-not $sysvolServer) { $sysvolServer = $domain.DNSRoot }
+    return "\\$sysvolServer\SYSVOL\$($domain.DNSRoot)\Policies"
 }
 
 function Test-ADGpoDeployedSecrets {
@@ -143,6 +158,7 @@ function Test-ADGpoDeployedSecrets {
 
     Write-Verbose "Starting GPO-Deployed Secrets & Insecure Settings audit..."
     $findings = @()
+    $__adServer = Get-ADSecurityAuditTargetServerValue
 
     # Fixed in v1.19.1: this used to still perform live SYSVOL file-share
     # reads even when -Snapshot was supplied (only the GPO *list* came from
@@ -165,7 +181,7 @@ function Test-ADGpoDeployedSecrets {
     try {
         Import-Module GroupPolicy -ErrorAction Stop
         $gpoList = @(Invoke-ADQueryWithRetry -OperationName "Enumerate GPOs" -Query {
-            Get-GPO -All | Select-Object Id, DisplayName
+            Get-GPO -All -Server $__adServer | Select-Object Id, DisplayName
         })
     }
     catch {

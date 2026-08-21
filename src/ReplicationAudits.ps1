@@ -156,11 +156,12 @@ function Test-ADReplicationSecurity {
     }
 
     try {
-        $domain = Get-ADDomain
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $domain = Get-ADDomain -Server $__adServer
         $domainDN = $domain.DistinguishedName
         
         # Get the domain object with ACL
-        $domainObject = Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor
+        $domainObject = Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor -Server $__adServer
         $acl = $domainObject.nTSecurityDescriptor
         
         # Define legitimate replication principals
@@ -237,7 +238,7 @@ function Test-ADReplicationSecurity {
                     if ($sid) {
                         $principal = $null
                         try {
-                            $principal = Get-ADObject -Filter "objectSid -eq '$sid'" -Properties objectClass -ErrorAction Stop
+                            $principal = Get-ADObject -Filter "objectSid -eq '$sid'" -Properties objectClass -Server $__adServer -ErrorAction Stop
                         }
                         catch {
                             Write-Verbose "Could not resolve SID '$sid': $_"
@@ -281,7 +282,7 @@ function Test-ADReplicationSecurity {
             try {
                 $group = $null
                 try {
-                    $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                    $group = Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
                 }
                 catch {
                     Write-Verbose "Could not get group '$groupName': $_"
@@ -289,7 +290,7 @@ function Test-ADReplicationSecurity {
                 if ($group) {
                     $members = $null
                     try {
-                        $members = Get-ADGroupMember -Identity $group -ErrorAction Stop
+                        $members = Get-ADGroupMember -Identity $group -Server $__adServer -ErrorAction Stop
                     }
                     catch {
                         Write-Verbose "Could not get members of group '$groupName': $_"

@@ -84,9 +84,32 @@ function Test-ADDomainHardeningFlags {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+    # Resolved once, explicitly passed to every live AD/GPO call below -
+    # not relying on the $PSDefaultParameterValues injection alone. $null
+    # when no override is active, which Get-AD*/Get-GP* cmdlets treat
+    # identically to -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
+
+    try {
     Write-Verbose "Starting Domain Hardening Flags audit..."
     $findings = @()
 
@@ -103,10 +126,10 @@ function Test-ADDomainHardeningFlags {
             $dsServiceDN = if ($Snapshot.ContainsKey('DsHeuristicsDN')) { $Snapshot.DsHeuristicsDN } else { 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration' }
         }
         else {
-            $configNC = Get-ADRootDSEValue -Property configurationNamingContext
+            $configNC = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
             $dsServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configNC"
             $dsServiceObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject dSHeuristics' -Query {
-                Get-ADObject -Identity $dsServiceDN -Properties dSHeuristics -ErrorAction Stop
+                Get-ADObject -Identity $dsServiceDN -Properties dSHeuristics -Server $__adServer -ErrorAction Stop
             }
             if ($dsServiceObject) {
                 $dsHeuristics = $dsServiceObject.dSHeuristics
@@ -203,13 +226,13 @@ function Test-ADDomainHardeningFlags {
         }
         else {
             $group = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup Pre-Windows 2000 Compatible Access' -Query {
-                Get-ADGroup -Filter "Name -eq 'Pre-Windows 2000 Compatible Access'" -ErrorAction Stop
+                Get-ADGroup -Filter "Name -eq 'Pre-Windows 2000 Compatible Access'" -Server $__adServer -ErrorAction Stop
             }
 
             if ($group) {
                 $groupDN = $group.DistinguishedName
                 $members = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroupMember Pre-Windows 2000 Compatible Access' -Query {
-                    Get-ADGroupMember -Identity $group -ErrorAction Stop
+                    Get-ADGroupMember -Identity $group -Server $__adServer -ErrorAction Stop
                 }
 
                 foreach ($member in @($members)) {
@@ -271,7 +294,7 @@ function Test-ADDomainHardeningFlags {
             # forest-wide regardless of -Server, which would have silently
             # probed other domains' DCs too) and probes each independently.
             $anonDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (anonymous-bind probe)' -Query {
-                Get-ADSecurityAuditDomainController
+                Get-ADSecurityAuditDomainController -Server $__adServer
             })
 
             if (-not $anonDomainControllers -or $anonDomainControllers.Count -eq 0) {
@@ -363,12 +386,12 @@ function Test-ADDomainHardeningFlags {
         try {
             Import-Module GroupPolicy -ErrorAction Stop
 
-            $nsDomain = Get-ADDomain -ErrorAction Stop
+            $nsDomain = Get-ADDomain -Server $__adServer -ErrorAction Stop
             # Get-ADSecurityAuditDomainController, not a bare
             # Get-ADDomainController -Filter * - the latter is forest-wide
             # regardless of -Server; see Common.ps1 for why.
             $nsDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (null-session audit)' -Query {
-                Get-ADSecurityAuditDomainController
+                Get-ADSecurityAuditDomainController -Server $__adServer
             })
 
             if (-not $nsDomainControllers -or $nsDomainControllers.Count -eq 0) {
@@ -396,15 +419,15 @@ function Test-ADDomainHardeningFlags {
                 # DC OU precedence first (most specific to the DCs being
                 # evaluated), domain root as fallback - same ordering as
                 # Test-ADLegacyAuthSurface's $dcScopeGpos.
-                $nsDcOuGpos   = Get-ADLinkedGposOrdered -TargetDn $nsDcOuDn
-                $nsDomainGpos = Get-ADLinkedGposOrdered -TargetDn $nsDomain.DistinguishedName
+                $nsDcOuGpos   = Get-ADLinkedGposOrdered -TargetDn $nsDcOuDn -Server $__adServer
+                $nsDomainGpos = Get-ADLinkedGposOrdered -TargetDn $nsDomain.DistinguishedName -Server $__adServer
                 $nsScopeGpos  = @($nsDcOuGpos + $nsDomainGpos)
 
                 $restrictTarget = @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa'; ValueName = 'RestrictNullSessAccess' }
                 $pipesTarget    = @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'; ValueName = 'NullSessionPipes' }
                 $sharesTarget   = @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'; ValueName = 'NullSessionShares' }
 
-                $restrictPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $restrictTarget.Key -ValueName $restrictTarget.ValueName
+                $restrictPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $restrictTarget.Key -ValueName $restrictTarget.ValueName -Server $__adServer
 
                 $restrictDisabled = $false
                 $source = $null
@@ -444,7 +467,7 @@ function Test-ADDomainHardeningFlags {
                     $nullSessionPipes  = @()
                     $nullSessionShares = @()
                     try {
-                        $pipesPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $pipesTarget.Key -ValueName $pipesTarget.ValueName
+                        $pipesPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $pipesTarget.Key -ValueName $pipesTarget.ValueName -Server $__adServer
                         if ($pipesPolicy) {
                             $nullSessionPipes = @($pipesPolicy.Value)
                         }
@@ -458,7 +481,7 @@ function Test-ADDomainHardeningFlags {
                         Write-Verbose "Test-ADDomainHardeningFlags: could not read NullSessionPipes for null-session finding detail: $_"
                     }
                     try {
-                        $sharesPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $sharesTarget.Key -ValueName $sharesTarget.ValueName
+                        $sharesPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $sharesTarget.Key -ValueName $sharesTarget.ValueName -Server $__adServer
                         if ($sharesPolicy) {
                             $nullSessionShares = @($sharesPolicy.Value)
                         }
@@ -513,6 +536,12 @@ function Test-ADDomainHardeningFlags {
 
     Write-Verbose "Domain Hardening Flags audit complete. Found $($findings.Count) issues."
     return $findings
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
+    }
 }
 
 #endregion

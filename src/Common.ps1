@@ -195,14 +195,34 @@ function Resolve-ADSecurityAuditPath {
 function Set-ADSecurityAuditTargetServer {
     <#
     .SYNOPSIS
-        Forces every Get-AD*/Set-AD* cmdlet call for the rest of the
-        session to explicitly target one domain/DC, instead of the default
-        serverless bind that can silently resolve to the wrong domain in a
-        multi-domain forest.
+        Forces every Get-AD*/Set-AD* AND Get-GP*/Set-GP* cmdlet call for
+        the rest of the session to explicitly target one domain/DC,
+        instead of the default serverless bind that can silently resolve
+        to the wrong domain in a multi-domain forest.
+    .DESCRIPTION
+        Covers two SEPARATE PowerShell modules, not one: the
+        ActiveDirectory module's Get-AD*/Set-AD*/New-AD*/Remove-AD*
+        cmdlets, and the GroupPolicy module's Get-GP*/Set-GP*/New-GP*/
+        Remove-GP* cmdlets (Get-GPO, Get-GPInheritance, Get-GPPermission,
+        Get-GPRegistryValue, etc. - all used by this module's GPO-related
+        checks: Test-ADGroupPolicies, Test-ADLegacyAuthSurface,
+        Test-ADDomainHardeningFlags, Test-ADKerberosHardening, and
+        Get-ADSnapshot's GPO collection).
+
+        Prior to this fix, only the ActiveDirectory-module wildcard was
+        installed. Cmdlet names in the GroupPolicy module start with
+        "Get-GP", not "Get-AD" - the 'Get-AD*:Server' wildcard NEVER
+        matched them, so every GPO-related check was completely unscoped
+        by -Server the entire time, regardless of whether an override was
+        active for AD cmdlets. Get-GPO/Get-GPInheritance/Get-GPPermission/
+        Get-GPRegistryValue all accept the same -Server parameter (and
+        derive the target domain from whichever server you point them at,
+        without also needing -Domain), so this is exactly the same fix,
+        just for a second module the original wildcard silently missed.
     .PARAMETER Server
         A domain FQDN (e.g. 'domainb.corp.com') or a specific DC FQDN/
         hostname (e.g. 'dc01.domainb.corp.com'). Either is accepted by
-        -Server on the AD cmdlets.
+        -Server on both the AD and GroupPolicy cmdlets.
     #>
     [CmdletBinding()]
     param(
@@ -217,7 +237,11 @@ function Set-ADSecurityAuditTargetServer {
     $Global:PSDefaultParameterValues['Set-AD*:Server'] = $Server
     $Global:PSDefaultParameterValues['New-AD*:Server'] = $Server
     $Global:PSDefaultParameterValues['Remove-AD*:Server'] = $Server
-    Write-Verbose "Set-ADSecurityAuditTargetServer: Get-AD*/Set-AD*/New-AD*/Remove-AD* cmdlets will now explicitly target '$Server' for the rest of this session."
+    $Global:PSDefaultParameterValues['Get-GP*:Server'] = $Server
+    $Global:PSDefaultParameterValues['Set-GP*:Server'] = $Server
+    $Global:PSDefaultParameterValues['New-GP*:Server'] = $Server
+    $Global:PSDefaultParameterValues['Remove-GP*:Server'] = $Server
+    Write-Verbose "Set-ADSecurityAuditTargetServer: Get-AD*/Set-AD*/New-AD*/Remove-AD* AND Get-GP*/Set-GP*/New-GP*/Remove-GP* cmdlets will now explicitly target '$Server' for the rest of this session."
 }
 
 function Clear-ADSecurityAuditTargetServer {
@@ -234,6 +258,10 @@ function Clear-ADSecurityAuditTargetServer {
         $Global:PSDefaultParameterValues.Remove('Set-AD*:Server')
         $Global:PSDefaultParameterValues.Remove('New-AD*:Server')
         $Global:PSDefaultParameterValues.Remove('Remove-AD*:Server')
+        $Global:PSDefaultParameterValues.Remove('Get-GP*:Server')
+        $Global:PSDefaultParameterValues.Remove('Set-GP*:Server')
+        $Global:PSDefaultParameterValues.Remove('New-GP*:Server')
+        $Global:PSDefaultParameterValues.Remove('Remove-GP*:Server')
     }
 }
 
@@ -249,10 +277,9 @@ function Clear-ADSecurityAuditTargetServer {
 function Resolve-ADSecurityAuditTargetServer {
     <#
     .SYNOPSIS
-        Resolves the effective -Server value: the explicit value if one was
-        passed, otherwise the current user's own domain
-        ($env:USERDNSDOMAIN), otherwise $null (falls back to the AD
-        module's own ambient resolution).
+        Resolves the effective -Server value to a SPECIFIC DC - the
+        domain's PDC Emulator, specifically - rather than a domain name or
+        an arbitrary/ambient DC.
     .DESCRIPTION
         $env:USERDNSDOMAIN is set by the LSA at logon from the DOMAIN
         ACCOUNT's own domain - not $env:USERDOMAIN (NetBIOS form, can be
@@ -263,6 +290,36 @@ function Resolve-ADSecurityAuditTargetServer {
         different domain in the forest - the scenario this module's
         -Server parameter was originally added to fix.
 
+        Whatever value that gives (an explicit -Server, or the
+        $env:USERDNSDOMAIN default) is then resolved ONE MORE STEP: to
+        that domain's PDC Emulator FSMO role holder specifically, via
+        Get-ADDomain's own .PDCEmulator property. This removes an entire
+        category of ambiguity that a domain name or "just pick a DC" left
+        open:
+          - A bare domain FQDN is not a valid Get-ADDomainController
+            -Identity value (only a real DC's own GUID/Name/IPv4Address/
+            DNS host name is) - every live-network-probe call that used
+            to receive the raw domain name here had to work around that
+            separately (see Get-ADSecurityAuditDomainController /
+            Get-ADTargetDomainController).
+          - Resolving a domain name to "a" DC via the normal DC-locator
+            (DNS SRV records + site/subnet mapping) is exactly the
+            non-deterministic, "closest DC" resolution this module's
+            -Server override exists to bypass in the first place - it can
+            depend on the calling MACHINE's own site membership rather
+            than the domain actually being audited.
+          - Every AD query in a single run now targets the exact same DC
+            throughout, rather than potentially different DCs picked
+            independently by different cmdlet calls - important on a
+            domain with any inter-DC replication lag, since the PDC
+            Emulator is also where Windows itself directs urgent/
+            authoritative reads (e.g. password/lockout state) by
+            convention.
+        Falls back to the plain domain/DC name as given if the PDC
+        Emulator can't be resolved (e.g. an unreachable or inaccessible
+        domain) rather than turning a working (if less precise)
+        resolution into a hard failure.
+
         KNOWN LIMITATION: if the caller used `runas /netonly` (or an
         equivalent alternate-credential technique) to run this session
         under a DIFFERENT domain's credentials than the one they're
@@ -272,27 +329,47 @@ function Resolve-ADSecurityAuditTargetServer {
         inherited environment block. Pass -Server explicitly in that case.
     .PARAMETER Server
         The explicit -Server value the caller passed, if any. Empty/$null
-        means "not specified".
+        means "not specified". Accepts a domain FQDN, a specific DC name,
+        or is omitted entirely.
     .OUTPUTS
-        [string] the effective server to use, or $null if neither an
-        explicit value nor $env:USERDNSDOMAIN is available (e.g. a local,
-        non-domain logon session) - callers treat a $null return the same
-        way they previously treated "no -Server given at all".
+        [string] the resolved PDC Emulator FQDN for the target domain, the
+        plain value passed/defaulted to if PDC resolution failed, or $null
+        if neither an explicit value nor $env:USERDNSDOMAIN is available
+        (e.g. a local, non-domain logon session) - callers treat a $null
+        return the same way they previously treated "no -Server given at
+        all".
     #>
     [CmdletBinding()]
     param(
         [Parameter()]
         [string]$Server
     )
+
+    $requested = $null
     if ($Server) {
-        return $Server
+        $requested = $Server
     }
-    if ($env:USERDNSDOMAIN) {
+    elseif ($env:USERDNSDOMAIN) {
         Write-Verbose "Resolve-ADSecurityAuditTargetServer: -Server not specified; defaulting to the current user's domain (`$env:USERDNSDOMAIN): $env:USERDNSDOMAIN"
-        return $env:USERDNSDOMAIN
+        $requested = $env:USERDNSDOMAIN
     }
-    Write-Verbose "Resolve-ADSecurityAuditTargetServer: -Server not specified and `$env:USERDNSDOMAIN is empty (e.g. a local, non-domain logon session); falling back to the AD module's own default resolution."
-    return $null
+    else {
+        Write-Verbose "Resolve-ADSecurityAuditTargetServer: -Server not specified and `$env:USERDNSDOMAIN is empty (e.g. a local, non-domain logon session); falling back to the AD module's own default resolution."
+        return $null
+    }
+
+    try {
+        $pdcEmulator = (Get-ADDomain -Server $requested -ErrorAction Stop).PDCEmulator
+        if ($pdcEmulator) {
+            Write-Verbose "Resolve-ADSecurityAuditTargetServer: resolved '$requested' to its PDC Emulator '$pdcEmulator' - every AD query for the rest of this run/call will target this DC specifically."
+            return $pdcEmulator
+        }
+    }
+    catch {
+        Write-Verbose "Resolve-ADSecurityAuditTargetServer: could not resolve the PDC Emulator for '$requested' ($_); falling back to '$requested' as given."
+    }
+
+    return $requested
 }
 
 # Several files previously read the Configuration/Schema naming context via
@@ -368,6 +445,35 @@ function Get-ADSecurityAuditActiveServerOverride {
         instead of the audited child domain) without losing track of what
         the "normal" override value was. Centralized here instead of each
         caller re-reading $Global:PSDefaultParameterValues directly.
+
+        LESSON LEARNED / MANDATORY PATTERN GOING FORWARD - READ THIS
+        BEFORE ADDING ANY NEW Get-AD*/Set-AD*/Get-GP*/Set-GP* CALL:
+        Set-ADSecurityAuditTargetServer installs
+        $Global:PSDefaultParameterValues['Get-AD*:Server'] (and the
+        Get-GP*/Set-GP*/etc. equivalents), which SHOULD auto-supply
+        -Server to every matching cmdlet call with no per-call-site
+        change needed - that was the whole point of the mechanism, and
+        the wildcard matching logic is textbook-correct PowerShell.
+        Despite that, in practice the global default was observed NOT to
+        be picked up for at least some -Server-critical Get-AD* calls in
+        production use, and explicitly hardcoding -Server on the
+        affected calls resolved it. The exact cause has not been root-
+        caused (candidates include host/profile-specific
+        $PSDefaultParameterValues quirks, or some Get-AD* calls running
+        in a context/scope where the global default did not apply as
+        expected) - but the practical, binding consequence is:
+
+        DO NOT rely on the global $PSDefaultParameterValues default alone
+        for any new Get-AD*/Set-AD*/New-AD*/Remove-AD*/Get-GP*/Set-GP*/
+        New-GP*/Remove-GP* call added to this codebase. Every new call
+        MUST explicitly pass -Server (Get-ADSecurityAuditTargetServerValue)
+        (or the equivalent already-resolved local variable, e.g.
+        $__adServer/$targetServer, where a function has already captured
+        one) - even though the global default is ALSO installed as a
+        second layer of defense. Passing an explicit -Server value that
+        happens to be $null (no override active) is safe and behaves
+        identically to omitting -Server entirely; it is NOT safe to skip
+        the explicit -Server and assume the global default will cover it.
     .OUTPUTS
         [string] the active -Server override, or $null.
     #>
@@ -378,6 +484,34 @@ function Get-ADSecurityAuditActiveServerOverride {
         return $Global:PSDefaultParameterValues['Get-AD*:Server']
     }
     return $null
+}
+
+function Get-ADSecurityAuditTargetServerValue {
+    <#
+    .SYNOPSIS
+        Alias for Get-ADSecurityAuditActiveServerOverride - same function,
+        second name. Prefer calling this one in new code; both resolve to
+        the identical value and either name is safe to use interchangeably
+        in existing code.
+    .DESCRIPTION
+        Two names exist for the same underlying value because a later fix
+        (this function) was written independently of
+        Get-ADSecurityAuditActiveServerOverride (the original, still used
+        by several existing call sites - forest-root group resolution,
+        Get-ADTargetDomainController, the anonymous-bind/zone-transfer
+        probes) before the two were reconciled. Rather than rename every
+        existing call site to consolidate on one name (needless churn,
+        highest-risk step for zero behavioral benefit), this function is
+        kept as a thin, permanent alias so code written against EITHER
+        name keeps working. See the MANDATORY PATTERN note on
+        Get-ADSecurityAuditActiveServerOverride - it applies identically
+        to this name.
+    .OUTPUTS
+        [string] the active -Server override, or $null.
+    #>
+    [CmdletBinding()]
+    param()
+    return Get-ADSecurityAuditActiveServerOverride
 }
 
 function Split-ADObjectByTargetDomain {
@@ -728,20 +862,57 @@ function Get-ADTier0Principal {
         return @()
     }
 
+    # Resolved once, explicitly passed to every live AD call below - not
+    # relying on the $PSDefaultParameterValues injection alone (see the
+    # MANDATORY PATTERN note on Get-ADSecurityAuditActiveServerOverride).
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
+
     foreach ($groupName in $Script:ProtectedGroups) {
+        $group = $null
+        $groupServer = $__adServer
         try {
-            $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+            $group = if ($__adServer) {
+                Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
+            }
+            else {
+                Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Get-ADTier0Principal: failed to get group '$groupName': $_"
-            continue
+        }
+
+        if (-not $group -and $groupName -in @('Enterprise Admins', 'Schema Admins')) {
+            # Same forest-root-only fix as Test-ADPrivilegedGroups
+            # (GroupAudits.ps1): these two groups exist ONLY in the
+            # forest root domain, so a lookup scoped to a child domain
+            # always finds nothing there and would otherwise silently
+            # exclude them from the Tier-0 set for every non-root domain
+            # audited - a real detection gap for the RC4/FAST checks that
+            # consume this function's output.
+            try {
+                $forestRootDomain = (Get-ADForest -ErrorAction Stop).RootDomain
+                if ($forestRootDomain) {
+                    Write-Verbose "Get-ADTier0Principal: '$groupName' not found in the target domain (expected - it's forest-root-only); re-querying against the forest root '$forestRootDomain' instead."
+                    $group = Get-ADGroup -Filter "Name -eq '$groupName'" -Server $forestRootDomain -ErrorAction Stop
+                    $groupServer = $forestRootDomain
+                }
+            }
+            catch {
+                Write-Verbose "Get-ADTier0Principal: failed to resolve '$groupName' via the forest root domain: $_"
+            }
         }
 
         if (-not $group) { continue }
 
         $members = $null
         try {
-            $members = Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+            $members = if ($groupServer) {
+                Get-ADGroupMember -Identity $group -Recursive -Server $groupServer -ErrorAction Stop
+            }
+            else {
+                Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Get-ADTier0Principal: failed to get members of '$groupName': $_"

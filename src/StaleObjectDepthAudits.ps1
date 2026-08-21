@@ -137,6 +137,7 @@ function Test-ADStaleObjectDepth {
 
     Write-Verbose "Starting Stale-Object & Hygiene Depth audit..."
     $findings = @()
+    $__adServer = Get-ADSecurityAuditTargetServerValue
 
     # -------------------------------------------------------------------
     # Gather users/computers/DCs once, preferring the snapshot.
@@ -152,7 +153,7 @@ function Test-ADStaleObjectDepth {
         }
         else {
             $users = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser (stale-object depth)' -Query {
-                Get-ADUser -Filter '*' -ResultPageSize 500 -ErrorAction Stop -Properties `
+                Get-ADUser -Filter '*' -ResultPageSize 500 -Server $__adServer -ErrorAction Stop -Properties `
                     SamAccountName, DistinguishedName, Enabled, userAccountControl, `
                     PrimaryGroupID, ServicePrincipalNames
             })
@@ -169,7 +170,7 @@ function Test-ADStaleObjectDepth {
         }
         else {
             $computers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer (stale-object depth)' -Query {
-                Get-ADComputer -Filter '*' -ResultPageSize 500 -ErrorAction Stop -Properties `
+                Get-ADComputer -Filter '*' -ResultPageSize 500 -Server $__adServer -ErrorAction Stop -Properties `
                     SamAccountName, DistinguishedName, Enabled, userAccountControl, `
                     PrimaryGroupID, ServicePrincipalNames
             })
@@ -189,7 +190,7 @@ function Test-ADStaleObjectDepth {
             # Get-ADDomainController -Filter * - the latter is forest-wide
             # regardless of -Server; see Common.ps1 for why.
             $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (stale-object depth)' -Query {
-                Get-ADSecurityAuditDomainController
+                Get-ADSecurityAuditDomainController -Server $__adServer
             })
         }
     }
@@ -395,7 +396,7 @@ function Test-ADStaleObjectDepth {
             Write-Verbose "Test-ADStaleObjectDepth: checking DC subnet/site registration..."
 
             $subnets = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADReplicationSubnet (stale-object depth)' -Query {
-                Get-ADReplicationSubnet -Filter * -Properties Name, Site -ErrorAction Stop
+                Get-ADReplicationSubnet -Filter * -Properties Name, Site -Server $__adServer -ErrorAction Stop
             })
 
             foreach ($dc in $domainControllers) {

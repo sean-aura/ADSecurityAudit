@@ -28,7 +28,7 @@ function Test-KRBTGTAccount {
             }
         }
         else {
-            $krbtgtAccount = Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Properties PasswordLastSet, Enabled, Description -ErrorAction Stop
+            $krbtgtAccount = Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Properties PasswordLastSet, Enabled, Description -Server (Get-ADSecurityAuditTargetServerValue) -ErrorAction Stop
         }
         
         if ($krbtgtAccount.PasswordLastSet) {

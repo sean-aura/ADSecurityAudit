@@ -114,9 +114,10 @@ function Test-ConstrainedDelegation {
     }
 
     try {
+        $__adServer = Get-ADSecurityAuditTargetServerValue
         # Check user accounts with constrained delegation
         $usersWithConstrainedDelegation = Get-ADUser -Filter {msDS-AllowedToDelegateTo -like '*'} `
-            -Properties msDS-AllowedToDelegateTo, TrustedForDelegation, TrustedToAuthForDelegation, ServicePrincipalNames, Enabled
+            -Properties msDS-AllowedToDelegateTo, TrustedForDelegation, TrustedToAuthForDelegation, ServicePrincipalNames, Enabled -Server $__adServer
         
         foreach ($user in $usersWithConstrainedDelegation) {
             # Check for protocol transition (most dangerous)
@@ -160,7 +161,7 @@ function Test-ConstrainedDelegation {
         
         # Check computer accounts with constrained delegation
         $computersWithConstrainedDelegation = Get-ADComputer -Filter {msDS-AllowedToDelegateTo -like '*'} `
-            -Properties msDS-AllowedToDelegateTo, TrustedForDelegation, TrustedToAuthForDelegation, ServicePrincipalNames, Enabled
+            -Properties msDS-AllowedToDelegateTo, TrustedForDelegation, TrustedToAuthForDelegation, ServicePrincipalNames, Enabled -Server $__adServer
         
         foreach ($computer in $computersWithConstrainedDelegation) {
             if ($computer.TrustedToAuthForDelegation -eq $true) {
@@ -185,7 +186,7 @@ function Test-ConstrainedDelegation {
         
         # Check for Resource-Based Constrained Delegation (RBCD)
         $objectsWithRBCD = Get-ADObject -Filter {msDS-AllowedToActOnBehalfOfOtherIdentity -like '*'} `
-            -Properties msDS-AllowedToActOnBehalfOfOtherIdentity, objectClass, Name
+            -Properties msDS-AllowedToActOnBehalfOfOtherIdentity, objectClass, Name -Server $__adServer
         
         foreach ($object in $objectsWithRBCD) {
             $finding = [ADSecurityFinding]::new()

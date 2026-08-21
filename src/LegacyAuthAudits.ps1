@@ -56,15 +56,20 @@ function Get-ADLinkedGposOrdered {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$TargetDn
+        [string]$TargetDn,
+
+        [Parameter()]
+        [string]$Server
     )
 
     try {
-        $inheritance = Get-GPInheritance -Target $TargetDn -ErrorAction Stop
+        $inheritance = if ($Server) { Get-GPInheritance -Target $TargetDn -Server $Server -ErrorAction Stop } else { Get-GPInheritance -Target $TargetDn -ErrorAction Stop }
         return @($inheritance.GpoLinks |
             Sort-Object -Property Order |
             ForEach-Object {
-                try { Get-GPO -Guid $_.GpoId -ErrorAction Stop } catch { $null }
+                try {
+                    if ($Server) { Get-GPO -Guid $_.GpoId -Server $Server -ErrorAction Stop } else { Get-GPO -Guid $_.GpoId -ErrorAction Stop }
+                } catch { $null }
             } |
             Where-Object { $_ })
     }
@@ -90,12 +95,15 @@ function Get-ADPolicyRegistryValue {
         [string]$Key,
 
         [Parameter(Mandatory)]
-        [string]$ValueName
+        [string]$ValueName,
+
+        [Parameter()]
+        [string]$Server
     )
 
     foreach ($gpo in $Gpos) {
         try {
-            $regValue = Get-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName $ValueName -ErrorAction Stop
+            $regValue = if ($Server) { Get-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName $ValueName -Server $Server -ErrorAction Stop } else { Get-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName $ValueName -ErrorAction Stop }
             if ($regValue -and $null -ne $regValue.Value) {
                 return [PSCustomObject]@{
                     Value  = $regValue.Value
@@ -161,6 +169,7 @@ function Test-ADLegacyAuthSurface {
 
     Write-Verbose "Starting Legacy Auth & Name-Poisoning Surface audit..."
     $findings = @()
+    $__adServer = Get-ADSecurityAuditTargetServerValue
 
     if ($Snapshot) {
         Write-Verbose "Test-ADLegacyAuthSurface: -Snapshot supplied; GPO-linked registry policy state and live per-DC registry reads are not part of the snapshot schema, so this audit is skipped entirely (offline mode performs no live AD/network access)."
@@ -178,7 +187,7 @@ function Test-ADLegacyAuthSurface {
     }
 
     try {
-        $domain = Get-ADDomain -ErrorAction Stop
+        $domain = Get-ADDomain -Server $__adServer -ErrorAction Stop
     }
     catch {
         Write-Warning "Test-ADLegacyAuthSurface: failed to query domain: $_"
@@ -191,7 +200,7 @@ function Test-ADLegacyAuthSurface {
         # Get-ADDomainController -Filter * - the latter is forest-wide
         # regardless of -Server; see Common.ps1 for why.
         $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (legacy-auth audit)' -Query {
-            Get-ADSecurityAuditDomainController
+            Get-ADSecurityAuditDomainController -Server $__adServer
         })
     }
     catch {
@@ -221,8 +230,8 @@ function Test-ADLegacyAuthSurface {
         Write-Verbose "Test-ADLegacyAuthSurface: falling back to default Domain Controllers OU path '$dcOuDn'."
     }
 
-    $dcOuGpos   = Get-ADLinkedGposOrdered -TargetDn $dcOuDn
-    $domainGpos = Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName
+    $dcOuGpos   = Get-ADLinkedGposOrdered -TargetDn $dcOuDn -Server $__adServer
+    $domainGpos = Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName -Server $__adServer
     # DC OU precedence first (most specific to the DCs being evaluated),
     # domain root as fallback.
     $dcScopeGpos = @($dcOuGpos + $domainGpos)
@@ -239,7 +248,7 @@ function Test-ADLegacyAuthSurface {
     # -------------------------------------------------------------------
     try {
         $target = $Script:LegacyAuthRegistryTargets.Smb1
-        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
         $isEnabled  = $false
         $source     = $null
@@ -284,7 +293,7 @@ function Test-ADLegacyAuthSurface {
     # -------------------------------------------------------------------
     try {
         $target = $Script:LegacyAuthRegistryTargets.SmbSigning
-        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
         $notRequired = $false
         $source      = $null
@@ -329,7 +338,7 @@ function Test-ADLegacyAuthSurface {
     # -------------------------------------------------------------------
     try {
         $target = $Script:LegacyAuthRegistryTargets.LmCompatibilityLevel
-        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
         $isWeak = $false
         $source = $null
@@ -382,7 +391,7 @@ function Test-ADLegacyAuthSurface {
         # domain-wide, so only the domain root and DC OU links are
         # consulted; a policy linked exclusively to some other OU will not
         # be seen by this check (see function help).
-        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
         $isEnabled = $true
         $source    = $null
@@ -430,7 +439,7 @@ function Test-ADLegacyAuthSurface {
     # -------------------------------------------------------------------
     try {
         $target = $Script:LegacyAuthRegistryTargets.WsusServer
-        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
         $wuServer = $null
         $source   = $null

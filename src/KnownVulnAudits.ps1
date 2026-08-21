@@ -261,7 +261,7 @@ function Test-ADKnownDCVulnerabilities {
         # Get-ADDomainController -Filter * - the latter is forest-wide
         # regardless of -Server; see Common.ps1 for why.
         $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (known-vuln audit)' -Query {
-            Get-ADSecurityAuditDomainController
+            Get-ADSecurityAuditDomainController -Server (Get-ADSecurityAuditTargetServerValue)
         })
     }
     catch {

@@ -207,6 +207,7 @@ function Test-ADDnsSecurity {
 
     Write-Verbose "Starting AD-integrated DNS security audit..."
     $findings = @()
+    $__adServer = Get-ADSecurityAuditTargetServerValue
 
     # -------------------------------------------------------------------
     # Check 1: Non-Default Members in DnsAdmins
@@ -240,7 +241,7 @@ function Test-ADDnsSecurity {
             $dnsAdminsGroup = $null
             try {
                 $dnsAdminsGroup = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup DnsAdmins' -Query {
-                    Get-ADGroup -Filter "Name -eq 'DnsAdmins'" -ErrorAction Stop
+                    Get-ADGroup -Filter "Name -eq 'DnsAdmins'" -Server $__adServer -ErrorAction Stop
                 }
             }
             catch {
@@ -250,7 +251,7 @@ function Test-ADDnsSecurity {
             if ($dnsAdminsGroup) {
                 $dnsAdminsDN = $dnsAdminsGroup.DistinguishedName
                 $members = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroupMember DnsAdmins' -Query {
-                    Get-ADGroupMember -Identity $dnsAdminsGroup -ErrorAction Stop
+                    Get-ADGroupMember -Identity $dnsAdminsGroup -Server $__adServer -ErrorAction Stop
                 }
 
                 foreach ($member in @($members)) {
@@ -304,8 +305,8 @@ function Test-ADDnsSecurity {
     }
 
     try {
-        $domain = Get-ADDomain -ErrorAction Stop
-        $forest = Get-ADForest -ErrorAction SilentlyContinue
+        $domain = Get-ADDomain -Server $__adServer -ErrorAction Stop
+        $forest = Get-ADForest -Server $__adServer -ErrorAction SilentlyContinue
 
         $dnsPartitions = @("DC=DomainDnsZones,$($domain.DistinguishedName)")
         if ($forest) {
@@ -317,7 +318,7 @@ function Test-ADDnsSecurity {
         foreach ($partition in $dnsPartitions) {
             try {
                 $zonesInPartition = Get-ADObject -SearchBase "CN=MicrosoftDNS,$partition" -Filter "objectClass -eq 'dnsZone'" `
-                    -Properties dNSProperty, nTSecurityDescriptor -ErrorAction Stop
+                    -Properties dNSProperty, nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
                 foreach ($z in @($zonesInPartition)) {
                     if ($z.Name -in $Script:DnsPseudoZoneNames) { continue }
                     [void]$zoneObjects.Add($z)
@@ -374,7 +375,7 @@ function Test-ADDnsSecurity {
         if ($useDnsCmdlets) {
             try {
                 $knownSubnetRanges = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADReplicationSubnet (DNS delegation staleness)' -Query {
-                    Get-ADReplicationSubnet -Filter * -Properties Name -ErrorAction Stop
+                    Get-ADReplicationSubnet -Filter * -Properties Name -Server $__adServer -ErrorAction Stop
                 } | ForEach-Object { $_.Name })
             }
             catch {

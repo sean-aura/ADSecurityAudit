@@ -14,9 +14,32 @@ function Test-ADDangerousPermissions {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+    # Resolved once, explicitly passed to every live AD call below - not
+    # relying on the $PSDefaultParameterValues injection alone. $null when
+    # no override is active, which Get-AD* cmdlets treat identically to
+    # -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
+
+    try {
     Write-Verbose "Starting dangerous permissions audit..."
     $findings = @()
 
@@ -141,23 +164,54 @@ Remove the over-privileged ACE and grant only the required permissions:
     }
 
     try {
-        $domain = Get-ADDomain
+        $domain = if ($__adServer) { Get-ADDomain -Server $__adServer } else { Get-ADDomain }
         $domainDN = $domain.DistinguishedName
         
         # Check Enterprise Key Admins for overly permissive rights (CVE misconfiguration)
         Write-Verbose "Checking Enterprise Key Admins permissions on Domain Naming Context..."
         
-        $domainObject = Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor
+        $domainObject = if ($__adServer) {
+            Get-ADObject -Identity $domainDN -Server $__adServer -Properties nTSecurityDescriptor
+        }
+        else {
+            Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor
+        }
         $domainAcl = $domainObject.nTSecurityDescriptor
         
         # Get Enterprise Key Admins group (if it exists - only in Windows Server 2016+)
         try {
             $ekaGroup = $null
             try {
-                $ekaGroup = Get-ADGroup -Filter "Name -eq 'Enterprise Key Admins'" -ErrorAction Stop
+                $ekaGroup = if ($__adServer) {
+                    Get-ADGroup -Filter "Name -eq 'Enterprise Key Admins'" -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroup -Filter "Name -eq 'Enterprise Key Admins'" -ErrorAction Stop
+                }
             }
             catch {
-                Write-Verbose "Enterprise Key Admins group not found (expected on pre-2016 domains): $_"
+                Write-Verbose "Enterprise Key Admins group not found in the target domain: $_"
+            }
+
+            if (-not $ekaGroup) {
+                # Enterprise Key Admins, like Enterprise Admins/Schema
+                # Admins, exists ONLY in the forest root domain - a lookup
+                # scoped to a child domain finds nothing there regardless
+                # of Windows Server version, and the resulting silence was
+                # previously misattributed to "pre-2016 domain" rather
+                # than "wrong domain". Resolve the forest root explicitly
+                # and re-query there instead, matching the same fix
+                # already applied to Test-ADPrivilegedGroups.
+                try {
+                    $forestRootDomain = (Get-ADForest -ErrorAction Stop).RootDomain
+                    if ($forestRootDomain) {
+                        Write-Verbose "Test-ADDangerousPermissions: 'Enterprise Key Admins' not found in the target domain; re-querying against the forest root '$forestRootDomain' (it's forest-root-only, like Enterprise Admins/Schema Admins)."
+                        $ekaGroup = Get-ADGroup -Filter "Name -eq 'Enterprise Key Admins'" -Server $forestRootDomain -ErrorAction Stop
+                    }
+                }
+                catch {
+                    Write-Verbose "Enterprise Key Admins group genuinely not found (expected on pre-2016 forests): $_"
+                }
             }
 
             if ($ekaGroup) {
@@ -242,7 +296,12 @@ Remove the over-privileged ACE and grant only the required permissions:
             try {
                 $ou = $null
                 try {
-                    $ou = Get-ADObject -Identity $ouDN -Properties nTSecurityDescriptor -ErrorAction Stop
+                    $ou = if ($__adServer) {
+                        Get-ADObject -Identity $ouDN -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+                    }
+                    else {
+                        Get-ADObject -Identity $ouDN -Properties nTSecurityDescriptor -ErrorAction Stop
+                    }
                 }
                 catch {
                     Write-Verbose "Could not get OU '$ouDN': $_"
@@ -305,6 +364,12 @@ Remove the over-privileged ACE and grant only the required permissions:
     catch {
         Write-Error "Error during dangerous permissions audit: $_"
         throw
+    }
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
     }
 }
 

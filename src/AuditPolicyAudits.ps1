@@ -112,7 +112,7 @@ Configure SACL on AdminSDHolder to audit modifications:
         # forest-wide Configuration container and returns every domain's
         # DCs regardless of -Server, so a multi-domain-forest audit could
         # silently run auditpol checks against the WRONG domain's DCs.
-        $domainControllers = Get-ADSecurityAuditDomainController
+        $domainControllers = Get-ADSecurityAuditDomainController -Server (Get-ADSecurityAuditTargetServerValue)
         
         Write-Verbose "Checking audit policies on $($domainControllers.Count) domain controller(s)..."
         
@@ -274,11 +274,12 @@ Configure via Group Policy: Computer Config > Windows Settings > Security Settin
         
         # Check for SACL on sensitive AD objects
         try {
-            $domain = Get-ADDomain
+            $__adServer = Get-ADSecurityAuditTargetServerValue
+            $domain = Get-ADDomain -Server $__adServer
             $domainRoot = $domain.DistinguishedName
             
             # Check if AdminSDHolder has auditing configured
-            $adminSDHolder = Get-ADObject "CN=AdminSDHolder,CN=System,$domainRoot" -Properties nTSecurityDescriptor -ErrorAction Stop
+            $adminSDHolder = Get-ADObject "CN=AdminSDHolder,CN=System,$domainRoot" -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
             $acl = $adminSDHolder.nTSecurityDescriptor
             
             $hasAuditRules = $false
@@ -320,7 +321,7 @@ Set-Acl `$path `$acl
             }
             
             # Check domain root SACL
-            $domainObj = Get-ADObject $domainRoot -Properties nTSecurityDescriptor -ErrorAction Stop
+            $domainObj = Get-ADObject $domainRoot -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
             $domainAcl = $domainObj.nTSecurityDescriptor
             
             $hasDomainAuditRules = $false

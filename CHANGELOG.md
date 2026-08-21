@@ -6,6 +6,137 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [1.23.3] - 2026-08-21
+### Fixed
+- **Every remaining `Get-AD*`/`Get-GP*` call in the codebase now explicitly
+  passes `-Server`, rather than relying solely on the
+  `$PSDefaultParameterValues` global default.** This was completed by
+  reconciling a patch from [denandz](https://github.com/denandz) (which
+  independently discovered and fixed
+  the same class of issue via a `Get-ADSecurityAuditTargetServerValue`
+  helper - now a permanent alias for this module's existing
+  `Get-ADSecurityAuditActiveServerOverride`, so code written against either
+  name works) against the fixes already in this file, merging rather than
+  reapplying so the SYSVOL DFS-referral fix, the `nTSecurityDescriptor`
+  ACL-read conversion, the `-SearchScope OneLevel` container-exclusion fix,
+  and the Enterprise Admins/Schema Admins forest-root handling were
+  preserved rather than regressed. Several more genuine gaps were found
+  during three successive verification sweeps of the merged result:
+  `RodcSecurityAudits.ps1`'s RODC filter, `Snapshot.ps1`'s `Get-GPO`/
+  `Get-GPPermission`/Pre-Windows-2000-members calls, `LegacyAuthAudits.ps1`'s
+  own domain/DC-enumeration calls (only its two shared GPO-reading helpers
+  had been fixed previously), `KerberosHardeningAudits.ps1`'s krbtgt and
+  per-Tier-0-principal lookups, and three `Get-ADRootDSEValue` callers that
+  weren't passing `-Server` through to that helper. `Get-ADTier0Principal`
+  (`Common.ps1`) was also found to share the Enterprise Admins/Schema
+  Admins forest-root-only-group gap already fixed in `Test-ADPrivilegedGroups`
+  and was fixed the same way, since it feeds the Kerberos RC4/FAST checks.
+- **Documented the underlying lesson directly in the code, not just here**:
+  `Get-ADSecurityAuditActiveServerOverride`'s doc-comment in `Common.ps1`
+  now carries a `MANDATORY PATTERN` note explaining that the global
+  `$PSDefaultParameterValues` default *should* auto-supply `-Server` to
+  every matching cmdlet call (the wildcard matching logic is correct
+  PowerShell) but was observed not to be reliably picked up in practice;
+  every new `Get-AD*`/`Set-AD*`/`Get-GP*`/`Set-GP*` call added to this
+  module going forward must explicitly pass `-Server`, not depend on the
+  global default alone.
+- **Null-safety of the `-Server` value itself was verified, not assumed**:
+  `Set-ADSecurityAuditTargetServer`'s `-Server` parameter carries
+  `[ValidateNotNullOrEmpty()]`, so every value flowing through
+  `Get-ADSecurityAuditActiveServerOverride`/`Get-ADSecurityAuditTargetServerValue`
+  is guaranteed to be either a genuine, non-empty server name or a clean
+  `$null` - never an empty string that could cause ambiguous cmdlet
+  behavior. This module's own helper functions
+  (`Get-ADRootDSEValue`, `Get-ADSecurityAuditDomainController`,
+  `Get-ADTargetDomainController`) already used conditional splatting
+  internally and are safe regardless of what's passed in. Passing an
+  explicit `-Server $null` to the underlying `Get-AD*`/`Get-GP*` cmdlets
+  themselves is the standard PowerShell idiom for optional
+  connection-targeting parameters and is expected to behave identically to
+  omitting `-Server` entirely, though this specific point rests on
+  well-established convention rather than direct execution in this
+  environment - worth keeping in mind if anything unexpected surfaces in
+  testing.
+- **Certificate template (ESC4) and CA object (ESC7) ACL reads used
+  `Get-Acl -Path "AD:$dn"`, which has NO `-Server` parameter at all** and
+  reads via the built-in `AD:` PSDrive's own ambient default domain/DC -
+  completely bypassing `Set-ADSecurityAuditTargetServer`'s override,
+  regardless of every other fix in this file. Affected
+  `Test-ADCertificateServices`, `Test-ADCSExtended`, and
+  `Get-ADSnapshot`'s ADCS collection (baking the wrong domain's ACL data
+  permanently into snapshots too). `Test-AdminSDHolder`,
+  `Test-ADDangerousPermissions`, and `Get-ADControlPathGraph` were
+  already reading ACLs correctly, via `Get-ADObject -Properties
+  nTSecurityDescriptor` (a real `Get-AD*` cmdlet, which IS `-Server`-
+  aware and returns the identical `ActiveDirectorySecurity`/`.Access`
+  object shape `Get-Acl` does) - used as the template for this fix at all
+  five affected call sites.
+- **SYSVOL UNC paths (`Test-ADGroupPolicies`'s permission check,
+  `Test-ADGpoDeployedSecrets`'s policy root) were built from the bare
+  domain DNS name** (`\\domain.tld\SYSVOL\...`), which is resolved via
+  DFS Namespace referral - the same "closest DC to the calling machine,
+  not necessarily the domain being audited" ambiguity DC-locator has for
+  AD queries. `Get-Acl` on a UNC path has no `-Server` parameter to fix
+  this with; the only fix is putting the resolved DC directly in the
+  path. Both now use the active `-Server` override for the UNC path's
+  server component (falling back to the domain DNS name, exactly as
+  before, when no override is set).
+- **GPO-related checks were completely unscoped by `-Server` this entire
+  time - a separate, previously-undiscovered gap from everything else in
+  this section.** `Set-ADSecurityAuditTargetServer` only ever installed a
+  `$PSDefaultParameterValues` wildcard for `Get-AD*`/`Set-AD*`/`New-AD*`/
+  `Remove-AD*` (the ActiveDirectory module). The GroupPolicy module's
+  cmdlets - `Get-GPO`, `Get-GPInheritance`, `Get-GPPermission`,
+  `Get-GPRegistryValue` - start with `Get-GP`, not `Get-AD`, so that
+  wildcard **never matched them, at all, regardless of whether an
+  override was active for AD cmdlets.** Every GPO-consuming check
+  (`Test-ADGroupPolicies`, `Test-ADLegacyAuthSurface`'s and
+  `Test-ADDomainHardeningFlags`'s and `Test-ADKerberosHardening`'s shared
+  `Get-ADLinkedGposOrdered`/`Get-ADPolicyRegistryValue` helpers, and
+  `Get-ADSnapshot`'s GPO collection) has been silently reading GPOs from
+  whatever domain the GroupPolicy module's own default resolution picked
+  - the machine's own joined domain, in the classic multi-domain-forest
+  scenario - even when `-Server` was correctly set and honored for every
+  AD cmdlet in the same run. Fixed by installing the equivalent
+  `Get-GP*`/`Set-GP*`/`New-GP*`/`Remove-GP*` wildcards alongside the
+  existing AD ones (both cleared together too); no call-site changes were
+  needed since these cmdlets already accept `-Server` and derive the
+  target domain from it, identically to the AD cmdlets.
+### Changed
+- **`-Server` now resolves to the target domain's PDC Emulator
+  specifically, not a bare domain name or an arbitrary DC-locator pick.**
+  `Resolve-ADSecurityAuditTargetServer` (used by `Start-ADSecurityAudit`,
+  `Get-ADSnapshot`, `Test-ADMachineAccountQuota`, and every other
+  function's own `-Server` parameter below) now takes whatever value it
+  would previously have returned (an explicit `-Server`, or the
+  `$env:USERDNSDOMAIN` default) and resolves it one further step to that
+  domain's PDC Emulator FSMO role holder via `Get-ADDomain`'s own
+  `.PDCEmulator` property, falling back to the plain value if that
+  resolution fails. This removes an entire category of ambiguity in one
+  place rather than depending on every downstream call being individually
+  correct: a bare domain FQDN was never a valid
+  `Get-ADDomainController -Identity` value to begin with, and letting the
+  AD client's own DC-locator pick "a" DC for a domain name is exactly the
+  non-deterministic, potentially-wrong-domain-in-a-forest resolution this
+  module's `-Server` override exists to bypass. Every AD query for the
+  rest of a run now targets one single, consistent, well-defined DC.
+- **Every individual audit function now accepts its own `-Server`
+  parameter** (`Test-ADUserSecurity`, `Get-ADPrivilegedUsers`,
+  `Test-ADPrivilegedGroups`, `Test-ADDomainAdminEquivalence`,
+  `Test-ADRodcSecurity`, joining `Test-ADMachineAccountQuota` and
+  `Get-ADSnapshot`, which already had one) - defense-in-depth for the
+  case where a function is called standalone rather than through
+  `Start-ADSecurityAudit -Server ...`. Previously, calling any of these
+  directly meant every `Get-AD*` call inside fell back to the ambient/
+  serverless bind with no way to target a specific domain at all.
+  Installs the same `Set-ADSecurityAuditTargetServer` override
+  `Start-ADSecurityAudit` uses, for the duration of that call only, and
+  only if one isn't already active - so nesting inside a
+  `Start-ADSecurityAudit -Server` run is completely unaffected (never
+  double-installs or clears the parent run's override). The remaining
+  ~20 audit functions do not yet have this - they still rely solely on
+  an active override being installed by whatever called them.
 ### Fixed
 - **`Get-ADTargetDomainController` failed with "Cannot find directory
   server with identity: `<domain FQDN>`" whenever the active `-Server`

@@ -19,9 +19,32 @@ function Test-ADGroupPolicies {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+    # Resolved once, explicitly passed to every live AD/GPO call below -
+    # not relying on the $PSDefaultParameterValues injection alone. $null
+    # when no override is active, which Get-AD*/Get-GP* cmdlets treat
+    # identically to -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
+
+    try {
     Write-Verbose "Starting Group Policy audit..."
     $findings = @()
 
@@ -145,8 +168,8 @@ function Test-ADGroupPolicies {
     try {
         Import-Module GroupPolicy -ErrorAction Stop
         
-        $allGPOs = Get-GPO -All
-        $domain = Get-ADDomain
+        $allGPOs = if ($__adServer) { Get-GPO -All -Server $__adServer } else { Get-GPO -All }
+        $domain = if ($__adServer) { Get-ADDomain -Server $__adServer } else { Get-ADDomain }
         
         Write-Verbose "Analyzing $($allGPOs.Count) GPOs..."
         
@@ -159,7 +182,7 @@ function Test-ADGroupPolicies {
                 -PercentComplete (($currentGpo / $gpoCount) * 100)
             
             # Get GPO permissions
-            $gpoPermissions = Get-GPPermission -Guid $gpo.Id -All
+            $gpoPermissions = if ($__adServer) { Get-GPPermission -Guid $gpo.Id -All -Server $__adServer } else { Get-GPPermission -Guid $gpo.Id -All }
             
             # Check for dangerous permissions granted to non-admin users/groups
             foreach ($permission in $gpoPermissions) {
@@ -206,7 +229,7 @@ function Test-ADGroupPolicies {
             }
             
             # Check for GPOs linked to sensitive OUs
-            $gpoLinks = Get-ADObject -Filter "gPLink -like '*$($gpo.Id)*'" -Properties gPLink, DistinguishedName
+            $gpoLinks = Get-ADObject -Filter "gPLink -like '*$($gpo.Id)*'" -Properties gPLink, DistinguishedName -Server $__adServer
             
             foreach ($link in $gpoLinks) {
                 # Check if linked to Domain Controllers OU
@@ -263,7 +286,17 @@ function Test-ADGroupPolicies {
         
         # Check SYSVOL permissions
         Write-Verbose "Checking SYSVOL permissions..."
-        $sysvolPath = "\\$($domain.DNSRoot)\SYSVOL\$($domain.DNSRoot)"
+        # The server component of the UNC path uses the active -Server
+        # override when one is set, not just the domain's DNS name - see
+        # the matching comment on Get-ADGpoSecretsSysvolPolicyRoot
+        # (GpoSecretsAudits.ps1) for why a bare domain name here is
+        # subject to the same "closest DC" DFS-referral ambiguity Get-AD*/
+        # Get-GP* cmdlets have via -Server, with no -Server parameter of
+        # its own to fix it - the only fix is putting the resolved DC
+        # directly in the path.
+        $sysvolServer = Get-ADSecurityAuditActiveServerOverride
+        if (-not $sysvolServer) { $sysvolServer = $domain.DNSRoot }
+        $sysvolPath = "\\$sysvolServer\SYSVOL\$($domain.DNSRoot)"
         
         if (Test-Path $sysvolPath) {
             try {
@@ -312,6 +345,12 @@ function Test-ADGroupPolicies {
     catch {
         Write-Error "Error during Group Policy audit: $_"
         throw
+    }
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
     }
 }
 

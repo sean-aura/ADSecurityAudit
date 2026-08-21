@@ -13,9 +13,32 @@ function Test-AdminSDHolder {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+    # Resolved once, explicitly passed to every live AD call below - not
+    # relying on the $PSDefaultParameterValues injection alone. $null when
+    # no override is active, which Get-AD* cmdlets treat identically to
+    # -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
+
+    try {
     Write-Verbose "Starting AdminSDHolder audit..."
     $findings = @()
 
@@ -152,13 +175,18 @@ function Test-AdminSDHolder {
 
     try {
         # Get the domain DN
-        $domain = Get-ADDomain
+        $domain = if ($__adServer) { Get-ADDomain -Server $__adServer } else { Get-ADDomain }
         $adminSDHolderDN = "CN=AdminSDHolder,CN=System,$($domain.DistinguishedName)"
         
         Write-Verbose "Checking AdminSDHolder at: $adminSDHolderDN"
         
         # Get AdminSDHolder object with ACL
-        $adminSDHolder = Get-ADObject -Identity $adminSDHolderDN -Properties nTSecurityDescriptor
+        $adminSDHolder = if ($__adServer) {
+            Get-ADObject -Identity $adminSDHolderDN -Server $__adServer -Properties nTSecurityDescriptor
+        }
+        else {
+            Get-ADObject -Identity $adminSDHolderDN -Properties nTSecurityDescriptor
+        }
         $acl = $adminSDHolder.nTSecurityDescriptor
         
         $acceptableTrustees = @(
@@ -245,7 +273,12 @@ function Test-AdminSDHolder {
         
         # Check for accounts with adminCount=1 that shouldn't have it
         Write-Verbose "Checking for orphaned adminCount attributes..."
-        $protectedUsers = Get-ADUser -Filter 'adminCount -eq 1' -Properties adminCount, MemberOf, SamAccountName, DistinguishedName
+        $protectedUsers = if ($__adServer) {
+            Get-ADUser -Filter 'adminCount -eq 1' -Server $__adServer -Properties adminCount, MemberOf, SamAccountName, DistinguishedName
+        }
+        else {
+            Get-ADUser -Filter 'adminCount -eq 1' -Properties adminCount, MemberOf, SamAccountName, DistinguishedName
+        }
         
         # Build a list of all members of protected groups (using recursive membership)
         $protectedGroupMembers = @{}
@@ -253,7 +286,12 @@ function Test-AdminSDHolder {
             try {
                 $group = $null
                 try {
-                    $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                    $group = if ($__adServer) {
+                        Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
+                    }
+                    else {
+                        Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                    }
                 }
                 catch {
                     Write-Verbose "Failed to get protected group '$groupName': $_"
@@ -261,7 +299,12 @@ function Test-AdminSDHolder {
                 if ($group) {
                     $members = $null
                     try {
-                        $members = Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+                        $members = if ($__adServer) {
+                            Get-ADGroupMember -Identity $group -Recursive -Server $__adServer -ErrorAction Stop
+                        }
+                        else {
+                            Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+                        }
                     }
                     catch {
                         Write-Verbose "Failed to get members of protected group '$groupName': $_"
@@ -308,6 +351,12 @@ function Test-AdminSDHolder {
     catch {
         Write-Error "Error during AdminSDHolder audit: $_"
         throw
+    }
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
     }
 }
 

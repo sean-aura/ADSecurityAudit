@@ -129,6 +129,7 @@ function Get-ADControlPathGraph {
     )
 
     Write-Verbose "Get-ADControlPathGraph: building control-edge graph..."
+    $__adServer = Get-ADSecurityAuditTargetServerValue
 
     $edges = [System.Collections.ArrayList]::new()
     $tier0Targets = [System.Collections.ArrayList]::new()
@@ -148,7 +149,7 @@ function Get-ADControlPathGraph {
             $null
         }
         else {
-            Get-ADDomain -ErrorAction Stop
+            Get-ADDomain -Server $__adServer -ErrorAction Stop
         }
     }
     catch {
@@ -185,7 +186,7 @@ function Get-ADControlPathGraph {
             # Get-ADDomainController -Filter * - the latter is forest-wide
             # regardless of -Server; see Common.ps1 for why.
             @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (control-path graph)' -Query {
-                Get-ADSecurityAuditDomainController
+                Get-ADSecurityAuditDomainController -Server $__adServer
             })
         }
     }
@@ -238,7 +239,7 @@ function Get-ADControlPathGraph {
         if (-not $groupDN -and -not $Snapshot) {
             try {
                 $g = Invoke-ADQueryWithRetry -OperationName "Get-ADGroup '$groupName' (control-path graph)" -Query {
-                    Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
                 }
                 if ($g) { $groupDN = $g.DistinguishedName }
             }
@@ -266,7 +267,7 @@ function Get-ADControlPathGraph {
     else {
         try {
             $rawGroups = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup (control-path graph)' -Query {
-                Get-ADGroup -Filter '*' -ResultPageSize 500 -Properties Members -ErrorAction Stop
+                Get-ADGroup -Filter '*' -ResultPageSize 500 -Properties Members -Server $__adServer -ErrorAction Stop
             })
             $groups = @($rawGroups | ForEach-Object {
                 [PSCustomObject]@{
@@ -354,7 +355,7 @@ function Get-ADControlPathGraph {
         else {
             try {
                 $obj = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor ($targetDN)" -Query {
-                    Get-ADObject -Identity $targetDN -Properties nTSecurityDescriptor -ErrorAction Stop
+                    Get-ADObject -Identity $targetDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
                 }
                 if ($obj -and $obj.nTSecurityDescriptor) {
                     $aclInfo = @{

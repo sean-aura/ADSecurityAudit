@@ -217,7 +217,8 @@ function Test-ADCertificateServices {
 
     try {
         # Check if AD CS is installed
-        $configContext = Get-ADRootDSEValue -Property configurationNamingContext
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
         
         try {
@@ -227,7 +228,7 @@ function Test-ADCertificateServices {
             # container object itself, which has no template attributes
             # and would otherwise be silently iterated as if it were a
             # real template.
-            $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -ErrorAction Stop
+            $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
         }
         catch {
             Write-Verbose "AD Certificate Services not found or accessible. Skipping AD CS audit."
@@ -237,7 +238,7 @@ function Test-ADCertificateServices {
         Write-Verbose "Analyzing $($certTemplates.Count) certificate templates..."
         
         # Get the domain for checking enrollment permissions
-        $domain = Get-ADDomain
+        $domain = Get-ADDomain -Server $__adServer
         
         # Define low-privileged enrollment principals that make ESC1 exploitable
         $lowPrivilegedPrincipals = @(
@@ -255,9 +256,19 @@ function Test-ADCertificateServices {
             }
             
             # Get enrollment permissions
+            #
+            # Get-ADObject -Properties nTSecurityDescriptor, not
+            # Get-Acl -Path "AD:...": Get-Acl against the "AD:" PSDrive
+            # has NO -Server parameter at all and reads via whatever
+            # domain/DC the AD: drive itself defaults to (the calling
+            # session's ambient domain) - completely bypassing this
+            # module's -Server override, unlike every other AD read here.
+            # nTSecurityDescriptor returns the identical
+            # ActiveDirectorySecurity object type (.Access, etc.) via a
+            # real Get-AD* cmdlet, which IS -Server-aware.
             $templateAcl = $null
             try {
-                $templateAcl = Get-Acl -Path "AD:$($template.DistinguishedName)" -ErrorAction Stop
+                $templateAcl = (Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor
             }
             catch {
                 Write-Verbose "Could not get ACL for template '$templateName': $_"
@@ -415,12 +426,15 @@ function Test-ADCertificateServices {
             # a real CA, producing a bogus/confusing ACL check and
             # potential finding attributed to a "CA" named "Enrollment
             # Services" that isn't actually a Certificate Authority.
-            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -ErrorAction Stop
+            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
             
             foreach ($ca in $certAuthorities) {
                 $acl = $null
                 try {
-                    $acl = Get-Acl -Path "AD:$($ca.DistinguishedName)" -ErrorAction Stop
+                    # Get-ADObject -Properties nTSecurityDescriptor, not
+                    # Get-Acl -Path "AD:..." - see the matching comment
+                    # above on the template ACL read for why.
+                    $acl = (Get-ADObject -Identity $ca.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor
                 }
                 catch {
                     Write-Verbose "Could not get ACL for CA '$($ca.Name)': $_"

@@ -126,15 +126,16 @@ function Test-LAPSDeployment {
     }
 
     try {
-        $domain = Get-ADDomain
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $domain = Get-ADDomain -Server $__adServer
         
         # Get the proper schema naming context from RootDSE
-        $rootDSE = Get-ADRootDSE
+        $rootDSE = Get-ADRootDSE -Server $__adServer
         $schemaPath = "CN=ms-Mcs-AdmPwd,$($rootDSE.schemaNamingContext)"
         
         # Check if LAPS schema is extended
         try {
-            $lapsSchema = Get-ADObject -Identity $schemaPath -ErrorAction Stop
+            $lapsSchema = Get-ADObject -Identity $schemaPath -Server $__adServer -ErrorAction Stop
             $lapsInstalled = $true
             Write-Verbose "LAPS schema extension detected."
         }
@@ -144,7 +145,7 @@ function Test-LAPSDeployment {
             # Also check for Windows LAPS (newer schema attribute)
             try {
                 $windowsLapsSchema = "CN=ms-LAPS-Password,$($rootDSE.schemaNamingContext)"
-                $windowsLaps = Get-ADObject -Identity $windowsLapsSchema -ErrorAction Stop
+                $windowsLaps = Get-ADObject -Identity $windowsLapsSchema -Server $__adServer -ErrorAction Stop
                 $lapsInstalled = $true
                 Write-Verbose "Windows LAPS schema extension detected."
             }
@@ -172,7 +173,7 @@ function Test-LAPSDeployment {
         # If LAPS is installed, check computer coverage
         if ($lapsInstalled) {
             # Check for both legacy LAPS and Windows LAPS attributes
-            $computers = Get-ADComputer -Filter * -Properties 'ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime', OperatingSystem -ResultPageSize 500 -ErrorAction Stop
+            $computers = Get-ADComputer -Filter * -Properties 'ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime', OperatingSystem -ResultPageSize 500 -Server $__adServer -ErrorAction Stop
             
             $computersWithLAPS = $computers | Where-Object { 
                 $_.'ms-Mcs-AdmPwdExpirationTime' -or $_.'msLAPS-PasswordExpirationTime' 

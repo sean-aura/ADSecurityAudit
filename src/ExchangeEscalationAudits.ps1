@@ -109,9 +109,10 @@ function Test-ADExchangeEscalation {
         }
     }
     else {
+        $__adServer = Get-ADSecurityAuditTargetServerValue
         try {
             $domain = Invoke-ADQueryWithRetry -OperationName 'Get-ADDomain (exchange-escalation audit)' -Query {
-                Get-ADDomain -ErrorAction Stop
+                Get-ADDomain -Server $__adServer -ErrorAction Stop
             }
         }
         catch {
@@ -129,7 +130,7 @@ function Test-ADExchangeEscalation {
 
         try {
             $domainObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor on $domainDN" -Query {
-                Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor -ErrorAction Stop
+                Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
             }
             if ($domainObject -and $domainObject.nTSecurityDescriptor) {
                 $domainAces = @($domainObject.nTSecurityDescriptor.Access)
@@ -141,7 +142,7 @@ function Test-ADExchangeEscalation {
 
         try {
             $adminSDHolderObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor on $adminSDHolderDN" -Query {
-                Get-ADObject -Identity $adminSDHolderDN -Properties nTSecurityDescriptor -ErrorAction Stop
+                Get-ADObject -Identity $adminSDHolderDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
             }
             if ($adminSDHolderObject -and $adminSDHolderObject.nTSecurityDescriptor) {
                 $adminSDHolderAces = @($adminSDHolderObject.nTSecurityDescriptor.Access)

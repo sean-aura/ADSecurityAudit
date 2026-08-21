@@ -129,10 +129,40 @@ function Test-ADRodcSecurity {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to - every Get-AD*
+        # call inside fell back to a "serverless" bind. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected; it
+        # never double-installs or clears the parent run's override.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        # Resolve-ADSecurityAuditTargetServer, not the raw -Server value:
+        # resolves to the domain's PDC Emulator specifically, so this
+        # standalone call targets the exact same single, deterministic DC
+        # Start-ADSecurityAudit itself would use for this domain, not an
+        # arbitrary DC-locator pick.
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+
+    try {
     Write-Verbose "Starting Read-Only Domain Controller security posture audit..."
+    # Resolved once, explicitly passed to every live AD call below - not
+    # relying on the $PSDefaultParameterValues injection alone. $null when
+    # no override is active, which Get-AD* cmdlets treat identically to
+    # -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
     $findings = @()
 
     # -------------------------------------------------------------------
@@ -156,7 +186,7 @@ function Test-ADRodcSecurity {
             # regardless of -Server; see Common.ps1 for why. -Filter is
             # still passed through so this only enumerates RODCs.
             $rodcs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController RODCs' -Query {
-                Get-ADSecurityAuditDomainController -Filter { IsReadOnly -eq $true }
+                Get-ADSecurityAuditDomainController -Filter { IsReadOnly -eq $true } -Server $__adServer
             })
         }
         catch {
@@ -229,9 +259,13 @@ function Test-ADRodcSecurity {
 
         try {
             $rodcObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject RODC attributes ($rodcName)" -Query {
-                Get-ADObject -Identity $computerObjectDN -Properties `
-                    'msDS-RevealedUsers', 'msDS-RevealOnDemandGroup', 'msDS-NeverRevealGroup', `
-                    'msDS-KrbTgtLink' -ErrorAction Stop
+                $params = @{
+                    Identity   = $computerObjectDN
+                    Properties = @('msDS-RevealedUsers', 'msDS-RevealOnDemandGroup', 'msDS-NeverRevealGroup', 'msDS-KrbTgtLink')
+                    ErrorAction = 'Stop'
+                }
+                if ($__adServer) { $params['Server'] = $__adServer }
+                Get-ADObject @params
             }
         }
         catch {
@@ -358,7 +392,9 @@ function Test-ADRodcSecurity {
         }
         else {
             $krbtgtUsers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser krbtgt_* accounts' -Query {
-                Get-ADUser -Filter "SamAccountName -like 'krbtgt_*'" -Properties DistinguishedName, SamAccountName -ErrorAction Stop
+                $params = @{ Filter = "SamAccountName -like 'krbtgt_*'"; Properties = @('DistinguishedName', 'SamAccountName'); ErrorAction = 'Stop' }
+                if ($__adServer) { $params['Server'] = $__adServer }
+                Get-ADUser @params
             })
         }
     }
@@ -389,6 +425,12 @@ function Test-ADRodcSecurity {
 
     Write-Verbose "Completed Read-Only Domain Controller security posture audit. Findings: $($findings.Count)"
     return $findings
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
+    }
 }
 
 #endregion

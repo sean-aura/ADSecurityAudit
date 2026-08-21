@@ -139,13 +139,16 @@ function Get-ADCSCertificateBlob {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$ContainerDN
+        [string]$ContainerDN,
+
+        [Parameter()]
+        [string]$Server
     )
 
     $blobs = [System.Collections.ArrayList]::new()
 
     try {
-        $obj = Get-ADObject -Identity $ContainerDN -Properties cACertificate, cn -ErrorAction Stop
+        $obj = Get-ADObject -Identity $ContainerDN -Properties cACertificate, cn -Server $Server -ErrorAction Stop
         foreach ($b in @($obj.cACertificate)) {
             if ($b) { [void]$blobs.Add([PSCustomObject]@{ Source = $obj.Name; Bytes = $b }) }
         }
@@ -155,7 +158,7 @@ function Get-ADCSCertificateBlob {
     }
 
     try {
-        $children = Get-ADObject -SearchBase $ContainerDN -SearchScope OneLevel -Filter * -Properties cACertificate, cn -ErrorAction Stop
+        $children = Get-ADObject -SearchBase $ContainerDN -SearchScope OneLevel -Filter * -Properties cACertificate, cn -Server $Server -ErrorAction Stop
         foreach ($child in $children) {
             foreach ($b in @($child.cACertificate)) {
                 if ($b) { [void]$blobs.Add([PSCustomObject]@{ Source = $child.Name; Bytes = $b }) }
@@ -340,7 +343,8 @@ function Test-ADCSExtended {
     }
     else {
         try {
-            $configContext = Get-ADRootDSEValue -Property configurationNamingContext
+            $__adServer = Get-ADSecurityAuditTargetServerValue
+            $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
             $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
 
             # -SearchScope OneLevel, not the default Subtree: a Subtree
@@ -358,13 +362,13 @@ function Test-ADCSExtended {
             # any real, misconfigured CA) or was silently skipped. OneLevel
             # returns only the real child objects, never the base container.
             $certTemplates = @(Invoke-ADQueryWithRetry -OperationName 'Get certificate templates (ADCS extended audit)' -Query {
-                Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -ErrorAction Stop
+                Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
             })
             $adcsInstalled = $true
 
             try {
                 $certAuthorities = @(Invoke-ADQueryWithRetry -OperationName 'Get enrollment services (ADCS extended audit)' -Query {
-                    Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -ErrorAction Stop
+                    Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
                 })
             }
             catch {
@@ -396,7 +400,16 @@ function Test-ADCSExtended {
         $templateName = if ($template.displayName) { $template.displayName } else { $template.Name }
 
         $templateAces = if ($Snapshot) { @($template.Access) } else {
-            try { @((Get-Acl -Path "AD:$($template.DistinguishedName)" -ErrorAction Stop).Access) }
+            try {
+                # Get-ADObject -Properties nTSecurityDescriptor, not
+                # Get-Acl -Path "AD:..." - the latter has no -Server
+                # parameter and reads via the AD: PSDrive's ambient
+                # default domain/DC, bypassing this module's -Server
+                # override entirely. nTSecurityDescriptor returns the
+                # same ActiveDirectorySecurity object (.Access, etc.) via
+                # a real, -Server-aware Get-AD* cmdlet.
+                @((Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor.Access)
+            }
             catch {
                 Write-Verbose "Test-ADCSExtended: could not get ACL for template '$templateName': $_"
                 @()
@@ -620,7 +633,7 @@ function Test-ADCSExtended {
             }
 
             foreach ($storeName in $storeTargets.Keys) {
-                $blobs = Get-ADCSCertificateBlob -ContainerDN $storeTargets[$storeName]
+                $blobs = Get-ADCSCertificateBlob -ContainerDN $storeTargets[$storeName] -Server $__adServer
                 foreach ($blob in $blobs) {
                     $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "$storeName`:$($blob.Source)"
                     if ($result) { [void]$weakCertResults.Add($result) }

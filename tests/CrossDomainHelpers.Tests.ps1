@@ -14,6 +14,190 @@ BeforeAll {
     . (Join-Path $root 'src/Common.ps1')
 }
 
+Describe 'Resolve-ADSecurityAuditTargetServer' {
+    <#
+        Regression/behavior coverage for PDC-Emulator resolution: whatever
+        -Server resolves to (explicit value, or the $env:USERDNSDOMAIN
+        default), this function takes one further step and resolves it to
+        that domain's PDC Emulator specifically - a single, deterministic
+        DC for the whole run/call, rather than a bare domain name (not a
+        valid Get-ADDomainController -Identity value) or an arbitrary
+        DC-locator pick.
+    #>
+    BeforeAll {
+        function Get-ADDomain { }
+    }
+
+    It 'resolves an explicit -Server domain name to its PDC Emulator' {
+        Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ PDCEmulator = 'dc01.domainb.corp.com' } } -ParameterFilter { $Server -eq 'domainb.corp.com' }
+
+        $result = Resolve-ADSecurityAuditTargetServer -Server 'domainb.corp.com'
+        $result | Should -Be 'dc01.domainb.corp.com'
+    }
+
+    It 'resolves an explicit -Server DC name to that domain''s PDC Emulator too (not necessarily the same DC)' {
+        Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ PDCEmulator = 'dc01.domainb.corp.com' } } -ParameterFilter { $Server -eq 'dc02.domainb.corp.com' }
+
+        $result = Resolve-ADSecurityAuditTargetServer -Server 'dc02.domainb.corp.com'
+        $result | Should -Be 'dc01.domainb.corp.com'
+    }
+
+    It 'falls back to the plain requested value if PDC Emulator resolution fails' {
+        Mock -CommandName Get-ADDomain -MockWith { throw 'simulated unreachable domain' }
+
+        $result = Resolve-ADSecurityAuditTargetServer -Server 'unreachable.corp.com'
+        $result | Should -Be 'unreachable.corp.com'
+    }
+
+    It 'returns $null when neither -Server nor $env:USERDNSDOMAIN is available' {
+        $originalUserDnsDomain = $env:USERDNSDOMAIN
+        try {
+            $env:USERDNSDOMAIN = $null
+            Resolve-ADSecurityAuditTargetServer | Should -BeNullOrEmpty
+        }
+        finally {
+            $env:USERDNSDOMAIN = $originalUserDnsDomain
+        }
+    }
+}
+
+Describe 'Set-ADSecurityAuditTargetServer - GroupPolicy module coverage' {
+    <#
+        Regression coverage for a real, previously-undiscovered gap: the
+        GroupPolicy module's cmdlets (Get-GPO, Get-GPInheritance,
+        Get-GPPermission, Get-GPRegistryValue - used by
+        Test-ADGroupPolicies, Test-ADLegacyAuthSurface,
+        Test-ADDomainHardeningFlags, Test-ADKerberosHardening, and
+        Get-ADSnapshot's GPO collection) start with "Get-GP", not "Get-AD"
+        - the original 'Get-AD*:Server' wildcard never matched them, so
+        every GPO-related check was completely unscoped by -Server this
+        whole time, independent of whether an override was active for AD
+        cmdlets.
+    #>
+    AfterEach {
+        Clear-ADSecurityAuditTargetServer
+    }
+
+    It 'installs a Get-GP*:Server default alongside Get-AD*:Server' {
+        Set-ADSecurityAuditTargetServer -Server 'dc01.domainb.corp.com'
+        $Global:PSDefaultParameterValues['Get-GP*:Server'] | Should -Be 'dc01.domainb.corp.com'
+        $Global:PSDefaultParameterValues['Get-AD*:Server'] | Should -Be 'dc01.domainb.corp.com'
+    }
+
+    It 'installs defaults for Set-GP*/New-GP*/Remove-GP* too, matching the AD-cmdlet pattern' {
+        Set-ADSecurityAuditTargetServer -Server 'dc01.domainb.corp.com'
+        $Global:PSDefaultParameterValues['Set-GP*:Server'] | Should -Be 'dc01.domainb.corp.com'
+        $Global:PSDefaultParameterValues['New-GP*:Server'] | Should -Be 'dc01.domainb.corp.com'
+        $Global:PSDefaultParameterValues['Remove-GP*:Server'] | Should -Be 'dc01.domainb.corp.com'
+    }
+
+    It 'removes all Get-GP*/Set-GP*/New-GP*/Remove-GP* defaults on Clear-ADSecurityAuditTargetServer' {
+        Set-ADSecurityAuditTargetServer -Server 'dc01.domainb.corp.com'
+        Clear-ADSecurityAuditTargetServer
+        $Global:PSDefaultParameterValues.ContainsKey('Get-GP*:Server') | Should -BeFalse
+        $Global:PSDefaultParameterValues.ContainsKey('Set-GP*:Server') | Should -BeFalse
+        $Global:PSDefaultParameterValues.ContainsKey('New-GP*:Server') | Should -BeFalse
+        $Global:PSDefaultParameterValues.ContainsKey('Remove-GP*:Server') | Should -BeFalse
+    }
+
+    It 'demonstrates the wildcard actually auto-supplies -Server to a Get-GP* cmdlet call' {
+        # A minimal fake cmdlet standing in for Get-GPO - proves the
+        # wildcard match/auto-injection mechanism itself works for
+        # "Get-GP*", not just that the string key was set correctly above.
+        function Get-GPO { param([string]$Server) $Server }
+
+        Set-ADSecurityAuditTargetServer -Server 'dc01.domainb.corp.com'
+        $result = Get-GPO
+        $result | Should -Be 'dc01.domainb.corp.com'
+    }
+}
+
+Describe 'AD-object ACL reads avoid the unscoped "AD:" PSDrive' {
+    <#
+        Regression coverage for a real, previously-undiscovered gap:
+        Get-Acl -Path "AD:$dn" has NO -Server parameter at all and reads
+        via the "AD:" PSDrive's own ambient default domain/DC - completely
+        bypassing Set-ADSecurityAuditTargetServer's override, unlike every
+        Get-AD* cmdlet call in this module. This affected certificate
+        template (ESC4) and CA object (ESC7) ACL reads specifically
+        (CertificateServicesAudits.ps1, CertificateServicesExtendedAudits.
+        ps1, Get-ADSnapshot) - AdminSDAudits.ps1/PermissionsAudits.ps1/
+        ControlPaths.ps1 were already doing this correctly via
+        Get-ADObject -Properties nTSecurityDescriptor, which IS
+        -Server-aware, and were used as the template for this fix.
+
+        This is a static source-inspection test, in the same style as
+        ADCSContainerScope.Tests.ps1: these functions have substantial
+        unrelated setup that would need extensive mocking to execute
+        safely here, so asserting the fix's actual shape (no more
+        "AD:"-PSDrive ACL reads; nTSecurityDescriptor reads present
+        instead) is a reliable, low-risk guard against this specific
+        regression reappearing.
+    #>
+    BeforeAll {
+        $root = Split-Path -Parent $PSScriptRoot
+        $script:AffectedFiles = @(
+            (Join-Path $root 'src/CertificateServicesAudits.ps1')
+            (Join-Path $root 'src/CertificateServicesExtendedAudits.ps1')
+            (Join-Path $root 'src/Snapshot.ps1')
+        )
+    }
+
+    It 'contains no remaining live Get-Acl -Path "AD:..." calls' {
+        foreach ($file in $script:AffectedFiles) {
+            $content = Get-Content -Path $file -Raw
+            # Only real invocations - not the explanatory comments left
+            # behind describing what NOT to do; those start with '#'.
+            $liveCalls = [regex]::Matches($content, '(?m)^\s*[^#\r\n]*Get-Acl\s+-Path\s+"AD:')
+            $liveCalls.Count | Should -Be 0 -Because "$file should read AD-object ACLs via Get-ADObject -Properties nTSecurityDescriptor, not the unscoped AD: PSDrive"
+        }
+    }
+
+    It 'uses Get-ADObject -Properties nTSecurityDescriptor for every certificate template/CA ACL read' {
+        foreach ($file in $script:AffectedFiles) {
+            $content = Get-Content -Path $file -Raw
+            $content | Should -Match 'Get-ADObject[^\r\n]*-Properties\s+nTSecurityDescriptor' -Because "$file should read certificate template/CA ACLs via the -Server-aware Get-ADObject path"
+        }
+    }
+}
+
+Describe 'SYSVOL UNC paths use the resolved -Server, not just the domain DNS name' {
+    <#
+        A bare domain name in a SYSVOL UNC path (\\domain.tld\SYSVOL\...)
+        is resolved via DFS Namespace referral, which - like DC-locator
+        for AD queries - picks a DC based on the CALLING MACHINE's own
+        site/subnet proximity, not necessarily the domain being audited.
+        Get-Acl has no -Server parameter for a UNC path, so the fix is to
+        put the resolved DC directly in the path's server component.
+    #>
+    BeforeAll {
+        $root = Split-Path -Parent $PSScriptRoot
+        . (Join-Path $root 'src/Common.ps1')
+    }
+
+    AfterEach {
+        Clear-ADSecurityAuditTargetServer
+    }
+
+    It 'Get-ADGpoSecretsSysvolPolicyRoot uses the active -Server override for the UNC server component' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src/GpoSecretsAudits.ps1')
+        function Get-ADDomain { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+
+        Set-ADSecurityAuditTargetServer -Server 'dc01.domainb.corp.com'
+        $result = Get-ADGpoSecretsSysvolPolicyRoot
+        $result | Should -Be '\\dc01.domainb.corp.com\SYSVOL\domainb.corp.com\Policies'
+    }
+
+    It 'Get-ADGpoSecretsSysvolPolicyRoot falls back to the domain DNS name when no override is active' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src/GpoSecretsAudits.ps1')
+        function Get-ADDomain { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+
+        Clear-ADSecurityAuditTargetServer
+        $result = Get-ADGpoSecretsSysvolPolicyRoot
+        $result | Should -Be '\\domainb.corp.com\SYSVOL\domainb.corp.com\Policies'
+    }
+}
+
 Describe 'Get-ADSecurityAuditActiveServerOverride' {
     AfterEach {
         Clear-ADSecurityAuditTargetServer
