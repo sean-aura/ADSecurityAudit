@@ -1,5 +1,17 @@
 # Module-level variables
 
+# Tracks whether the CURRENTLY ACTIVE -Server override (as resolved by
+# Resolve-ADSecurityAuditTargetServer) is itself an explicit, specific
+# Domain Controller the operator named - as opposed to a domain name (or
+# the $env:USERDNSDOMAIN default) that got resolved down to one DC (the
+# PDC Emulator) purely as a deterministic pick. Both end up as "a specific
+# DC FQDN" by the time downstream code sees the resolved -Server value, so
+# this flag is the only way to tell the two cases apart afterwards - see
+# Get-ADSecurityAuditServerIsExplicitDC / Get-ADSecurityAuditDomainController
+# for why the distinction matters (whether to scope a per-DC probe to just
+# that one DC, or still enumerate every DC in the domain).
+$Script:ADSecurityAuditServerIsExplicitDC = $false
+
 $Script:SeverityLevels = @{
     Critical = 4
     High = 3
@@ -263,6 +275,10 @@ function Clear-ADSecurityAuditTargetServer {
         $Global:PSDefaultParameterValues.Remove('New-GP*:Server')
         $Global:PSDefaultParameterValues.Remove('Remove-GP*:Server')
     }
+    # Reset alongside the override itself so a leftover $true from a
+    # previous run/call never survives into one where no -Server has been
+    # resolved yet - see the flag's declaration comment for what it means.
+    $Script:ADSecurityAuditServerIsExplicitDC = $false
 }
 
 # When -Server isn't supplied at all, this resolves a sensible, DETERMINISTIC
@@ -278,8 +294,9 @@ function Resolve-ADSecurityAuditTargetServer {
     <#
     .SYNOPSIS
         Resolves the effective -Server value to a SPECIFIC DC - the
-        domain's PDC Emulator, specifically - rather than a domain name or
-        an arbitrary/ambient DC.
+        domain's PDC Emulator, when a DOMAIN NAME was given or defaulted
+        to; but honors an explicit, specific DC identity AS GIVEN, without
+        substituting a different DC for it.
     .DESCRIPTION
         $env:USERDNSDOMAIN is set by the LSA at logon from the DOMAIN
         ACCOUNT's own domain - not $env:USERDOMAIN (NetBIOS form, can be
@@ -291,11 +308,29 @@ function Resolve-ADSecurityAuditTargetServer {
         -Server parameter was originally added to fix.
 
         Whatever value that gives (an explicit -Server, or the
-        $env:USERDNSDOMAIN default) is then resolved ONE MORE STEP: to
-        that domain's PDC Emulator FSMO role holder specifically, via
-        Get-ADDomain's own .PDCEmulator property. This removes an entire
-        category of ambiguity that a domain name or "just pick a DC" left
-        open:
+        $env:USERDNSDOMAIN default) is then checked to see whether it is
+        ALREADY a specific Domain Controller's own identity - via
+        Get-ADDomainController -Identity, which only succeeds for a real
+        DC's own GUID/Name/IPv4Address/DNS host name, not a bare domain
+        FQDN. If so, that exact value is returned unchanged: an operator
+        who names a specific DC has very often done so deliberately (a
+        segmented network, explicit rules of engagement, or simply the
+        only DC reachable for this engagement) and may not have access to,
+        or want traffic directed at, that domain's PDC Emulator at all -
+        silently redirecting to a different DC than the one asked for
+        defeats the entire purpose of passing a specific -Server value.
+        This was a real bug (reported): a specific-DC -Server value was
+        previously always promoted to the PDC Emulator regardless, which
+        broke the "only this one DC is reachable for the engagement" case
+        even though it worked correctly for the "target this domain"
+        case.
+
+        Only when the value is NOT itself a resolvable DC identity (the
+        normal case: a domain FQDN, or the $env:USERDNSDOMAIN default) is
+        it resolved ONE MORE STEP: to that domain's PDC Emulator FSMO role
+        holder specifically, via Get-ADDomain's own .PDCEmulator property.
+        This removes an entire category of ambiguity that a domain name or
+        "just pick a DC" left open:
           - A bare domain FQDN is not a valid Get-ADDomainController
             -Identity value (only a real DC's own GUID/Name/IPv4Address/
             DNS host name is) - every live-network-probe call that used
@@ -332,12 +367,13 @@ function Resolve-ADSecurityAuditTargetServer {
         means "not specified". Accepts a domain FQDN, a specific DC name,
         or is omitted entirely.
     .OUTPUTS
-        [string] the resolved PDC Emulator FQDN for the target domain, the
-        plain value passed/defaulted to if PDC resolution failed, or $null
-        if neither an explicit value nor $env:USERDNSDOMAIN is available
-        (e.g. a local, non-domain logon session) - callers treat a $null
-        return the same way they previously treated "no -Server given at
-        all".
+        [string] the specific DC as given (if it was already one), the
+        resolved PDC Emulator FQDN for the target domain (if a domain name
+        was given or defaulted to), the plain value passed/defaulted to if
+        PDC resolution failed, or $null if neither an explicit value nor
+        $env:USERDNSDOMAIN is available (e.g. a local, non-domain logon
+        session) - callers treat a $null return the same way they
+        previously treated "no -Server given at all".
     #>
     [CmdletBinding()]
     param(
@@ -355,8 +391,43 @@ function Resolve-ADSecurityAuditTargetServer {
     }
     else {
         Write-Verbose "Resolve-ADSecurityAuditTargetServer: -Server not specified and `$env:USERDNSDOMAIN is empty (e.g. a local, non-domain logon session); falling back to the AD module's own default resolution."
+        $Script:ADSecurityAuditServerIsExplicitDC = $false
         return $null
     }
+
+    # Fixed: don't promote an ALREADY-specific Domain Controller to the
+    # domain's PDC Emulator instead. -Identity only succeeds for a real
+    # DC's own GUID/Name/IPv4Address/DNS host name (it throws for a bare
+    # domain FQDN - the same distinction Get-ADTargetDomainController's
+    # own fix relies on), so success here is an unambiguous signal that
+    # $requested already names one specific DC, which is returned as-is.
+    # No -Server is passed on this call: -Identity and -Server are not
+    # meaningfully combinable here (there is no "different DC to ask" once
+    # -Identity already names the DC itself), and no override is active
+    # yet at the point this function runs, so nothing would auto-inject
+    # one anyway.
+    try {
+        $specificDC = Get-ADDomainController -Identity $requested -ErrorAction Stop
+        if ($specificDC) {
+            Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$requested' is itself a specific Domain Controller; using it directly rather than substituting the domain's PDC Emulator for it."
+            $Script:ADSecurityAuditServerIsExplicitDC = $true
+            return $requested
+        }
+    }
+    catch {
+        Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$requested' is not itself a resolvable Domain Controller identity ($_); treating it as a domain name and resolving to its PDC Emulator."
+    }
+
+    # Past this point, $requested is a domain name (or the
+    # $env:USERDNSDOMAIN default), not an operator-named specific DC -
+    # every remaining return path below resolves to "a" DC only as an
+    # implementation detail (a deterministic single-DC pick, or a bare
+    # fallback), not something the operator asked to be scoped to
+    # exclusively. Get-ADSecurityAuditDomainController and other
+    # per-DC-probe consumers rely on this flag to decide whether to still
+    # enumerate every DC in the domain (yes, in this branch) or narrow to
+    # just one DC (only when the flag above was set true).
+    $Script:ADSecurityAuditServerIsExplicitDC = $false
 
     try {
         $pdcEmulator = (Get-ADDomain -Server $requested -ErrorAction Stop).PDCEmulator
@@ -514,6 +585,50 @@ function Get-ADSecurityAuditTargetServerValue {
     return Get-ADSecurityAuditActiveServerOverride
 }
 
+function Get-ADSecurityAuditServerIsExplicitDC {
+    <#
+    .SYNOPSIS
+        Returns whether the CURRENTLY ACTIVE -Server override is itself an
+        explicit, specific Domain Controller the operator named - as
+        opposed to a domain name (or the $env:USERDNSDOMAIN default) that
+        Resolve-ADSecurityAuditTargetServer resolved down to one DC (the
+        PDC Emulator) purely as a deterministic pick.
+    .DESCRIPTION
+        Both cases end up as "a specific DC FQDN" by the time downstream
+        code sees the resolved -Server value, so the string alone can't
+        distinguish them - this flag is set by
+        Resolve-ADSecurityAuditTargetServer at the point where that
+        distinction is still knowable, and read back here by any consumer
+        that needs to decide between two genuinely different behaviors:
+
+          - $true (operator named one specific DC): a per-DC probe should
+            scope to ONLY that DC - the operator very often named it
+            because it's the only one reachable/in-scope for this
+            engagement (a segmented network, explicit rules of
+            engagement), and enumerating/attempting every other DC in the
+            domain anyway would generate noise or failures against DCs
+            that were never meant to be touched. See
+            Get-ADSecurityAuditDomainController.
+          - $false (a domain name, or no override at all): the existing
+            "enumerate every DC in the domain" behavior is correct and
+            should NOT be narrowed to one DC - several checks (e.g. the
+            anonymous-bind/null-session probes in
+            DomainHardeningAudits.ps1) specifically enumerate every DC to
+            avoid missing a partially-hardened fleet.
+
+        Always $false until Resolve-ADSecurityAuditTargetServer has run at
+        least once in this session, and reset to $false by
+        Clear-ADSecurityAuditTargetServer, so a bare -Server value nobody
+        ran through that resolution function is never mistakenly treated
+        as an explicit single-DC scope.
+    .OUTPUTS
+        [bool]
+    #>
+    [CmdletBinding()]
+    param()
+    return [bool]$Script:ADSecurityAuditServerIsExplicitDC
+}
+
 function Split-ADObjectByTargetDomain {
     <#
     .SYNOPSIS
@@ -599,7 +714,8 @@ function Get-ADSecurityAuditDomainController {
         scoped - unlike a bare `Get-ADDomainController -Filter`, which
         queries the forest-wide Sites/Configuration container and returns
         DCs from EVERY domain in the forest regardless of which -Server
-        you bind to.
+        you bind to. When -Server is itself an explicit, specific DC
+        (rather than a domain name), scopes to ONLY that one DC instead.
     .DESCRIPTION
         Get-ADDomainController's -Filter/-LDAPFilter parameter set searches
         the Configuration naming context (CN=Sites,CN=Configuration,...),
@@ -626,6 +742,25 @@ function Get-ADSecurityAuditDomainController {
         Get-ADDomain does NOT have this problem - it uses a different,
         -Identity/-Server-scoped code path, not the forest-wide
         Configuration container -Filter search does.
+
+        FIXED (reported regression): the domain-wide enumeration above is
+        correct when -Server is a domain name (or defaulted), but was
+        ALSO being applied when -Server was itself an explicit, specific
+        DC the operator named - e.g. the only DC reachable/in-scope for an
+        engagement (a segmented network, explicit rules of engagement).
+        Every per-DC probe would then still attempt every OTHER DC in the
+        domain too, generating failures/noise against DCs that were never
+        meant to be touched and defeating the entire purpose of naming one
+        specific DC. Since the resolved -Server string alone can't
+        distinguish "operator named this DC" from "a domain name got
+        resolved down to one DC (the PDC Emulator) as a deterministic
+        pick" (see Resolve-ADSecurityAuditTargetServer), this function now
+        checks Get-ADSecurityAuditServerIsExplicitDC, which carries that
+        distinction forward explicitly. When it's true, this function
+        resolves and returns ONLY the named DC (still honoring -Filter,
+        by checking that DC's own membership in the filtered result set,
+        since -Filter and -Identity are mutually exclusive parameter
+        sets on Get-ADDomainController) instead of enumerating the domain.
     .PARAMETER Server
         Optional. Passed through to both the Get-ADDomain and
         Get-ADDomainController calls - typically the active -Server
@@ -640,13 +775,16 @@ function Get-ADSecurityAuditDomainController {
         Optional. Passed through to Get-ADDomainController's -Filter.
         Defaults to '*'. Accepts the same string or script-block filter
         syntax Get-ADDomainController itself does (e.g. a RODC-only
-        filter), while still getting correct domain scoping.
+        filter), while still getting correct domain scoping (or, when
+        -Server is an explicit specific DC, correct single-DC scoping).
     .OUTPUTS
-        Array of Get-ADDomainController result objects, all confirmed to
-        belong to the resolved target domain. Throws if either the
-        Get-ADDomain or Get-ADDomainController call fails, mirroring the
-        -ErrorAction Stop every existing call site already used on its own
-        bare Get-ADDomainController call.
+        Array of Get-ADDomainController result objects: every DC belonging
+        to the resolved target domain (the normal case), or exactly the
+        one DC named by -Server when it is an explicit specific DC (empty
+        if that DC doesn't match a non-default -Filter). Throws if the
+        Get-ADDomain call, or resolving an explicit -Server to its DC,
+        fails - mirroring the -ErrorAction Stop every existing call site
+        already used on its own bare Get-ADDomainController call.
     #>
     [CmdletBinding()]
     param(
@@ -660,6 +798,36 @@ function Get-ADSecurityAuditDomainController {
     $domainParams = @{ ErrorAction = 'Stop' }
     if ($Server) { $domainParams['Server'] = $Server }
     $targetDomainDNSRoot = (Get-ADDomain @domainParams).DNSRoot
+
+    if ($Server -and (Get-ADSecurityAuditServerIsExplicitDC)) {
+        Write-Verbose "Get-ADSecurityAuditDomainController: '$Server' is an explicit, specific Domain Controller (not a domain name); scoping to ONLY this DC instead of enumerating every DC in '$targetDomainDNSRoot'."
+        try {
+            $singleDC = Get-ADDomainController -Identity $Server -ErrorAction Stop
+        }
+        catch {
+            throw "Get-ADSecurityAuditDomainController: could not resolve the explicitly-named Domain Controller '$Server': $_"
+        }
+
+        if ($Filter -and $Filter -ne '*') {
+            # -Filter and -Identity are mutually exclusive parameter sets
+            # on Get-ADDomainController, so the single DC's match against
+            # a non-default filter (e.g. an RODC-only filter) can't be
+            # checked in the same -Identity call above. Run the same
+            # broad -Filter query the non-explicit-DC path below would
+            # use, purely to confirm whether our one DC is a member of
+            # that result set - not to enumerate DCs to probe.
+            $filterParams = @{ Filter = $Filter; ErrorAction = 'Stop' }
+            if ($Server) { $filterParams['Server'] = $Server }
+            $filterMatches = @(Get-ADDomainController @filterParams | Where-Object { $_.Domain -eq $targetDomainDNSRoot })
+            $isMatch = [bool]@($filterMatches | Where-Object { $_.HostName -eq $singleDC.HostName })
+            if (-not $isMatch) {
+                Write-Verbose "Get-ADSecurityAuditDomainController: '$Server' does not match -Filter '$Filter'; returning no Domain Controllers."
+                return @()
+            }
+        }
+
+        return @($singleDC)
+    }
 
     $dcParams = @{ Filter = $Filter; ErrorAction = 'Stop' }
     if ($Server) { $dcParams['Server'] = $Server }

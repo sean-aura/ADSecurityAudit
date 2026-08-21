@@ -18,35 +18,74 @@ Describe 'Resolve-ADSecurityAuditTargetServer' {
     <#
         Regression/behavior coverage for PDC-Emulator resolution: whatever
         -Server resolves to (explicit value, or the $env:USERDNSDOMAIN
-        default), this function takes one further step and resolves it to
-        that domain's PDC Emulator specifically - a single, deterministic
-        DC for the whole run/call, rather than a bare domain name (not a
-        valid Get-ADDomainController -Identity value) or an arbitrary
-        DC-locator pick.
+        default) is checked FIRST via Get-ADDomainController -Identity to
+        see whether it is ALREADY a specific Domain Controller. If so, it
+        is returned unchanged - an operator who names a specific DC (e.g.
+        the only one reachable/in-scope for an engagement) must not have
+        every query silently redirected to a DIFFERENT DC instead. Only a
+        genuine domain name (not itself a resolvable DC identity) is
+        resolved one further step, to that domain's PDC Emulator
+        specifically - a single, deterministic DC for the whole run/call,
+        rather than an arbitrary DC-locator pick.
+
+        Fixed regression: a specific -Server DC name was previously ALWAYS
+        promoted to that domain's PDC Emulator regardless, identical to
+        how a bare domain name was handled - breaking the "only this one
+        DC is reachable for the engagement" case even though the domain-
+        name case worked as intended.
     #>
     BeforeAll {
         function Get-ADDomain { }
+        function Get-ADDomainController { }
     }
 
-    It 'resolves an explicit -Server domain name to its PDC Emulator' {
+    AfterEach {
+        # Resolve-ADSecurityAuditTargetServer sets the shared
+        # $Script:ADSecurityAuditServerIsExplicitDC flag (see
+        # Get-ADSecurityAuditServerIsExplicitDC) - reset it after every
+        # test so no test in this file (or Get-ADSecurityAuditDomainController's
+        # Describe block below) ever sees a stale value left over from here.
+        Clear-ADSecurityAuditTargetServer
+    }
+
+    It 'resolves an explicit -Server domain name (not itself a specific DC) to its PDC Emulator' {
+        Mock -CommandName Get-ADDomainController -MockWith { throw 'simulated: not a valid DC identity' } -ParameterFilter { $Identity -eq 'domainb.corp.com' }
         Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ PDCEmulator = 'dc01.domainb.corp.com' } } -ParameterFilter { $Server -eq 'domainb.corp.com' }
 
         $result = Resolve-ADSecurityAuditTargetServer -Server 'domainb.corp.com'
         $result | Should -Be 'dc01.domainb.corp.com'
+        Get-ADSecurityAuditServerIsExplicitDC | Should -BeFalse -Because 'a domain name resolved to its PDC Emulator is not an operator-named specific DC'
     }
 
-    It 'resolves an explicit -Server DC name to that domain''s PDC Emulator too (not necessarily the same DC)' {
-        Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ PDCEmulator = 'dc01.domainb.corp.com' } } -ParameterFilter { $Server -eq 'dc02.domainb.corp.com' }
+    It 'honors an explicit -Server SPECIFIC DC name as-is, WITHOUT substituting the PDC Emulator for it' {
+        # The reported regression: dc02 might be the ONLY DC reachable/
+        # in-scope for this engagement (segmented network, explicit rules
+        # of engagement, etc.) - silently redirecting to dc01 (the PDC
+        # Emulator) instead defeats the entire purpose of naming dc02.
+        Mock -CommandName Get-ADDomainController -MockWith { [PSCustomObject]@{ HostName = 'dc02.domainb.corp.com' } } -ParameterFilter { $Identity -eq 'dc02.domainb.corp.com' }
+        Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ PDCEmulator = 'dc01.domainb.corp.com' } }
 
         $result = Resolve-ADSecurityAuditTargetServer -Server 'dc02.domainb.corp.com'
-        $result | Should -Be 'dc01.domainb.corp.com'
+        $result | Should -Be 'dc02.domainb.corp.com'
+        Should -Invoke -CommandName Get-ADDomain -Times 0 -Because 'a specific DC identity should never need the PDC Emulator lookup at all'
+        Get-ADSecurityAuditServerIsExplicitDC | Should -BeTrue -Because 'downstream per-DC-probe consumers (Get-ADSecurityAuditDomainController) need to know this was an explicit, specific DC'
     }
 
-    It 'falls back to the plain requested value if PDC Emulator resolution fails' {
+    It 'does not pass -Server on the Get-ADDomainController -Identity probe (no override is active yet at this point)' {
+        Mock -CommandName Get-ADDomainController -MockWith { [PSCustomObject]@{ HostName = 'dc02.domainb.corp.com' } } -ParameterFilter { $Identity -eq 'dc02.domainb.corp.com' -and -not $Server }
+
+        $result = Resolve-ADSecurityAuditTargetServer -Server 'dc02.domainb.corp.com'
+        $result | Should -Be 'dc02.domainb.corp.com'
+        Should -Invoke -CommandName Get-ADDomainController -ParameterFilter { $Identity -eq 'dc02.domainb.corp.com' -and -not $Server } -Times 1
+    }
+
+    It 'falls back to the plain requested value if it is neither a specific DC nor does PDC Emulator resolution succeed' {
+        Mock -CommandName Get-ADDomainController -MockWith { throw 'simulated: not a valid DC identity' }
         Mock -CommandName Get-ADDomain -MockWith { throw 'simulated unreachable domain' }
 
         $result = Resolve-ADSecurityAuditTargetServer -Server 'unreachable.corp.com'
         $result | Should -Be 'unreachable.corp.com'
+        Get-ADSecurityAuditServerIsExplicitDC | Should -BeFalse
     }
 
     It 'returns $null when neither -Server nor $env:USERDNSDOMAIN is available' {
@@ -54,6 +93,7 @@ Describe 'Resolve-ADSecurityAuditTargetServer' {
         try {
             $env:USERDNSDOMAIN = $null
             Resolve-ADSecurityAuditTargetServer | Should -BeNullOrEmpty
+            Get-ADSecurityAuditServerIsExplicitDC | Should -BeFalse
         }
         finally {
             $env:USERDNSDOMAIN = $originalUserDnsDomain
@@ -230,10 +270,25 @@ Describe 'Get-ADSecurityAuditDomainController' {
         These tests mock Get-ADDomain/Get-ADDomainController to simulate
         exactly that forest-wide result set and confirm the helper filters
         it down to the target domain only.
+
+        Also covers the related, separately-reported regression: when
+        -Server is itself an explicit, specific DC (not a domain name),
+        this function must scope to ONLY that one DC instead of still
+        enumerating every DC in the domain - see
+        Get-ADSecurityAuditServerIsExplicitDC.
     #>
     BeforeAll {
         function Get-ADDomain { }
         function Get-ADDomainController { }
+    }
+
+    AfterEach {
+        # Several tests below establish the explicit-DC flag via
+        # Resolve-ADSecurityAuditTargetServer - reset it so it never bleeds
+        # into a later test (in this Describe block or any other) that
+        # expects the default, non-explicit-DC (domain-wide enumeration)
+        # behavior.
+        Clear-ADSecurityAuditTargetServer
     }
 
     It 'filters out Domain Controllers belonging to a different domain than the one resolved via Get-ADDomain' {
@@ -302,6 +357,67 @@ Describe 'Get-ADSecurityAuditDomainController' {
         $result.Count | Should -Be 1
         Should -Invoke -CommandName Get-ADDomain -ParameterFilter { -not $Server } -Times 1
         Should -Invoke -CommandName Get-ADDomainController -ParameterFilter { -not $Server } -Times 1
+    }
+
+    Context 'when -Server is an explicit, specific Domain Controller (reported regression)' {
+        <#
+            An operator who names one specific DC (rather than a domain
+            name) very often does so because it's the only DC reachable/
+            in-scope for the engagement - a segmented network, or explicit
+            rules of engagement. Every per-DC probe must scope to ONLY
+            that DC in this case, not fan out and attempt every other DC
+            in the domain too.
+        #>
+        It 'scopes to ONLY the named DC, never triggering the broad domain-wide -Filter enumeration' {
+            Mock -CommandName Get-ADDomainController -MockWith { [PSCustomObject]@{ HostName = 'dc02.domainb.corp.com' } } -ParameterFilter { $Identity -eq 'dc02.domainb.corp.com' }
+            Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+
+            # Establishes the explicit-DC flag the same way a real run
+            # would: Resolve-ADSecurityAuditTargetServer sets it when
+            # -Server is already a specific, resolvable DC.
+            $resolved = Resolve-ADSecurityAuditTargetServer -Server 'dc02.domainb.corp.com'
+            $resolved | Should -Be 'dc02.domainb.corp.com'
+
+            $result = Get-ADSecurityAuditDomainController -Server $resolved -WarningAction SilentlyContinue
+            $result.Count | Should -Be 1
+            $result[0].HostName | Should -Be 'dc02.domainb.corp.com'
+            Should -Invoke -CommandName Get-ADDomainController -Times 1 -Exactly -Because 'only the single-DC -Identity probe should run - no broad domain-wide enumeration'
+        }
+
+        It 'still honors a non-default -Filter, returning the explicit DC only if it actually matches' {
+            Mock -CommandName Get-ADDomainController -MockWith { [PSCustomObject]@{ HostName = 'rodc01.domainb.corp.com' } } -ParameterFilter { $Identity -eq 'rodc01.domainb.corp.com' }
+            Mock -CommandName Get-ADDomainController -MockWith {
+                @([PSCustomObject]@{ HostName = 'rodc01.domainb.corp.com'; Domain = 'domainb.corp.com'; IsReadOnly = $true })
+            } -ParameterFilter { $Filter -ne '*' }
+            Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+
+            $resolved = Resolve-ADSecurityAuditTargetServer -Server 'rodc01.domainb.corp.com'
+            $result = Get-ADSecurityAuditDomainController -Server $resolved -Filter { IsReadOnly -eq $true } -WarningAction SilentlyContinue
+            $result.Count | Should -Be 1
+            $result[0].HostName | Should -Be 'rodc01.domainb.corp.com'
+        }
+
+        It 'returns no Domain Controllers when the explicit DC does not match a non-default -Filter' {
+            Mock -CommandName Get-ADDomainController -MockWith { [PSCustomObject]@{ HostName = 'dc02.domainb.corp.com' } } -ParameterFilter { $Identity -eq 'dc02.domainb.corp.com' }
+            Mock -CommandName Get-ADDomainController -MockWith {
+                @() # dc02 is not an RODC, so the RODC-only filter matches nothing
+            } -ParameterFilter { $Filter -ne '*' }
+            Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+
+            $resolved = Resolve-ADSecurityAuditTargetServer -Server 'dc02.domainb.corp.com'
+            $result = Get-ADSecurityAuditDomainController -Server $resolved -Filter { IsReadOnly -eq $true } -WarningAction SilentlyContinue
+            @($result).Count | Should -Be 0
+        }
+
+        It 'throws a clear error if the explicit DC itself can no longer be resolved' {
+            Mock -CommandName Get-ADDomainController -MockWith { [PSCustomObject]@{ HostName = 'dc02.domainb.corp.com' } } -ParameterFilter { $Identity -eq 'dc02.domainb.corp.com' }
+            Mock -CommandName Get-ADDomain -MockWith { [PSCustomObject]@{ DNSRoot = 'domainb.corp.com' } }
+
+            $resolved = Resolve-ADSecurityAuditTargetServer -Server 'dc02.domainb.corp.com'
+
+            Mock -CommandName Get-ADDomainController -MockWith { throw 'simulated: DC unreachable' } -ParameterFilter { $Identity -eq 'dc02.domainb.corp.com' }
+            { Get-ADSecurityAuditDomainController -Server $resolved -WarningAction SilentlyContinue } | Should -Throw
+        }
     }
 }
 
