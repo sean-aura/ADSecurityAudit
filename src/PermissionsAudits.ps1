@@ -3,13 +3,16 @@
 function Test-ADDangerousPermissions {
     <#
     .SYNOPSIS
-        Audits Enterprise Key Admins scoping and dangerous rights on
-        critical OUs (Domain Controllers, Users, Computers).
+        Audits Enterprise Key Admins scoping, dangerous rights on critical
+        OUs (Domain Controllers, Users, Computers), and non-standard
+        permissions on the Schema/Configuration naming context head objects.
     .PARAMETER Snapshot
         Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
         reads Snapshot.ACLs.DomainRoot/.DomainControllersOU/.UsersContainer/
-        .ComputersContainer and Snapshot.Groups instead of live queries -
-        no live AD access is performed. Added in v1.19.0.
+        .ComputersContainer/.SchemaNamingContext/.ConfigurationNamingContext
+        and Snapshot.Groups instead of live queries - no live AD access is
+        performed. Added in v1.19.0; Schema/Configuration NC coverage added
+        in v1.23.6.
     #>
     [CmdletBinding()]
     param(
@@ -153,6 +156,81 @@ Remove the over-privileged ACE and grant only the required permissions:
                         Identity = $ace.IdentityReference
                         ActiveDirectoryRights = $ace.ActiveDirectoryRights
                         AccessControlType = $ace.AccessControlType
+                    }
+                    $findings += $finding
+                }
+            }
+        }
+
+        # --- Forest-level coverage backlog: Schema/Configuration NC head ACLs ---
+        # Same allowlist-based approach as Test-AdminSDHolder's ACL check:
+        # any non-inherited ACE from outside the acceptable trustee list,
+        # granting a dangerous right, is a finding. Each target checked
+        # independently via ContainsKey so an older snapshot (collected
+        # before this coverage was added) simply skips both, same pattern
+        # as the critical-OU sweep above.
+        $ncAclTargets = @{
+            'SchemaNamingContext'        = @{
+                Issue = 'Non-Standard Permissions on Schema Naming Context'
+                AcceptableTrustees = @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
+                AcceptableGroupSuffixes = @('Domain Admins', 'Enterprise Admins', 'Schema Admins')
+            }
+            'ConfigurationNamingContext' = @{
+                Issue = 'Non-Standard Permissions on Configuration Naming Context'
+                AcceptableTrustees = @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
+                AcceptableGroupSuffixes = @('Domain Admins', 'Enterprise Admins')
+            }
+        }
+        foreach ($ncKey in $ncAclTargets.Keys) {
+            if (-not ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey($ncKey))) {
+                Write-Verbose "Test-ADDangerousPermissions: snapshot has no ACLs.$ncKey entry; skipping that target."
+                continue
+            }
+            $ncConfig = $ncAclTargets[$ncKey]
+            $ncAcl = $Snapshot.ACLs[$ncKey]
+
+            foreach ($ace in @($ncAcl.Access)) {
+                if ($ace.IsInherited) { continue }
+
+                $identityReference = $ace.IdentityReference
+                $isAcceptable = ($identityReference -in $ncConfig.AcceptableTrustees) -or
+                    ($identityReference -match 'S-1-5-32-544')
+                foreach ($suffix in $ncConfig.AcceptableGroupSuffixes) {
+                    if ($identityReference -match [regex]::Escape($suffix)) { $isAcceptable = $true; break }
+                }
+                if ($isAcceptable) { continue }
+
+                $dangerousRights = @('GenericAll', 'WriteDacl', 'WriteOwner', 'GenericWrite', 'WriteProperty')
+                $hasDangerousRight = $false
+                foreach ($right in $dangerousRights) {
+                    if ($ace.ActiveDirectoryRights -match $right) {
+                        $hasDangerousRight = $true
+                        break
+                    }
+                }
+
+                if ($hasDangerousRight) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Permissions'
+                    $finding.Issue = $ncConfig.Issue
+                    $finding.Severity = 'Critical'
+                    $finding.SeverityLevel = 4
+                    $finding.AffectedObject = "$identityReference on $($ncAcl.DistinguishedName)"
+                    $finding.Description = "A principal outside the expected administrative trustees ('$identityReference') holds '$($ace.ActiveDirectoryRights)' rights on $($ncAcl.DistinguishedName)."
+                    if ($ncKey -eq 'SchemaNamingContext') {
+                        $finding.Impact = "A principal able to write to the schema partition can alter object class and attribute definitions forest-wide, including the defaultSecurityDescriptor applied to newly created objects of a class - a documented forest-wide persistence and privilege-escalation vector. Schema changes replicate to every DC in the forest and cannot be cleanly reversed (attributes/classes can be marked defunct but not deleted)."
+                        $finding.Remediation = "Remove the non-standard ACE from the Schema naming context head object; restrict schema write access to Schema Admins only, and keep that group empty outside planned schema-extension windows."
+                    }
+                    else {
+                        $finding.Impact = "The Configuration NC replicates to every DC in the forest and holds the Sites/Subnets topology, the Services container (including Public Key Services, and Exchange configuration where present), Extended-Rights definitions, and the forest's WellKnown Security Principals. A principal with write/GenericAll-equivalent rights on the head object can, depending on inheritance, create or modify objects anywhere below it - a broader and more varied blast radius than the Public Key Services container alone already covered by this tool's AD CS checks."
+                        $finding.Remediation = "Review and remove the non-standard ACE from the Configuration naming context head object; restrict write access to Enterprise Admins/Domain Admins only, and treat any change to this object as forest-wide until proven otherwise."
+                    }
+                    $finding.Details = @{
+                        Identity = $identityReference
+                        ActiveDirectoryRights = $ace.ActiveDirectoryRights
+                        AccessControlType = $ace.AccessControlType
+                        ObjectType = $ace.ObjectType
+                        DistinguishedName = $ncAcl.DistinguishedName
                     }
                     $findings += $finding
                 }
@@ -358,6 +436,101 @@ Remove the over-privileged ACE and grant only the required permissions:
             }
         }
         
+        # --- Forest-level coverage backlog: Schema/Configuration NC head ACLs ---
+        Write-Verbose "Checking Schema/Configuration naming context ACLs..."
+        try {
+            $schemaContext = if ($__adServer) { Get-ADRootDSEValue -Property schemaNamingContext -Server $__adServer } else { Get-ADRootDSEValue -Property schemaNamingContext }
+            $configurationContext = if ($__adServer) { Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer } else { Get-ADRootDSEValue -Property configurationNamingContext }
+
+            if (-not $schemaContext -or -not $configurationContext) {
+                Write-Verbose "Could not resolve schema/configuration naming context; skipping Schema/Configuration NC ACL checks."
+            }
+            else {
+            $ncAclLiveTargets = @{
+                $schemaContext        = @{
+                    Issue = 'Non-Standard Permissions on Schema Naming Context'
+                    AcceptableTrustees = @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
+                    AcceptableGroupSuffixes = @('Domain Admins', 'Enterprise Admins', 'Schema Admins')
+                }
+                $configurationContext = @{
+                    Issue = 'Non-Standard Permissions on Configuration Naming Context'
+                    AcceptableTrustees = @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
+                    AcceptableGroupSuffixes = @('Domain Admins', 'Enterprise Admins')
+                }
+            }
+
+            foreach ($ncDN in $ncAclLiveTargets.Keys) {
+                if (-not $ncDN) { continue }
+                $ncConfig = $ncAclLiveTargets[$ncDN]
+                try {
+                    $ncObject = if ($__adServer) {
+                        Get-ADObject -Identity $ncDN -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+                    }
+                    else {
+                        Get-ADObject -Identity $ncDN -Properties nTSecurityDescriptor -ErrorAction Stop
+                    }
+                }
+                catch {
+                    Write-Verbose "Could not get naming context '$ncDN': $_"
+                    continue
+                }
+
+                if (-not $ncObject) { continue }
+                $ncAcl = $ncObject.nTSecurityDescriptor
+
+                foreach ($ace in @($ncAcl.Access)) {
+                    if ($ace.IsInherited) { continue }
+
+                    $identityReference = "$($ace.IdentityReference)"
+                    $isAcceptable = ($identityReference -in $ncConfig.AcceptableTrustees) -or
+                        ($identityReference -match 'S-1-5-32-544')
+                    foreach ($suffix in $ncConfig.AcceptableGroupSuffixes) {
+                        if ($identityReference -match [regex]::Escape($suffix)) { $isAcceptable = $true; break }
+                    }
+                    if ($isAcceptable) { continue }
+
+                    $dangerousRights = @('GenericAll', 'WriteDacl', 'WriteOwner', 'GenericWrite', 'WriteProperty')
+                    $hasDangerousRight = $false
+                    foreach ($right in $dangerousRights) {
+                        if ($ace.ActiveDirectoryRights -match $right) {
+                            $hasDangerousRight = $true
+                            break
+                        }
+                    }
+
+                    if ($hasDangerousRight) {
+                        $finding = [ADSecurityFinding]::new()
+                        $finding.Category = 'Permissions'
+                        $finding.Issue = $ncConfig.Issue
+                        $finding.Severity = 'Critical'
+                        $finding.SeverityLevel = 4
+                        $finding.AffectedObject = "$identityReference on $ncDN"
+                        $finding.Description = "A principal outside the expected administrative trustees ('$identityReference') holds '$($ace.ActiveDirectoryRights)' rights on $ncDN."
+                        if ($ncDN -eq $schemaContext) {
+                            $finding.Impact = "A principal able to write to the schema partition can alter object class and attribute definitions forest-wide, including the defaultSecurityDescriptor applied to newly created objects of a class - a documented forest-wide persistence and privilege-escalation vector. Schema changes replicate to every DC in the forest and cannot be cleanly reversed (attributes/classes can be marked defunct but not deleted)."
+                            $finding.Remediation = "Remove the non-standard ACE from the Schema naming context head object; restrict schema write access to Schema Admins only, and keep that group empty outside planned schema-extension windows."
+                        }
+                        else {
+                            $finding.Impact = "The Configuration NC replicates to every DC in the forest and holds the Sites/Subnets topology, the Services container (including Public Key Services, and Exchange configuration where present), Extended-Rights definitions, and the forest's WellKnown Security Principals. A principal with write/GenericAll-equivalent rights on the head object can, depending on inheritance, create or modify objects anywhere below it - a broader and more varied blast radius than the Public Key Services container alone already covered by this tool's AD CS checks."
+                            $finding.Remediation = "Review and remove the non-standard ACE from the Configuration naming context head object; restrict write access to Enterprise Admins/Domain Admins only, and treat any change to this object as forest-wide until proven otherwise."
+                        }
+                        $finding.Details = @{
+                            Identity = $identityReference
+                            ActiveDirectoryRights = $ace.ActiveDirectoryRights
+                            AccessControlType = $ace.AccessControlType
+                            ObjectType = $ace.ObjectType
+                            DistinguishedName = $ncDN
+                        }
+                        $findings += $finding
+                    }
+                }
+            }
+            }
+        }
+        catch {
+            Write-Verbose "Could not check Schema/Configuration naming context ACLs: $_"
+        }
+
         Write-Verbose "Dangerous permissions audit complete. Found $($findings.Count) issues."
         return $findings
     }

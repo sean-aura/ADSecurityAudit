@@ -698,3 +698,202 @@ function Test-ADCSExtended {
 }
 
 #endregion
+
+#region CA Chase-Fallback Exposure (CVE-2026-54121 / "Certighost")
+
+function Test-ADCSChaseFallback {
+    <#
+    .SYNOPSIS
+        Detects Enterprise CAs with the EDITF_ENABLECHASECLIENTDC policy
+        flag set, the configuration condition CVE-2026-54121 ("Certighost")
+        abuses to obtain a certificate asserting a Domain Controller's
+        identity from a low-privileged, attacker-controlled account.
+    .DESCRIPTION
+        Reads each discovered Enterprise CA's policy\EditFlags registry
+        value (same registry key family as the CA policy-module settings
+        this module already reads) and checks the EDITF_ENABLECHASECLIENTDC
+        bit (0x00100000). When set, the CA honors a requester-supplied
+        client-DC ("cdc") hint during certificate-request identity
+        resolution; on an unpatched CA this hint is used without
+        confirming it actually resolves to a genuine DC object, letting an
+        attacker point the CA at a host they control and obtain a
+        certificate asserting a DC's identity, enabling DC impersonation
+        and DCSync-class domain compromise.
+
+        This is a configuration exposure check, not a patch-level check:
+        the flag is the exposure indicator regardless of whether the CA
+        host has installed Microsoft's July 14, 2026 security update
+        (which validates the chase target before contacting it, but does
+        not clear the flag). A patched CA with the flag still set remains
+        configured in the historically risky state and is still flagged
+        here, as defense-in-depth - the flag can be re-enabled later via
+        policy, imaging, or an admin action independent of patch state.
+
+        Detection only: reads one registry value per discovered CA. No
+        certificate requests, no PoC/exploitation traffic, no coercion.
+    .PARAMETER Snapshot
+        Optional snapshot hashtable (from Get-ADSnapshot). This check has
+        no snapshot representation - policy\EditFlags is a registry value
+        on the CA host itself, not an AD attribute - so it is always
+        skipped under -Snapshot, consistent with this module's other
+        live-only CA-host probe (ESC8 in Test-ADCSExtended).
+    .OUTPUTS
+        [ADSecurityFinding[]]
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [hashtable]$Snapshot
+    )
+
+    Write-Verbose "Starting AD CS chase-fallback exposure audit (CVE-2026-54121 / Certighost)..."
+    $findings = @()
+
+    # Bit value confirmed against independent public technical write-ups of
+    # CVE-2026-54121 (0x00100000 / 1048576) - not redefined ad hoc elsewhere
+    # in this module, since no existing EDITF_* constant was already defined
+    # here to reuse.
+    $editfEnableChaseClientDc = 0x00100000
+
+    $certAuthorities = @()
+    $adcsInstalled = $false
+
+    if ($Snapshot) {
+        if ($Snapshot.ContainsKey('ADCS') -and $Snapshot.ADCS.Installed) {
+            $adcsInstalled = $true
+            $certAuthorities = @($Snapshot.ADCS.CertificateAuthorities)
+        }
+        else {
+            Write-Verbose "Test-ADCSChaseFallback: snapshot indicates AD CS is not installed; no findings."
+            return $findings
+        }
+
+        Write-Verbose "Test-ADCSChaseFallback: -Snapshot supplied; skipping live registry probe (offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'ADCSChaseFallback' -Check 'EDITF_ENABLECHASECLIENTDC / Certighost (CVE-2026-54121) exposure' `
+            -Reason 'This is a live registry probe against the CA host itself (policy\EditFlags), not an AD attribute - there is no snapshot representation possible. Run this check live (without -Snapshot) if you need this coverage.'
+        return $findings
+    }
+
+    try {
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
+        $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
+
+        $certAuthorities = @(Invoke-ADQueryWithRetry -OperationName 'Get enrollment services (ADCS chase-fallback audit)' -Query {
+            Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties dNSHostName -Server $__adServer -ErrorAction Stop
+        })
+        $adcsInstalled = $true
+    }
+    catch {
+        Write-Verbose "Test-ADCSChaseFallback: AD Certificate Services not found or accessible. Skipping chase-fallback audit."
+        return $findings
+    }
+
+    if (-not $adcsInstalled -or -not $certAuthorities -or @($certAuthorities).Count -eq 0) {
+        Write-Verbose "Test-ADCSChaseFallback: no Enterprise CAs discovered; skipping."
+        return $findings
+    }
+
+    foreach ($ca in $certAuthorities) {
+        $caName = $ca.Name
+        $caHost = $ca.dNSHostName
+        if (-not $caHost) {
+            Write-Verbose "Test-ADCSChaseFallback: CA '$caName' has no dNSHostName; skipping."
+            continue
+        }
+
+        try {
+            $editFlagsResult = Invoke-ADQueryWithRetry -OperationName "Read policy\EditFlags on $caHost" -Query {
+                Invoke-Command -ComputerName $caHost -ErrorAction Stop -ScriptBlock {
+                    param($CaSanitizedName)
+                    $result = [PSCustomObject]@{
+                        EditFlagsRead = $false
+                        EditFlags     = $null
+                        Error         = $null
+                    }
+                    try {
+                        # Same registry family as this module's other CA
+                        # policy-module reads:
+                        # HKLM\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\<CA
+                        # sanitized name>\PolicyModules\CertificateAuthority_MicrosoftDefault.Policy
+                        #
+                        # A CA's registry key name (its "sanitized name") can
+                        # differ from its AD common name if the CN contains
+                        # characters not valid in a registry key. Prefer an
+                        # exact match against the AD-supplied name first;
+                        # fall back to the sole child key when there's only
+                        # one CA configured on the host (by far the common
+                        # case), and otherwise report ambiguity rather than
+                        # silently guessing which CA's flags we're reading.
+                        $caRegNames = @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration' -ErrorAction Stop | Select-Object -ExpandProperty PSChildName)
+                        $matchedRegCaName = $null
+                        if ($caRegNames -contains $CaSanitizedName) {
+                            $matchedRegCaName = $CaSanitizedName
+                        }
+                        elseif (@($caRegNames).Count -eq 1) {
+                            $matchedRegCaName = $caRegNames[0]
+                        }
+
+                        if ($matchedRegCaName) {
+                            $policyPath = "HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\$matchedRegCaName\PolicyModules\CertificateAuthority_MicrosoftDefault.Policy"
+                            if (Test-Path $policyPath) {
+                                $prop = Get-ItemProperty -Path $policyPath -Name 'EditFlags' -ErrorAction Stop
+                                $result.EditFlagsRead = $true
+                                $result.EditFlags = [int]$prop.EditFlags
+                            }
+                            else {
+                                $result.Error = "Policy module registry key not found under CA '$matchedRegCaName'."
+                            }
+                        }
+                        else {
+                            $result.Error = "Could not unambiguously match AD CA name '$CaSanitizedName' to a registry CA key; found: $($caRegNames -join ', ')."
+                        }
+                    }
+                    catch {
+                        $result.Error = "$_"
+                    }
+                    return $result
+                } -ArgumentList $caName
+            }
+        }
+        catch {
+            Write-Verbose "Test-ADCSChaseFallback: could not read policy\EditFlags on CA host '$caHost': $_"
+            $editFlagsResult = $null
+        }
+
+        if (-not $editFlagsResult -or -not $editFlagsResult.EditFlagsRead) {
+            if ($editFlagsResult -and $editFlagsResult.Error) {
+                Write-Verbose "Test-ADCSChaseFallback: EditFlags probe on '$caHost' reported: $($editFlagsResult.Error)"
+            }
+            continue
+        }
+
+        $chaseFallbackEnabled = (($editFlagsResult.EditFlags -band $editfEnableChaseClientDc) -ne 0)
+
+        if ($chaseFallbackEnabled) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Certificate Services'
+            $finding.Issue = 'CA Chase-Fallback Enabled (CVE-2026-54121 / Certighost Exposure)'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = "$caName ($caHost)"
+            $finding.Description = "Certificate Authority '$caName' ($caHost) has the EDITF_ENABLECHASECLIENTDC policy flag set on its policy\EditFlags registry value. This enables the CA's client-DC 'chase' fallback, in which the CA will contact a requester-supplied host to resolve identity data during certificate issuance."
+            $finding.Impact = "CVE-2026-54121 (`"Certighost`", CVSS 8.8) abuses this chase-fallback behavior: an authenticated, low-privileged attacker with network access to the CA can supply a client-DC hint pointing at an attacker-controlled host, causing the CA to obtain and use that host's identity data when issuing a certificate. On an unpatched CA this can result in a certificate asserting a Domain Controller's identity being issued to the attacker, enabling DC impersonation and DCSync-class full domain compromise. The flag is the exposure indicator independent of the CA's patch level: Microsoft's July 14, 2026 update adds chase-target validation but does not clear this flag, so a patched CA with the flag still set remains configured in the historically risky state and can become exploitable again if the flag is re-enabled by policy, imaging, or later admin action."
+            $finding.Remediation = "Apply Microsoft's July 14, 2026 security update for CVE-2026-54121, which adds chase-target validation to the CA. Independently, clear the flag as defense-in-depth (or as an immediate stopgap if the update cannot be applied yet): certutil -config `"$caName`" -setreg policy\EditFlags -EDITF_ENABLECHASECLIENTDC, then restart Certificate Services (Restart-Service CertSvc -Force). Test in staging first if cross-domain/cross-forest enrollment relies on the chase fallback, since disabling it will break that use case until the CA can reach the relevant DCs directly."
+            $finding.Details = @{
+                DistinguishedName = $ca.DistinguishedName
+                CAHost            = $caHost
+                EditFlags         = ('0x{0:X}' -f $editFlagsResult.EditFlags)
+                EditFlagBit       = 'EDITF_ENABLECHASECLIENTDC (0x00100000)'
+                CVE               = 'CVE-2026-54121'
+                PatchDate         = '2026-07-14'
+            }
+            $findings += $finding
+        }
+    }
+
+    Write-Verbose "AD CS chase-fallback exposure audit complete. Found $($findings.Count) issues."
+    return $findings
+}
+
+#endregion

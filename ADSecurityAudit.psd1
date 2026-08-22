@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.23.5'
+    ModuleVersion = '1.23.7'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -20,6 +20,7 @@
         'Get-ADPrivilegedUsers',
         'Test-ADCertificateServices',
         'Test-ADCSExtended',
+        'Test-ADCSChaseFallback',
         'Test-KRBTGTAccount',
         'Test-ADDomainTrusts',
         'Test-LAPSDeployment',
@@ -68,6 +69,15 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.23.7 - Forest / Forest-Root Coverage Gaps (Functional Level, Tombstone Lifetime, Schema/Configuration NC ACLs)
+- Added to Test-ADDomainSecurity: "Outdated Forest Functional Level" as its own finding (previously the forest mode was only ever surfaced as a Details sidecar under the domain-level functional-level finding, so a stale forest FL behind a current-looking domain FL never fired on its own) and "Short Tombstone Lifetime" (flags forest tombstoneLifetime below 180 days; an unset attribute is correctly treated as its [MS-ADTS]-specified 60-day default, not as "no value to report"). Both fully offline-capable: Get-ADSnapshot gained a new TombstoneLifetimeDays scalar field alongside the existing Forest.ForestMode.
+- Added to Test-ADDangerousPermissions: non-standard-permissions checks on the Schema naming context and Configuration naming context head objects (Critical), following the same allowlist-based ACE review already used for AdminSDHolder and the critical-OU sweep. The Configuration NC check is deliberately narrower in scope than the existing Public Key Services container check - it audits the Configuration NC head object itself, which is broader (Sites/Subnets, Services, Extended-Rights, WellKnown Security Principals) but whose Impact text is intentionally conservative about any specific downstream attack chain, since that depends on inheritance in a given environment. Get-ADSnapshot gained two new ACL-collection targets: SchemaNamingContext and ConfigurationNamingContext.
+- New Scoring.ps1 mapping entries: Outdated Forest Functional Level (T1078.002, vuln4_outdated_ffl, Weight 4 - matches the existing domain-level entry), Short Tombstone Lifetime (no MITRE technique - a recoverability/hygiene parameter, not an attack technique; vuln5_short_tombstone_lifetime, Weight 1 - matches AD Recycle Bin Not Enabled), Non-Standard Permissions on Schema/Configuration Naming Context (both T1098, vuln1_schema_nc_acl / vuln1_config_nc_acl, Weight 40 - matches the existing AdminSDHolder ACL-abuse entry).
+- All four findings fact-checked against current Microsoft documentation before implementation: AD Recycle Bin requires Windows Server 2008 R2 forest mode, PAM requires Windows Server 2016 forest mode (confirmed via the PAM optional feature object's own RequiredForestMode property); an unset tombstoneLifetime defaults to 60 days per [MS-ADTS] 6.1.1.2.4.1.1, with 180 days only guaranteed on forests created with Windows Server 2003 SP1 or later installation media (not simply "any forest running a newer OS").
+
+v1.23.6 - Detect CA Chase-Fallback Exposure (CVE-2026-54121 / "Certighost")
+- Added Test-ADCSChaseFallback: reads each discovered Enterprise CA's policy\EditFlags registry value for the EDITF_ENABLECHASECLIENTDC bit (0x00100000), which enables the client-DC "chase" fallback CVE-2026-54121 ("Certighost", CVSS 8.8) abuses to obtain a certificate asserting a Domain Controller's identity from a low-privileged, attacker-controlled account. Flags Critical regardless of CA patch level, since the flag itself - not the patch state - is the exposure indicator; a patched CA with the flag still set remains configured in the historically risky state. Remediation cites both Microsoft's July 14, 2026 security update and the certutil -setreg policy\EditFlags -EDITF_ENABLECHASECLIENTDC stopgap. Read-only: one registry value read per discovered CA host, no certificate requests or exploitation traffic. Live-only (no snapshot representation, same as ESC8), registered as a new top-level 'ADCSChaseFallback' test.
+
 v1.23.3 - Multi-Domain Forest -Server Reliability + Several Related Fixes
 - Fixed: in a multi-domain forest, several classes of AD/GPO/ACL/SYSVOL calls could silently read from the wrong domain even when -Server was correctly set - the single biggest root cause being Get-ADDomainController's -Filter parameter set, which queries the forest-wide Configuration container regardless of which DC -Server binds to, so every per-DC probe (anonymous-bind, null-session, Kerberos hardening, legacy auth, audit policy, known-DC-vulnerability, stale-object depth, RODC security, control-path graph, coercion/relay, the main run's own DC connectivity check, and Get-ADSnapshot) could enumerate DCs from a domain other than the one requested. A new Get-ADSecurityAuditDomainController helper (Common.ps1) filters the same enumeration down to the resolved target domain.
 - Fixed: the GroupPolicy module (Get-GPO/Get-GPInheritance/Get-GPPermission/Get-GPRegistryValue) was never covered by the -Server override at all - a completely separate wildcard (Get-GP*:Server) had to be added alongside the existing AD-cmdlet one.

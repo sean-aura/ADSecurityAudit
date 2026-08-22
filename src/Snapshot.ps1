@@ -43,6 +43,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'DangerousPermissions'     = 'Test-ADDangerousPermissions'
     'CertificateServices'      = 'Test-ADCertificateServices'
     'ADCSExtended'             = 'Test-ADCSExtended'
+    'ADCSChaseFallback'        = 'Test-ADCSChaseFallback'
     'KRBTGTAccount'            = 'Test-KRBTGTAccount'
     'DomainTrusts'             = 'Test-ADDomainTrusts'
     'LAPSDeployment'           = 'Test-LAPSDeployment'
@@ -725,6 +726,15 @@ function Get-ADSnapshot {
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
         $aclTargets['CertificateTemplatesContainer'] = "CN=Certificate Templates,$pkiContainer"
 
+        # --- Forest-level coverage backlog: Schema/Configuration NC head ACLs ---
+        # Two more fixed ACL targets, for Test-ADDangerousPermissions's new
+        # Schema/Configuration naming-context ACL checks. $configContext is
+        # already resolved above; schemaNamingContext needs its own RootDSE
+        # read (same helper already used for the LAPS check).
+        $schemaContext = Get-ADRootDSEValue -Property schemaNamingContext -Server $effectiveServer
+        $aclTargets['SchemaNamingContext'] = $schemaContext
+        $aclTargets['ConfigurationNamingContext'] = $configContext
+
         # --- v1.19.0 offline-parity backlog, step 21 ---
         # Three more fixed ACL targets, added for Test-ADDangerousPermissions's
         # critical-OU sweep. Same loop, same flattening - just more dictionary
@@ -807,6 +817,27 @@ function Get-ADSnapshot {
     }
     catch {
         Write-Warning "Get-ADSnapshot: failed to collect forest functional level: $_"
+    }
+
+    # --- Forest-level coverage backlog: tombstone lifetime ---
+    # Single scalar read off the Directory Service object in the
+    # Configuration NC, for Test-ADDomainSecurity's new Short Tombstone
+    # Lifetime check. An unset tombstoneLifetime attribute means the
+    # effective value is 60 days (per [MS-ADTS] 6.1.1.2.4.1.1), not "no
+    # value to report" - so $null is coerced to 60 here, at collection
+    # time, rather than leaving that interpretation to every consumer.
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting forest tombstone lifetime..."
+        $configContextForTombstone = if ($configContext) { $configContext } else { Get-ADRootDSEValue -Property configurationNamingContext -Server $effectiveServer }
+        $dsObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject Directory Service tombstoneLifetime (snapshot)' -Query {
+            Get-ADObject -Identity "CN=Directory Service,CN=Windows NT,CN=Services,$configContextForTombstone" -Properties tombstoneLifetime -Server $effectiveServer -ErrorAction Stop
+        }
+        if ($dsObject) {
+            $snapshot.TombstoneLifetimeDays = if ($null -ne $dsObject.tombstoneLifetime) { [int]$dsObject.tombstoneLifetime } else { 60 }
+        }
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect forest tombstone lifetime: $_"
     }
 
     try {

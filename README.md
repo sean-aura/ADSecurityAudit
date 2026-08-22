@@ -31,12 +31,12 @@ A PowerShell module that finds misconfigurations and security vulnerabilities in
 ## Features
 
 ### Core checks
-User account risks (AS-REP Roasting, weak/reversible encryption, unconstrained delegation, Kerberoasting, inactive accounts) · privileged group hygiene (excessive/nested membership, disabled users) · AdminSDHolder tampering · GPO misconfigurations (over-permissioned, insecure SYSVOL, mislinked) · DCSync detection · domain security settings (password policy, functional level, legacy systems) · dangerous ACL permissions on AD objects.
+User account risks (AS-REP Roasting, weak/reversible encryption, unconstrained delegation, Kerberoasting, inactive accounts) · privileged group hygiene (excessive/nested membership, disabled users) · AdminSDHolder tampering · GPO misconfigurations (over-permissioned, insecure SYSVOL, mislinked) · DCSync detection · domain security settings (password policy, domain/forest functional level, tombstone lifetime, legacy systems) · dangerous ACL permissions on AD objects (critical OUs, Schema/Configuration naming context head objects).
 
 <details>
 <summary><strong>Advanced checks (click to expand — 20+ modules)</strong></summary>
 
-- **AD CS (Certificate Services)**: ESC1/ESC2/ESC3/ESC7, plus **Extended**: ESC4 (weak template ACLs), ESC8 (HTTP enrollment without EPA), ROCA-vulnerable keys (CVE-2017-15361), weak signature/RSA sizes across CA + NTAuth/AIA/Root store.
+- **AD CS (Certificate Services)**: ESC1/ESC2/ESC3/ESC7, plus **Extended**: ESC4 (weak template ACLs), ESC8 (HTTP enrollment without EPA), ROCA-vulnerable keys (CVE-2017-15361), weak signature/RSA sizes across CA + NTAuth/AIA/Root store, and CA chase-fallback exposure (CVE-2026-54121 "Certighost").
 - **KRBTGT password age**: flags rotation older than the 180-day recommendation (Golden Ticket risk).
 - **Domain trusts**: SID filtering, selective auth, direction, bidirectional exposure.
 - **LAPS**: schema presence, coverage %, static local-admin passwords.
@@ -164,15 +164,16 @@ Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso_2026-07-07.json" -Expo
 ```
 
 <details>
-<summary><strong>Which of the 27 tests are fully vs. partially offline-capable (click to expand)</strong></summary>
+<summary><strong>Which of the 28 tests are fully vs. partially offline-capable (click to expand)</strong></summary>
 
-As of v1.19.0 all 27 registered tests support `-Snapshot`, fully or partially. As of v1.19.1, `-Snapshot` means literally zero live AD/network access — every skipped sub-check records a structured note, visible in the HTML report's **"Offline Mode Coverage Notes"** table.
+As of v1.19.0 all 27 registered tests (28 as of v1.23.6, with the addition of `Test-ADCSChaseFallback`) support `-Snapshot`, fully or partially. As of v1.19.1, `-Snapshot` means literally zero live AD/network access — every skipped sub-check records a structured note, visible in the HTML report's **"Offline Mode Coverage Notes"** table.
 
 - **Fully offline-capable:** `Test-ADUserSecurity`, `Test-KRBTGTAccount`, `Test-ADMachineAccountQuota`, `Test-ADExchangeEscalation`, `Test-ADPrivilegedGroups`, `Test-AdminSDHolder`, `Test-ADReplicationSecurity`, `Test-ADDangerousPermissions`, `Test-LAPSDeployment`, `Test-ConstrainedDelegation`, `Test-ADDomainTrusts`, `Test-ADDomainSecurity`, `Test-ADCertificateServices`, `Test-ADDomainAdminEquivalence`.
 - **Partially offline** (a few sub-checks are genuinely real-time and get skipped under `-Snapshot`, with a logged reason each time):
   - `Test-ADDomainHardeningFlags` — dSHeuristics/Pre-2000 membership offline; anonymous-bind probe is live-only.
   - `Test-ADCoercionAndRelayExposure` — only the DC list comes from the snapshot; Spooler/WebClient/LDAP registry checks are live-only.
   - `Test-ADCSExtended` — template/CA enumeration, ESC4, approval-gate, and NTAuth/AIA/Root sweep are offline; only ESC8 (a live HTTP probe) is live-only.
+  - `Test-ADCSChaseFallback` — live-only (reads `policy\EditFlags` on the CA host itself, no snapshot representation), same as ESC8.
   - `Test-ADDnsSecurity` — DnsAdmins membership is offline; zone transfer, dynamic-update, ADIDNS, and delegation-staleness checks are live-only (not in current snapshot schema).
   - `Test-ADKerberosHardening` — account/trust-level RC4 checks are offline; domain-wide encryption policy and FAST are live-only.
   - `Test-ADStaleObjectDepth` — PASSWD_NOTREQD/primaryGroupID/duplicate-SPN/DC-count are offline; DC subnet/site registration is live-only.
@@ -317,6 +318,8 @@ An `AcceptedRisk` finding still counts toward the risk score — this is a repor
 
 - Exploitable AD CS certificate templates
 - CA web enrollment reachable over HTTP without EPA (ESC8)
+- CA chase-fallback enabled (CVE-2026-54121 "Certighost" exposure)
+- Non-standard permissions on the Schema or Configuration naming context head object
 - KRBTGT password not rotated (Golden Ticket risk)
 - Unconstrained delegation on user accounts
 - DCSync permissions granted to non-admin users
@@ -354,6 +357,7 @@ An `AcceptedRisk` finding still counts toward the risk score — this is a repor
 - Weak signature algorithms or undersized RSA keys in the PKI trust store
 - AD-integrated DNS zones allowing broad transfer or insecure dynamic updates
 - LLMNR not disabled by policy
+- Outdated forest functional level
 
 </details>
 
@@ -362,6 +366,7 @@ An `AcceptedRisk` finding still counts toward the risk score — this is a repor
 
 - Informational findings about domain configuration
 - Baseline security posture indicators
+- Forest tombstone lifetime below 180 days
 
 </details>
 
@@ -374,7 +379,7 @@ An `AcceptedRisk` finding still counts toward the risk score — this is a repor
 <details>
 <summary><strong>Full breakdown of checks by category (click to expand)</strong></summary>
 
-**Certificate Services:** ESC1/ESC2/ESC3/ESC7/ESC4/ESC8, missing manager-approval gates, ROCA-vulnerable keys, weak signature/RSA sizes across CA + trust store.
+**Certificate Services:** ESC1/ESC2/ESC3/ESC7/ESC4/ESC8, missing manager-approval gates, ROCA-vulnerable keys, weak signature/RSA sizes across CA + trust store, CA chase-fallback exposure (CVE-2026-54121 "Certighost").
 
 **Kerberos Security:** KRBTGT age, unconstrained/constrained+protocol-transition delegation, RC4 encryption.
 
@@ -484,6 +489,8 @@ Open `http://localhost:8000`, then upload a JSON file, paste JSON, load from a U
 
 Full details in [CHANGELOG.md](./CHANGELOG.md). Recent highlights:
 
+- **v1.23.7** — Closed the four forest/forest-root coverage gaps: `Test-ADDomainSecurity` gained its own Outdated Forest Functional Level finding (previously only a `Details` sidecar under the domain-level check) and a Short Tombstone Lifetime check; `Test-ADDangerousPermissions` gained non-standard-permissions checks on the Schema and Configuration naming context head objects. All four are fully offline-capable.
+- **v1.23.6** — Added `Test-ADCSChaseFallback`: detects CA chase-fallback exposure (CVE-2026-54121 "Certighost") by reading each Enterprise CA's `policy\EditFlags` for the `EDITF_ENABLECHASECLIENTDC` bit, which an unpatched CA uses to resolve certificate-request identity data from an attacker-controlled host — enabling DC impersonation. Flags Critical independent of patch level, since the flag itself is the exposure indicator.
 - **Unreleased** — Fixed a multi-domain-forest bug: no query passed `-Server`, so results could silently resolve against the *auditor's* logon domain instead of the target. Added `-Server` to `Start-ADSecurityAudit`, `Get-ADSnapshot`, and `Test-ADMachineAccountQuota`, applied module-wide via a shared helper.
 - **v1.20.5** — Added a null-session (unauthenticated pipe/share access) check to `Test-ADDomainHardeningFlags`, reusing the existing GPO-then-registry-fallback resolver.
 - **v1.20.4** — Added a check for GPO-granted `SeNetworkLogonRight`/`SeRemoteInteractiveLogonRight` to broad principals (always Critical).

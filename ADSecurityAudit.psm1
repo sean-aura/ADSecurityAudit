@@ -94,6 +94,7 @@ Export-ModuleMember -Function @(
     'Get-ADPrivilegedUsers',
     'Test-ADCertificateServices',
     'Test-ADCSExtended',
+    'Test-ADCSChaseFallback',
     'Test-KRBTGTAccount',
     'Test-ADDomainTrusts',
     'Test-LAPSDeployment',

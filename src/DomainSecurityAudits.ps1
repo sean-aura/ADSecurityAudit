@@ -101,6 +101,46 @@ function Test-ADDomainSecurity {
             $findings += $finding
         }
 
+        if ($forestLevel -and $forestLevel -in $deprecatedLevels) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Security'
+            $finding.Issue = 'Outdated Forest Functional Level'
+            $finding.Severity = 'Medium'
+            $finding.SeverityLevel = 2
+            $finding.AffectedObject = 'Forest Functional Level'
+            $finding.Description = "Forest functional level is set to '$forestLevel', which is outdated."
+            $finding.Impact = "The forest functional level gates which security features are available forest-wide, independent of any single domain's own functional level: the AD Recycle Bin requires Windows Server 2008 R2 forest mode, and the Privileged Access Management (PAM) optional feature requires Windows Server 2016 forest mode. An outdated forest functional level silently blocks these features even when every domain in the forest looks current."
+            $finding.Remediation = "Raise the forest functional level after confirming every domain in the forest is already at or above the target level: Set-ADForestMode -ForestMode Windows2016Forest (or higher)"
+            $finding.Details = @{
+                CurrentLevel = $forestLevel
+                RecommendedLevel = 'Windows2016Forest or higher'
+            }
+            $findings += $finding
+        }
+
+        if ($Snapshot.ContainsKey('TombstoneLifetimeDays') -and $null -ne $Snapshot.TombstoneLifetimeDays) {
+            $tombstoneLifetimeDays = [int]$Snapshot.TombstoneLifetimeDays
+            if ($tombstoneLifetimeDays -lt 180) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Domain Security'
+                $finding.Issue = 'Short Tombstone Lifetime'
+                $finding.Severity = 'Low'
+                $finding.SeverityLevel = 1
+                $finding.AffectedObject = 'Forest Tombstone Lifetime'
+                $finding.Description = "Forest tombstone lifetime is set to $tombstoneLifetimeDays days."
+                $finding.Impact = "Tombstone lifetime caps the maximum usable age of a system-state backup and the window available to detect and recover from accidental or malicious object deletion - a backup older than this value cannot be used for an authoritative restore. This also governs msDS-deletedObjectLifetime, which defaults to the tombstone lifetime value when not independently set."
+                $finding.Remediation = "Set the forest tombstone lifetime to at least 180 days on the Directory Service object's tombstoneLifetime attribute (forest-wide, not configurable per domain): Set-ADObject -Identity 'CN=Directory Service,CN=Windows NT,CN=Services,<configurationNamingContext>' -Replace @{tombstoneLifetime=180}"
+                $finding.Details = @{
+                    CurrentValueDays = $tombstoneLifetimeDays
+                    RecommendedMinimumDays = 180
+                }
+                $findings += $finding
+            }
+        }
+        else {
+            Write-Verbose "Test-ADDomainSecurity: snapshot has no TombstoneLifetimeDays entry; skipping tombstone lifetime check."
+        }
+
         if ($Snapshot.ContainsKey('RecycleBinEnabled') -and $Snapshot.RecycleBinEnabled -eq $false) {
             $finding = [ADSecurityFinding]::new()
             $finding.Category = 'Domain Security'
@@ -255,6 +295,51 @@ function Test-ADDomainSecurity {
                 RecommendedLevel = 'Windows2016Domain or higher'
             }
             $findings += $finding
+        }
+        
+        if ($forestLevel -in $deprecatedLevels) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Security'
+            $finding.Issue = 'Outdated Forest Functional Level'
+            $finding.Severity = 'Medium'
+            $finding.SeverityLevel = 2
+            $finding.AffectedObject = 'Forest Functional Level'
+            $finding.Description = "Forest functional level is set to '$forestLevel', which is outdated."
+            $finding.Impact = "The forest functional level gates which security features are available forest-wide, independent of any single domain's own functional level: the AD Recycle Bin requires Windows Server 2008 R2 forest mode, and the Privileged Access Management (PAM) optional feature requires Windows Server 2016 forest mode. An outdated forest functional level silently blocks these features even when every domain in the forest looks current."
+            $finding.Remediation = "Raise the forest functional level after confirming every domain in the forest is already at or above the target level: Set-ADForestMode -ForestMode Windows2016Forest (or higher)"
+            $finding.Details = @{
+                CurrentLevel = $forestLevel
+                RecommendedLevel = 'Windows2016Forest or higher'
+            }
+            $findings += $finding
+        }
+
+        # Check forest tombstone lifetime
+        Write-Verbose "Checking forest tombstone lifetime..."
+        try {
+            $configContextForTombstone = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
+            $dsObject = Get-ADObject -Identity "CN=Directory Service,CN=Windows NT,CN=Services,$configContextForTombstone" -Properties tombstoneLifetime -Server $__adServer -ErrorAction Stop
+            $tombstoneLifetimeDays = if ($null -ne $dsObject.tombstoneLifetime) { [int]$dsObject.tombstoneLifetime } else { 60 }
+
+            if ($tombstoneLifetimeDays -lt 180) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Domain Security'
+                $finding.Issue = 'Short Tombstone Lifetime'
+                $finding.Severity = 'Low'
+                $finding.SeverityLevel = 1
+                $finding.AffectedObject = 'Forest Tombstone Lifetime'
+                $finding.Description = "Forest tombstone lifetime is set to $tombstoneLifetimeDays days."
+                $finding.Impact = "Tombstone lifetime caps the maximum usable age of a system-state backup and the window available to detect and recover from accidental or malicious object deletion - a backup older than this value cannot be used for an authoritative restore. This also governs msDS-deletedObjectLifetime, which defaults to the tombstone lifetime value when not independently set."
+                $finding.Remediation = "Set the forest tombstone lifetime to at least 180 days on the Directory Service object's tombstoneLifetime attribute (forest-wide, not configurable per domain): Set-ADObject -Identity 'CN=Directory Service,CN=Windows NT,CN=Services,$configContextForTombstone' -Replace @{tombstoneLifetime=180}"
+                $finding.Details = @{
+                    CurrentValueDays = $tombstoneLifetimeDays
+                    RecommendedMinimumDays = 180
+                }
+                $findings += $finding
+            }
+        }
+        catch {
+            Write-Verbose "Failed to read forest tombstone lifetime: $_"
         }
         
         # Check for Recycle Bin (best practice)
