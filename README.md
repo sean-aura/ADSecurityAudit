@@ -1,7 +1,7 @@
 # Active Directory Security Audit
 
 <p align="center">
-  <img src="./assets/banner.svg" alt="Active Directory Security Audit — a domain controller hub connected to directory objects, with one flagged in amber" width="100%">
+  <img src="./assets/banner.png" alt="Active Directory Security Audit — a domain controller hub connected to directory objects, with one flagged in amber" width="100%">
 </p>
 
 A PowerShell module that finds misconfigurations and security vulnerabilities in Active Directory environments, plus a web dashboard (`ui/`) for browsing the results.
@@ -75,11 +75,11 @@ Get-WindowsCapability -Name RSAT.ActiveDirectory* -Online | Add-WindowsCapabilit
 Get-WindowsCapability -Name Rsat.GroupPolicy.Management.Tools* -Online | Add-WindowsCapability -Online
 ```
 
-<details>
+<details open>
 <summary><strong>Option A — Run in place (recommended)</strong></summary>
 
 ```powershell
-git clone https://github.com/AlchemicalChef/ADSecurityAudit.git
+git clone https://github.com/sean-aura/ADSecurityAudit.git
 cd ADSecurityAudit
 Import-Module .\ADSecurityAudit.psd1
 ```
