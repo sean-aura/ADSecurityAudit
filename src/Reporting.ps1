@@ -306,6 +306,7 @@ function Export-ADSecurityReportHTML {
         .finding-section { margin: 15px 0; padding: 15px; background: var(--surface); border-radius: 4px; border: 1px solid var(--border); }
         .finding-section h4 { color: var(--ink-muted); margin-bottom: 10px; font-size: 1em; text-transform: uppercase; letter-spacing: 0.5px; }
         .finding-section p { color: var(--ink); line-height: 1.7; }
+        .finding-section.finding-enrichment { border-left: 3px solid var(--brand); background: var(--surface); }
         .privileged-users-table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 0.9em; }
         .privileged-users-table th { background: var(--brand); color: #fff; padding: 12px; text-align: left; font-weight: 600; }
         .privileged-users-table td { padding: 10px; border-bottom: 1px solid var(--border); }
@@ -1104,6 +1105,46 @@ function Get-FindingHTML {
     if ([string]::IsNullOrWhiteSpace($impact))      { $impact      = 'Not specified for this finding.' }
     if ([string]::IsNullOrWhiteSpace($remediation)) { $remediation = 'Not specified for this finding.' }
     $remediation = $remediation -replace "`r`n", '<br>' -replace "`n", '<br>'
+
+    # Change-management enrichment (v1.24.0) - EstimatedEffort/KnownRisks/
+    # BackupRollback are shown once per finding group (they're identical for
+    # every item, keyed on Category+Issue like MitreTechnique/AnssiControl
+    # above); OperationalNotes is genuinely optional and omitted entirely
+    # when blank, per Finding-Enrichment-Prompt.md ("omit this field
+    # entirely if there is nothing genuinely additive to say").
+    $estimatedEffort  = HtmlEncode $first.EstimatedEffort
+    $knownRisks       = HtmlEncode $first.KnownRisks
+    $backupRollback   = HtmlEncode $first.BackupRollback
+    $operationalNotes = HtmlEncode $first.OperationalNotes
+    $enrichmentHtml = ''
+    if (-not [string]::IsNullOrWhiteSpace($estimatedEffort) -or
+        -not [string]::IsNullOrWhiteSpace($knownRisks) -or
+        -not [string]::IsNullOrWhiteSpace($backupRollback)) {
+        $opNotesHtml = ''
+        if (-not [string]::IsNullOrWhiteSpace($operationalNotes)) {
+            $opNotesHtml = @"
+                <div class="finding-section">
+                    <h4>Operational Notes</h4>
+                    <p>$operationalNotes</p>
+                </div>
+"@
+        }
+        $enrichmentHtml = @"
+                <div class="finding-section finding-enrichment">
+                    <h4>Estimated Effort</h4>
+                    <p>$estimatedEffort</p>
+                </div>
+                <div class="finding-section finding-enrichment">
+                    <h4>Known Risks</h4>
+                    <p>$knownRisks</p>
+                </div>
+                <div class="finding-section finding-enrichment">
+                    <h4>Backup / Rollback</h4>
+                    <p>$backupRollback</p>
+                </div>
+$opNotesHtml
+"@
+    }
     # Optional metadata tags (v1.2.0) - these come from the shared Issue ->
     # MITRE/ANSSI mapping, so they're identical across every item in the
     # group; render once from the first item rather than once per object.
@@ -1161,6 +1202,7 @@ function Get-FindingHTML {
                     <h4>Remediation</h4>
                     <p>$remediation</p>
                 </div>
+$enrichmentHtml
             </div>
         </details>
 "@
@@ -1209,6 +1251,7 @@ function Get-FindingHTML {
                     <h4>Remediation</h4>
                     <p>$remediation</p>
                 </div>
+$enrichmentHtml
                 <div class="finding-section">
                     <h4>Affected Objects ($count)</h4>
                     <ul class="finding-instance-list">

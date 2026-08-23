@@ -275,6 +275,9 @@ function Test-ADDnsSecurity {
             $finding.Description = "The 'DnsAdmins' group, which has no members by default, contains $($nonDefaultMembers.Count) member(s): $($nonDefaultMembers -join ', ')."
             $finding.Impact = "Members of DnsAdmins can configure the DNS server's `ServerLevelPluginDll` registry value, causing the DNS service (which runs as SYSTEM on the Domain Controller) to load an attacker-supplied DLL on next restart. This is a well-known path from DnsAdmins membership directly to SYSTEM-level code execution on a Domain Controller."
             $finding.Remediation = "Remove non-essential members from DnsAdmins and treat it as a Tier-0-equivalent group. Restrict `ServerLevelPluginDll` configuration rights, and where possible manage DNS via a dedicated, closely audited administrative workflow rather than broad DnsAdmins membership."
+            $finding.EstimatedEffort = 'Low — removing an unexpected member from one group.'
+            $finding.KnownRisks = 'DnsAdmins membership is a well-documented privilege-escalation vector (historical DNS-server-service DLL abuse); removing an unexpected member has no legitimate compatibility risk beyond that person losing DNS management rights, so confirm with them first.'
+            $finding.BackupRollback = 'Easy — re-add the member if needed; effective on next Kerberos ticket refresh, no data loss.'
             $finding.Details = @{
                 DistinguishedName = $dnsAdminsDN
                 Members           = @($nonDefaultMembers)
@@ -627,6 +630,9 @@ function Test-ADDnsSecurity {
             $finding.Description = "$($broadTransferZones.Count) AD-integrated zone(s) allow zone transfers to any server or to any server listed as a name server for the zone, rather than an explicit secondary-server list: $($zoneNames -join ', ')."
             $finding.Impact = "Zone transfers expose the complete contents of a DNS zone - hostnames, IP addresses, and often internal naming conventions for servers, workstations, and services - to any host that can request an AXFR, aiding network reconnaissance ahead of further attacks."
             $finding.Remediation = "Restrict zone transfers to an explicit list of authorized secondary server IP addresses (`Set-DnsServerPrimaryZone -Name <Zone> -SecureSecondaries TransferToSecureServers -SecondaryServers <IP1>,<IP2>`), or disable transfers entirely if no secondaries are in use."
+            $finding.EstimatedEffort = 'Low — restricting zone transfer to specific secondary server IPs is a single zone property.'
+            $finding.KnownRisks = 'Restricting zone transfer will break any legitimate secondary DNS server that currently relies on unrestricted transfer, so confirm the authorized secondary list first.'
+            $finding.BackupRollback = 'Easy — revert to the prior zone-transfer setting; effective immediately, no data loss.'
             $finding.Details = @{
                 Zones       = @($broadTransferZones)
                 DetailByZone = $zoneDetailLookup
@@ -651,6 +657,9 @@ function Test-ADDnsSecurity {
             $finding.Description = "$($insecureUpdateZones.Count) AD-integrated zone(s) permit nonsecure (unauthenticated) dynamic updates: $($zoneNames -join ', ')."
             $finding.Impact = "Nonsecure dynamic updates let any client on the network - authenticated or not - create or modify DNS records in the zone without proof of identity, enabling record spoofing/hijacking that can redirect traffic or facilitate downstream relay/MITM attacks."
             $finding.Remediation = "Set the zone to accept secure dynamic updates only (`Set-DnsServerPrimaryZone -Name <Zone> -DynamicUpdate Secure`), which restricts updates to Kerberos-authenticated domain-joined clients."
+            $finding.EstimatedEffort = 'Medium — switching to secure-only dynamic updates requires the zone to already be AD-integrated, and breaks self-registration for any non-domain-joined device currently updating its own record.'
+            $finding.KnownRisks = 'Switching to secure-only updates will break dynamic registration from any non-Windows or non-domain-joined device that currently self-registers (some Linux/IoT/appliance DHCP-DNS integrations), a documented Microsoft behavior.'
+            $finding.BackupRollback = 'Easy — revert the zone''s dynamic-update setting; effective immediately, no data loss to existing records.'
             $finding.Details = @{
                 Zones        = @($insecureUpdateZones)
                 DetailByZone = $zoneDetailLookup
@@ -675,6 +684,9 @@ function Test-ADDnsSecurity {
             $finding.Description = "$($adidnsZones.Count) AD-integrated zone object(s) grant broad principals (Authenticated Users, Everyone, or ANONYMOUS LOGON) the right to create child objects: $($zoneNames -join ', ')."
             $finding.Impact = "Any authenticated (or, in the worst case, unauthenticated) principal can register arbitrary new DNS node objects in the zone (ADIDNS), enabling record spoofing for names not already present - commonly used to impersonate wildcard/service names, poison WPAD-style discovery, or stage NTLM-relay/MITM attacks."
             $finding.Remediation = "Review and tighten the zone object's ACL to remove CreateChild (or broader) rights from Authenticated Users/Everyone/ANONYMOUS LOGON, restricting DNS record creation to the intended administrative or provisioning principals."
+            $finding.EstimatedEffort = 'Medium — removing the broad create-child ACE and confirming no legitimate dynamic-update workflow depends on it, since this is actually the AD-integrated DNS zone''s default ACL for supporting computer self-registration.'
+            $finding.KnownRisks = 'This permission is the default AD-integrated DNS zone ACL that lets domain-joined computers dynamically register their own DNS records; removing it broadly can break legitimate machine self-registration unless replaced with a Secure-only dynamic update model plus targeted exceptions.'
+            $finding.BackupRollback = 'Moderate — export the zone''s current ACL first (dnscmd or Get-Acl on the zone''s AD object) and reapply if self-registration breaks; changes follow normal AD/DNS replication.'
             $finding.Details = @{
                 Zones = @($adidnsZones)
             }
@@ -704,6 +716,9 @@ function Test-ADDnsSecurity {
             $finding.Description = "$($staleDelegations.Count) DNS delegation name-server record(s) across $($affectedChildZones.Count) delegated child zone(s) point at glue IP addresses that no longer answer authoritatively for the delegated zone: $($affectedChildZones -join ', ')."
             $finding.Impact = "A delegation whose glue nameservers no longer respond is stale/dangling: the parent zone's NS/glue records still hand authority for the sub-zone to infrastructure that appears retired or reassigned. Whoever can now claim that hostname or reclaim that IP address can serve authoritative-looking answers for the sub-zone - a well-documented DNS delegation/subdomain-takeover risk."
             $finding.Remediation = "Confirm whether each delegated child zone is still in use. If it is not, remove the stale NS/glue records from the parent zone (`Remove-DnsServerZoneDelegation`). If the child zone is still needed, repoint the delegation at the nameservers actually serving it today."
+            $finding.EstimatedEffort = 'Low — removing a delegation (NS/glue) record pointing at a decommissioned name server.'
+            $finding.KnownRisks = 'A dangling delegation is itself a documented subdomain-takeover risk (an attacker registering the abandoned target can serve authoritative answers for that subdomain), so removing it eliminates a real exposure rather than introducing one.'
+            $finding.BackupRollback = 'Easy — re-create the delegation record if the name server is later reinstated; effective immediately, no data loss.'
             $finding.Details = @{
                 StaleDelegations = @($staleDelegations)
             }

@@ -38,6 +38,9 @@ function Test-LAPSDeployment {
             $finding.Description = "Local Administrator Password Solution (LAPS) is not deployed in the domain. LAPS schema extensions are missing."
             $finding.Impact = "Without LAPS, local administrator passwords across workstations and servers are likely identical or predictable, facilitating lateral movement."
             $finding.Remediation = "Deploy LAPS to randomize and manage local administrator passwords across all domain computers. For legacy LAPS: Update-AdmPwdADSchema. For Windows LAPS (Server 2019+): Update-LapsADSchema"
+            $finding.EstimatedEffort = 'High — full deployment requires a one-time forest-wide schema extension, GPO creation, delegated read-rights setup, and a phased client/CSE rollout with a validation period — an environment-wide project, not a single change.'
+            $finding.KnownRisks = 'Low ongoing technical risk to normal operations; the one-time schema extension step is itself an irreversible forest-wide schema change, so test/confirm it in a non-production domain first if possible.'
+            $finding.BackupRollback = 'Hard/Limited — the schema extension itself can''t be undone (attributes are marked defunct, not removed, consistent with schema changes generally); the GPO/policy rollout portion, however, can be unlinked or removed cleanly at any time.'
             $finding.Details = @{
                 Domain = $domainName
             }
@@ -80,6 +83,9 @@ function Test-LAPSDeployment {
                 $finding.Description = "Only $coveragePercent% of domain computers have LAPS passwords set. $($computersWithoutLAPS.Count) computers are missing LAPS coverage."
                 $finding.Impact = "Computers without LAPS retain static local administrator passwords, creating lateral movement opportunities for attackers."
                 $finding.Remediation = "Deploy LAPS Group Policy to all OUs containing computers. Verify LAPS client is installed and GPO is applied. Check: gpresult /r"
+                $finding.EstimatedEffort = 'Medium — extending the LAPS GPO/CSE to additional OUs or computers, and validating the schema attributes and client/CSE are present on the newly covered machines.'
+                $finding.KnownRisks = 'Low technical risk deploying LAPS more broadly; the main risk is procedural — confirm target computers are already schema-extended and have the LAPS client installed before expecting the GPO to take effect.'
+                $finding.BackupRollback = 'Easy — remove the GPO link/scope for the newly covered OUs if needed; LAPS-managed passwords already set remain valid, no data loss.'
                 $finding.Details = @{
                     TotalComputers = $totalComputers
                     ComputersWithLAPS = $computersWithLAPS.Count
@@ -113,6 +119,9 @@ function Test-LAPSDeployment {
                 $finding.Description = "$($expiredLAPSComputers.Count) computers have expired LAPS passwords that have not been rotated."
                 $finding.Impact = "Expired passwords may indicate computers that are offline, not receiving GPO updates, or have LAPS client issues."
                 $finding.Remediation = "Investigate why LAPS passwords are not rotating. Ensure computers are online and receiving Group Policy updates."
+                $finding.EstimatedEffort = 'Low — LAPS rotates each computer''s password on its own schedule; an expired password typically self-corrects at the next rotation unless something is blocking it.'
+                $finding.KnownRisks = 'Low risk; forcing an immediate rotation on affected computers just changes the local admin password, with no compatibility impact beyond any manual process needing to fetch the new password from AD afterward.'
+                $finding.BackupRollback = 'Easy — LAPS keeps rotating on its own; there is no rollback needed, since a new randomly generated password is the intended end state.'
                 $finding.Details = @{
                     ExpiredCount = $expiredLAPSComputers.Count
                     SampleComputers = ($expiredLAPSComputers | Select-Object -First 10 -ExpandProperty Name) -join ', '
@@ -159,6 +168,9 @@ function Test-LAPSDeployment {
                 $finding.Description = "Local Administrator Password Solution (LAPS) is not deployed in the domain. LAPS schema extensions are missing."
                 $finding.Impact = "Without LAPS, local administrator passwords across workstations and servers are likely identical or predictable, facilitating lateral movement."
                 $finding.Remediation = "Deploy LAPS to randomize and manage local administrator passwords across all domain computers. For legacy LAPS: Update-AdmPwdADSchema. For Windows LAPS (Server 2019+): Update-LapsADSchema"
+                $finding.EstimatedEffort = 'High — full deployment requires a one-time forest-wide schema extension, GPO creation, delegated read-rights setup, and a phased client/CSE rollout with a validation period — an environment-wide project, not a single change.'
+                $finding.KnownRisks = 'Low ongoing technical risk to normal operations; the one-time schema extension step is itself an irreversible forest-wide schema change, so test/confirm it in a non-production domain first if possible.'
+                $finding.BackupRollback = 'Hard/Limited — the schema extension itself can''t be undone (attributes are marked defunct, not removed, consistent with schema changes generally); the GPO/policy rollout portion, however, can be unlinked or removed cleanly at any time.'
                 $finding.Details = @{
                     Domain = $domain.DNSRoot
                     LegacySchemaPath = $schemaPath
@@ -208,6 +220,9 @@ function Test-LAPSDeployment {
                 $finding.Description = "Only $coveragePercent% of domain computers have LAPS passwords set. $($computersWithoutLAPS.Count) computers are missing LAPS coverage."
                 $finding.Impact = "Computers without LAPS retain static local administrator passwords, creating lateral movement opportunities for attackers."
                 $finding.Remediation = "Deploy LAPS Group Policy to all OUs containing computers. Verify LAPS client is installed and GPO is applied. Check: gpresult /r"
+                $finding.EstimatedEffort = 'Medium — extending the LAPS GPO/CSE to additional OUs or computers, and validating the schema attributes and client/CSE are present on the newly covered machines.'
+                $finding.KnownRisks = 'Low technical risk deploying LAPS more broadly; the main risk is procedural — confirm target computers are already schema-extended and have the LAPS client installed before expecting the GPO to take effect.'
+                $finding.BackupRollback = 'Easy — remove the GPO link/scope for the newly covered OUs if needed; LAPS-managed passwords already set remain valid, no data loss.'
                 $finding.Details = @{
                     TotalComputers = $totalComputers
                     ComputersWithLAPS = $computersWithLAPS.Count
@@ -252,6 +267,9 @@ function Test-LAPSDeployment {
                 $finding.Description = "$($expiredLAPSComputers.Count) computers have expired LAPS passwords that have not been rotated."
                 $finding.Impact = "Expired passwords may indicate computers that are offline, not receiving GPO updates, or have LAPS client issues."
                 $finding.Remediation = "Investigate why LAPS passwords are not rotating. Ensure computers are online and receiving Group Policy updates."
+                $finding.EstimatedEffort = 'Low — LAPS rotates each computer''s password on its own schedule; an expired password typically self-corrects at the next rotation unless something is blocking it.'
+                $finding.KnownRisks = 'Low risk; forcing an immediate rotation on affected computers just changes the local admin password, with no compatibility impact beyond any manual process needing to fetch the new password from AD afterward.'
+                $finding.BackupRollback = 'Easy — LAPS keeps rotating on its own; there is no rollback needed, since a new randomly generated password is the intended end state.'
                 $finding.Details = @{
                     ExpiredCount = $expiredLAPSComputers.Count
                     SampleComputers = ($expiredLAPSComputers | Select-Object -First 10 -ExpandProperty Name) -join ', '

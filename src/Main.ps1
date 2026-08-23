@@ -369,6 +369,10 @@ function Start-ADSecurityAudit {
                             $finding.Description = $result.Description
                             $finding.Impact = $result.Impact
                             $finding.Remediation = $result.Remediation
+                            $finding.EstimatedEffort = $result.EstimatedEffort
+                            $finding.KnownRisks = $result.KnownRisks
+                            $finding.BackupRollback = $result.BackupRollback
+                            $finding.OperationalNotes = $result.OperationalNotes
                             $finding.Details = if ($result.Details) { $result.Details } else { @{} }
                             $allFindings += $finding
                         }
@@ -444,6 +448,10 @@ function Start-ADSecurityAudit {
 
         # Tag every finding with MITRE / ANSSI / Weight from the central mapping
         # table so findings are born score/MITRE-aware (v1.2.0 contract layer).
+        # EstimatedEffort/KnownRisks/BackupRollback/OperationalNotes (v1.24.0)
+        # are set directly in each check alongside Description/Impact/
+        # Remediation (see src/*.ps1), so no separate tagging pass is needed
+        # for those fields.
         foreach ($finding in $allFindings) {
             [void](Set-ADFindingMetadata -Finding $finding)
         }

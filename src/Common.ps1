@@ -98,12 +98,29 @@ class ADSecurityFinding {
     [string]$AnssiControl     # ANSSI-style control id, e.g. 'vuln1_krbtgt_age'
     [int]$Weight              # Risk-score contribution (default 0)
 
+    # --- Additive enrichment fields (introduced in v1.24.0) ---
+    # Change-management-ready guidance appended per the process in
+    # Finding-Enrichment-Prompt.md. These are OPTIONAL and set directly in
+    # each check (src/*.ps1) immediately after Description/Impact/
+    # Remediation, the same way those three fields already work - no
+    # separate lookup table or tagging pass to cross-reference. Existing
+    # consumers that ignore them are unaffected. Per the contract: finding
+    # fields are additive only.
+    [string]$EstimatedEffort  # Low/Medium/High + one-sentence reason
+    [string]$KnownRisks       # 1-2 sentences on plausible compatibility/technical risk
+    [string]$BackupRollback   # Easy/Moderate/Hard-Limited + one-sentence undo summary
+    [string]$OperationalNotes # Optional; omitted when there's nothing additive to say
+
     ADSecurityFinding() {
         $this.DetectedDate = Get-Date
         $this.Details = @{}
         $this.MitreTechnique = ''
         $this.AnssiControl = ''
         $this.Weight = 0
+        $this.EstimatedEffort = ''
+        $this.KnownRisks = ''
+        $this.BackupRollback = ''
+        $this.OperationalNotes = ''
     }
 }
 

@@ -1326,6 +1326,10 @@ function Invoke-ADRuleSet {
                     $finding.Description = $result.Description
                     $finding.Impact = $result.Impact
                     $finding.Remediation = $result.Remediation
+                    $finding.EstimatedEffort = $result.EstimatedEffort
+                    $finding.KnownRisks = $result.KnownRisks
+                    $finding.BackupRollback = $result.BackupRollback
+                    $finding.OperationalNotes = $result.OperationalNotes
                     $finding.Details = if ($result.Details) { $result.Details } else { @{} }
                     $allFindings += $finding
                 }

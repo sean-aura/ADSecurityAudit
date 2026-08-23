@@ -220,6 +220,9 @@ function Test-ADCoercionAndRelayExposure {
         $finding.Description = "The Print Spooler service is running on $($spoolerRunningDCs.Count) Domain Controller(s): $($spoolerRunningDCs -join ', ')."
         $finding.Impact = "A running Spooler service on a DC exposes the MS-RPRN/MS-PAR (PrinterBug) coercion surface: any authenticated user can coerce the DC to authenticate to an attacker-controlled host, enabling NTLM relay to LDAP/LDAPS or AD CS for domain compromise."
         $finding.Remediation = "Disable and stop the Print Spooler service on all Domain Controllers unless print serving from a DC is an explicit, documented business requirement: `Stop-Service -Name Spooler; Set-Service -Name Spooler -StartupType Disabled`."
+        $finding.EstimatedEffort = 'Low — stop and disable a single service on each DC (or via GPO).'
+        $finding.KnownRisks = 'Disabling the Spooler service on a DC breaks any printing initiated directly from that DC itself, which is essentially never a legitimate DC role; it has no effect on printing by domain clients, which don''t route jobs through DCs.'
+        $finding.BackupRollback = 'Easy — re-enable and start the service; effective immediately, no data loss.'
         $finding.Details = @{
             AffectedDomainControllers = @($spoolerRunningDCs)
             PerDomainControllerState  = @($perDcState)
@@ -243,6 +246,9 @@ function Test-ADCoercionAndRelayExposure {
         $finding.Description = "The WebClient (WebDAV Mini-Redirector) service is running on $($webClientRunningDCs.Count) Domain Controller(s): $($webClientRunningDCs -join ', ')."
         $finding.Impact = "A running WebClient service on a DC exposes a WebDAV-based coercion surface (an alternative to PrinterBug that also works over port 80 and bypasses some Spooler-specific mitigations), allowing an attacker to coerce the DC into authenticating to a relay target."
         $finding.Remediation = "Disable and stop the WebClient service on all Domain Controllers: `Stop-Service -Name WebClient; Set-Service -Name WebClient -StartupType Disabled`."
+        $finding.EstimatedEffort = 'Low — stop and disable a single service on each DC.'
+        $finding.KnownRisks = 'Disabling WebClient (WebDAV) removes WebDAV redirector functionality on the DC host itself, which is essentially never a legitimate DC use case.'
+        $finding.BackupRollback = 'Easy — re-enable and start the service; effective immediately, no data loss.'
         $finding.Details = @{
             AffectedDomainControllers = @($webClientRunningDCs)
             PerDomainControllerState  = @($perDcState)
@@ -266,6 +272,10 @@ function Test-ADCoercionAndRelayExposure {
         $finding.Description = "NTDS `LDAPServerIntegrity` is not set to require signing (value 2) on $($ldapSignDCs.Count) Domain Controller(s): $($ldapSignDCs -join ', ')."
         $finding.Impact = "Without LDAP signing required, a coerced DC authentication (or any other captured NTLM authentication) can be relayed to unsigned LDAP on a Domain Controller to read or modify directory data, including delegation and credential-adjacent attributes."
         $finding.Remediation = "Set the `Domain controller: LDAP server signing requirements` policy (or the `LDAPServerIntegrity` registry value under `HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters`) to `Require signing` (2) on every Domain Controller, then validate client compatibility before wide rollout."
+        $finding.EstimatedEffort = 'Medium — a domain/DC-wide GPO or registry setting; Microsoft''s own LDAP-signing hardening guidance recommends an audit period before enforcing.'
+        $finding.KnownRisks = 'Enforcing LDAP signing can break unsigned-LDAP clients, applications, or network appliances, a documented compatibility concern in Microsoft''s LDAP signing advisory.'
+        $finding.BackupRollback = 'Easy — revert the GPO/registry setting; effective at next policy refresh, no data loss.'
+        $finding.OperationalNotes = 'Monitor Directory Service event ID 2887 (count of unsigned LDAP binds) before enforcing, per Microsoft''s own documented rollout guidance.'
         $finding.Details = @{
             AffectedDomainControllers = @($ldapSignDCs)
             PerDomainControllerState  = @($perDcState)
@@ -289,6 +299,9 @@ function Test-ADCoercionAndRelayExposure {
         $finding.Description = "NTDS `LdapEnforceChannelBinding` is not set to require Extended Protection for Authentication (value 2) on $($channelBindingDCs.Count) Domain Controller(s): $($channelBindingDCs -join ', ')."
         $finding.Impact = "Without LDAP channel binding (EPA) required, a relayed NTLM authentication over LDAPS is not bound to the TLS channel, so it remains relayable even when LDAPS is otherwise in use, undermining coerce-then-relay-to-LDAPS defences."
         $finding.Remediation = "Set the `LdapEnforceChannelBinding` registry value under `HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters` to `2` (always) on every Domain Controller, then validate client compatibility (older clients without EPA support may need remediation first)."
+        $finding.EstimatedEffort = 'Medium — a domain-wide registry/GPO setting on every DC; Microsoft''s own guidance recommends a phased "when supported" rollout before enforcing, due to legacy client compatibility.'
+        $finding.KnownRisks = 'Enforcing LDAP channel binding can break LDAPS-based clients or appliances that don''t support channel binding tokens, per Microsoft''s own documented compatibility guidance.'
+        $finding.BackupRollback = 'Easy — revert the registry value/GPO setting; effective after next policy refresh/service restart, no data loss.'
         $finding.Details = @{
             AffectedDomainControllers = @($channelBindingDCs)
             PerDomainControllerState  = @($perDcState)

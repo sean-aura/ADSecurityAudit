@@ -294,6 +294,9 @@ function Test-ADStaleObjectDepth {
                 $finding.Description = "The account '$($user.SamAccountName)' has the PASSWD_NOTREQD flag set on userAccountControl (0x$('{0:X}' -f $uacValue)), which removes the requirement that the account's password satisfy the domain password policy - including allowing a blank password."
                 $finding.Impact = "An account with PASSWD_NOTREQD can be assigned an empty or trivially weak password without any policy enforcement, making it a low-effort credential-guessing or password-spraying target."
                 $finding.Remediation = "Clear the PASSWD_NOTREQD flag (Set-ADUser -Identity <account> -PasswordNotRequired `$false) and ensure the account has a password that meets the domain password policy."
+                $finding.EstimatedEffort = 'Low — clearing a single userAccountControl flag on one account, though note the account still keeps its current (possibly blank/weak) password until it''s actually changed.'
+                $finding.KnownRisks = 'Clearing the flag alone has no immediate compatibility impact, since the account keeps its current password until it''s next changed — this is a two-step fix (clear the flag, then force a password reset), not an instant risk elimination.'
+                $finding.BackupRollback = 'Easy — re-set the PASSWD_NOTREQD flag if needed; effective immediately, no data loss.'
                 $finding.Details = @{
                     SamAccountName    = $user.SamAccountName
                     DistinguishedName = $user.DistinguishedName
@@ -332,6 +335,9 @@ function Test-ADStaleObjectDepth {
                 $finding.Description = "User account '$($user.SamAccountName)' has a primaryGroupID of $pgidValue instead of the expected default of $($Script:StaleDepthDefaultPrimaryGroupIds.DomainUsers) (Domain Users)."
                 $finding.Impact = "primaryGroupID membership is not reflected in the group's forward-linked 'member' attribute, so tools and reviewers that enumerate privileged group membership via memberOf/member alone can miss it entirely. Setting primaryGroupID to a privileged RID (e.g. 512 - Domain Admins) is a known technique for hiding effectively-privileged accounts from casual review."
                 $finding.Remediation = "Verify the business justification for the non-default primaryGroupID. If unintended, reset it to $($Script:StaleDepthDefaultPrimaryGroupIds.DomainUsers) (Set-ADUser -Identity <account> -Replace @{primaryGroupID=$($Script:StaleDepthDefaultPrimaryGroupIds.DomainUsers)}) after confirming the account is already an explicit member of any group it legitimately needs."
+                $finding.EstimatedEffort = 'Medium — resetting primaryGroupID to the standard value requires first confirming the object genuinely isn''t a legitimate DC or service account with a documented reason for a non-default primary group, since this is also a known persistence/membership-hiding technique.'
+                $finding.KnownRisks = 'Legitimate reasons for a non-default primaryGroupID are rare, but confirm the object isn''t a genuinely misconfigured-but-legitimate service account before treating it purely as malicious persistence and resetting it.'
+                $finding.BackupRollback = 'Easy — revert the primaryGroupID attribute to its prior value; effective immediately, no data loss.'
                 $finding.Details = @{
                     SamAccountName    = $user.SamAccountName
                     DistinguishedName = $user.DistinguishedName
@@ -371,6 +377,9 @@ function Test-ADStaleObjectDepth {
                 $finding.Description = "Computer account '$($computer.SamAccountName)' has a primaryGroupID of $pgidValue, which does not match the expected default ($($Script:StaleDepthDefaultPrimaryGroupIds.DomainComputers) for a member computer, or $($Script:StaleDepthDefaultPrimaryGroupIds.DomainControllers) only if it is a genuine Domain Controller)."
                 $finding.Impact = "As with user objects, primaryGroupID membership is invisible to memberOf-based reviews. A non-DC computer object with primaryGroupID 516 (Domain Controllers) or another privileged RID can gain effective privileges that are not visible through normal group-membership auditing."
                 $finding.Remediation = "Verify the business justification for the non-default primaryGroupID. If unintended, reset it to $($Script:StaleDepthDefaultPrimaryGroupIds.DomainComputers) (Domain Computers) unless the object is a genuine, currently-registered Domain Controller."
+                $finding.EstimatedEffort = 'Medium — resetting primaryGroupID to the standard value requires first confirming the object genuinely isn''t a legitimate DC or service account with a documented reason for a non-default primary group, since this is also a known persistence/membership-hiding technique.'
+                $finding.KnownRisks = 'Legitimate reasons for a non-default primaryGroupID are rare, but confirm the object isn''t a genuinely misconfigured-but-legitimate service account before treating it purely as malicious persistence and resetting it.'
+                $finding.BackupRollback = 'Easy — revert the primaryGroupID attribute to its prior value; effective immediately, no data loss.'
                 $finding.Details = @{
                     SamAccountName    = $computer.SamAccountName
                     DistinguishedName = $computer.DistinguishedName
@@ -429,6 +438,9 @@ function Test-ADStaleObjectDepth {
                 $finding.Description = "The Service Principal Name '$spn' is registered on $($uniqueHolders.Count) accounts: $($uniqueHolders -join ', ')."
                 $finding.Impact = "A duplicate SPN breaks Kerberos authentication for the affected service (clients may authenticate against the wrong account or fail entirely), and can also indicate a stale, decommissioned, or rogue account still holding a legitimate service's identity."
                 $finding.Remediation = "Determine which account is the correct current holder of this SPN and remove it from all others (setspn -X to find domain-wide duplicates; Set-ADUser/-Computer -Remove @{ServicePrincipalNames='$spn'} on the incorrect holder(s))."
+                $finding.EstimatedEffort = 'Medium — Kerberos treats a duplicate SPN as ambiguous, and identifying which account should legitimately hold the SPN (versus the stale/incorrect one) requires investigation before removing it.'
+                $finding.KnownRisks = 'Removing the SPN from the wrong account (rather than the stale one) can break the legitimate service instead of fixing the conflict.'
+                $finding.BackupRollback = 'Easy — re-add the SPN to the account it was removed from via setspn; effective immediately, no data loss.'
                 $finding.Details = @{
                     ServicePrincipalName = $spn
                     Holders               = $uniqueHolders
@@ -493,6 +505,9 @@ function Test-ADStaleObjectDepth {
                     $finding.Description = "Domain Controller '$dcName' ($dcIp) is not covered by any AD Sites & Services subnet object, so it cannot be mapped to a site."
                     $finding.Impact = "Clients and other Domain Controllers that fall outside a defined subnet fall back to slower, less predictable site-selection and replication behaviour, which can cause clients to authenticate against a distant DC and can mask real network-topology issues."
                     $finding.Remediation = "Create or extend an AD Sites & Services subnet object covering $dcIp and associate it with the correct site (Get-ADReplicationSite / New-ADReplicationSubnet)."
+                    $finding.EstimatedEffort = 'Medium — creating the missing AD Sites and Services subnet object touches the forest-wide sites topology (Configuration NC), so validate the site boundary is correct before publishing it.'
+                    $finding.KnownRisks = 'An incorrect subnet-to-site mapping can send clients or DCs to authenticate across a slow WAN link instead of a local DC, so getting the subnet/site boundary right matters more than simply filling the gap.'
+                    $finding.BackupRollback = 'Easy — remove or correct the subnet object; effective as clients next look up their site, no data loss.'
                     $finding.Details = @{
                         DomainController = $dcName
                         IPv4Address      = $dcIp
@@ -541,6 +556,9 @@ function Test-ADStaleObjectDepth {
             $finding.Description = "The domain has only $dcCount Domain Controller(s)."
             $finding.Impact = "With no redundant Domain Controller, the domain has a single point of failure - loss of that DC (hardware failure, ransomware, or maintenance error) can cause a full authentication and directory outage until it is recovered."
             $finding.Remediation = "Deploy at least one additional Domain Controller, ideally in a separate physical/virtual failure domain, to provide redundancy for authentication and directory services."
+            $finding.EstimatedEffort = 'High — adding DCs is an infrastructure project (server/VM provisioning, licensing, capacity planning, possibly a new site), not a configuration change, and needs coordination with infrastructure/capacity-planning teams.'
+            $finding.KnownRisks = 'No risk from adding a DC itself beyond the normal operational load of any new DC promotion (replication during initial sync); the risk this finding actually describes is the opposite — insufficient redundancy leaves directory availability exposed if the remaining DC(s) fail.'
+            $finding.BackupRollback = 'Easy — a newly added DC can be demoted/removed later if genuinely not needed, with no impact on existing DCs.'
             $finding.Details = @{
                 DomainControllerCount = $dcCount
                 DomainControllers     = @($allDomainControllersInDomain | Where-Object { $_.PSObject.Properties['Name'] } | ForEach-Object { $_.Name })

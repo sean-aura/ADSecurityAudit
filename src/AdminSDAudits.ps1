@@ -92,6 +92,9 @@ function Test-AdminSDHolder {
                         $finding.Description = "Non-standard trustee '$identityReference' has '$($ace.ActiveDirectoryRights)' rights on AdminSDHolder."
                         $finding.Impact = "Attackers who compromise this principal can modify AdminSDHolder ACL to grant persistent domain-wide rights, create shadow admins, or bypass privilege escalation controls. SDProp will propagate these malicious permissions every 60 minutes."
                         $finding.Remediation = "Review and remove unauthorized ACE. Use: `$acl = Get-Acl 'AD:\`$adminSDHolderDN'; Review `$acl.Access; Remove unauthorized entries using Set-Acl."
+                        $finding.EstimatedEffort = 'Medium — a single-object ACE removal, but AdminSDHolder''s SDProp mechanism propagates the corrected ACL to every protected (Tier-0) object domain-wide, so confirm the trustee isn''t a legitimate delegated Tier-0 management tool first.'
+                        $finding.KnownRisks = 'Procedural — confirm the trustee isn''t an intentional, currently-used Tier-0 delegation before removing; there is no realistic legitimate compatibility break otherwise.'
+                        $finding.BackupRollback = 'Moderate — export the current ACL first; full effect across every protected object depends on SDProp''s next propagation cycle, not just AD replication.'
                         $finding.Details = @{
                             Identity = $identityReference
                             AccessControlType = $ace.AccessControlType
@@ -114,6 +117,9 @@ function Test-AdminSDHolder {
                     $finding.Description = "Deny ACE found on AdminSDHolder for '$identityReference'."
                     $finding.Impact = "Deny ACEs on AdminSDHolder are unusual and may cause unexpected permission issues for protected accounts."
                     $finding.Remediation = "Review the deny ACE and determine if it's intentional. Remove if unnecessary."
+                    $finding.EstimatedEffort = 'Low — removing a single unexpected Deny ACE from one object.'
+                    $finding.KnownRisks = 'Low technical risk removing an unexpected deny entry, but confirm it wasn''t intentionally placed to block a specific known-compromised or decommissioned account before removing it, since that would re-permit whatever it was blocking.'
+                    $finding.BackupRollback = 'Moderate — export the AdminSDHolder ACL before changing it; the removal only reaches every protected object after SDProp''s next propagation cycle.'
                     $finding.Details = @{
                         Identity = $identityReference
                         ActiveDirectoryRights = $ace.ActiveDirectoryRights
@@ -160,6 +166,9 @@ function Test-AdminSDHolder {
                     $finding.Description = "User has adminCount=1 but is not a member of any protected group."
                     $finding.Impact = "User retains AdminSDHolder permissions after being removed from protected groups, potentially granting unintended privileges."
                     $finding.Remediation = "Clear adminCount and fix ACL: Set-ADUser -Identity '$($user.SamAccountName)' -Clear adminCount; Then manually review and reset the user's ACL to remove AdminSDHolder permissions."
+                    $finding.EstimatedEffort = 'Low — reset a single attribute and re-enable inheritance on one object.'
+                    $finding.KnownRisks = 'Low technical risk; confirm the object isn''t intentionally kept protected for an undocumented reason before clearing.'
+                    $finding.BackupRollback = 'Easy — reset adminCount and inheritance back if needed; effective immediately, no data loss.'
                     $finding.Details = @{
                         DistinguishedName = $user.DistinguishedName
                         AdminCount = $user.adminCount
@@ -240,6 +249,9 @@ function Test-AdminSDHolder {
                     $finding.Description = "Non-standard trustee '$identityReference' has '$($ace.ActiveDirectoryRights)' rights on AdminSDHolder."
                     $finding.Impact = "Attackers who compromise this principal can modify AdminSDHolder ACL to grant persistent domain-wide rights, create shadow admins, or bypass privilege escalation controls. SDProp will propagate these malicious permissions every 60 minutes."
                     $finding.Remediation = "Review and remove unauthorized ACE. Use: `$acl = Get-Acl 'AD:\$adminSDHolderDN'; Review `$acl.Access; Remove unauthorized entries using Set-Acl."
+                    $finding.EstimatedEffort = 'Medium — a single-object ACE removal, but AdminSDHolder''s SDProp mechanism propagates the corrected ACL to every protected (Tier-0) object domain-wide, so confirm the trustee isn''t a legitimate delegated Tier-0 management tool first.'
+                    $finding.KnownRisks = 'Procedural — confirm the trustee isn''t an intentional, currently-used Tier-0 delegation before removing; there is no realistic legitimate compatibility break otherwise.'
+                    $finding.BackupRollback = 'Moderate — export the current ACL first; full effect across every protected object depends on SDProp''s next propagation cycle, not just AD replication.'
                     $finding.Details = @{
                         Identity = $identityReference
                         AccessControlType = $ace.AccessControlType.ToString()
@@ -263,6 +275,9 @@ function Test-AdminSDHolder {
                 $finding.Description = "Deny ACE found on AdminSDHolder for '$identityReference'."
                 $finding.Impact = "Deny ACEs on AdminSDHolder are unusual and may cause unexpected permission issues for protected accounts."
                 $finding.Remediation = "Review the deny ACE and determine if it's intentional. Remove if unnecessary."
+                $finding.EstimatedEffort = 'Low — removing a single unexpected Deny ACE from one object.'
+                $finding.KnownRisks = 'Low technical risk removing an unexpected deny entry, but confirm it wasn''t intentionally placed to block a specific known-compromised or decommissioned account before removing it, since that would re-permit whatever it was blocking.'
+                $finding.BackupRollback = 'Moderate — export the AdminSDHolder ACL before changing it; the removal only reaches every protected object after SDProp''s next propagation cycle.'
                 $finding.Details = @{
                     Identity = $identityReference
                     ActiveDirectoryRights = $ace.ActiveDirectoryRights.ToString()
@@ -337,6 +352,9 @@ function Test-AdminSDHolder {
                 $finding.Description = "User has adminCount=1 but is not a member of any protected group."
                 $finding.Impact = "User retains AdminSDHolder permissions after being removed from protected groups, potentially granting unintended privileges."
                 $finding.Remediation = "Clear adminCount and fix ACL: Set-ADUser -Identity '$($user.SamAccountName)' -Clear adminCount; Then manually review and reset the user's ACL to remove AdminSDHolder permissions."
+                $finding.EstimatedEffort = 'Low — reset a single attribute and re-enable inheritance on one object.'
+                $finding.KnownRisks = 'Low technical risk; confirm the object isn''t intentionally kept protected for an undocumented reason before clearing.'
+                $finding.BackupRollback = 'Easy — reset adminCount and inheritance back if needed; effective immediately, no data loss.'
                 $finding.Details = @{
                     DistinguishedName = $user.DistinguishedName
                     AdminCount = $user.adminCount

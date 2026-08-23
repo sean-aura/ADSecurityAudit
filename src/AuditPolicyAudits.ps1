@@ -42,6 +42,9 @@ function Test-AuditPolicyConfiguration {
                 $finding.Description = "The AdminSDHolder object does not have audit rules (SACL) configured to log access attempts."
                 $finding.Impact = "Changes to privileged group permissions and access attempts to critical AD objects will not be logged, hindering incident detection."
                 $finding.Remediation = @"
+                $finding.EstimatedEffort = 'Low — adding a SACL entry to one object.'
+                $finding.KnownRisks = 'No access-control impact; increases Security event log volume for changes to this specific object.'
+                $finding.BackupRollback = 'Easy — remove the SACL entry; effective immediately, no data loss.'
 Configure SACL on AdminSDHolder to audit modifications:
 1. Open ADSI Edit
 2. Navigate to CN=AdminSDHolder,CN=System,DC=domain,DC=com
@@ -73,6 +76,9 @@ Configure SACL on AdminSDHolder to audit modifications:
                 $finding.Description = "The domain root object does not have audit rules (SACL) configured."
                 $finding.Impact = "Critical changes to domain-level permissions and replication rights will not be logged."
                 $finding.Remediation = "Configure SACL on the domain root to audit Write Property, Modify Permissions, and Extended Rights for Everyone."
+                $finding.EstimatedEffort = 'Low — adding a SACL entry to one object.'
+                $finding.KnownRisks = 'No access-control impact; increases Security event log volume for changes to this specific object.'
+                $finding.BackupRollback = 'Easy — remove the SACL entry; effective immediately, no data loss.'
                 $finding.Details = @{
                     DistinguishedName = $Snapshot.ACLs['DomainRoot'].DistinguishedName
                 }
@@ -221,6 +227,9 @@ Configure SACL on AdminSDHolder to audit modifications:
                     }
                     
                     $finding.Remediation = @"
+                    $finding.EstimatedEffort = 'Medium — a domain-wide GPO change validated across every DC.'
+                    $finding.KnownRisks = 'Purely additive logging; essentially no access-control risk, but increases Security event log volume and may need log-size/SIEM capacity planning.'
+                    $finding.BackupRollback = 'Easy — revert the GPO setting; effective at next Group Policy refresh, no data loss.'
 Configure the following audit policies via Group Policy (Computer Config > Windows Settings > Security Settings > Advanced Audit Policy):
 
 $($remediationList -join "`n")
@@ -249,6 +258,9 @@ $(($missingPolicies | ForEach-Object { "auditpol /set /subcategory:`"$($_.Subcat
                 $finding.Description = "Could not remotely verify audit policies on domain controller '$dcName'. Manual verification is required."
                 $finding.Impact = "Without proper audit policies, security incidents cannot be detected or investigated effectively. Critical events may go unlogged."
                 $finding.Remediation = @"
+                $finding.EstimatedEffort = 'Medium — a GPO change that must be validated on every DC, and confirmed not to be overridden by the legacy (non-advanced) Audit Policy category, a well-documented conflict between the two models.'
+                $finding.KnownRisks = 'Purely additive logging with essentially no access-control impact; the main practical effect is increased Security event log volume, which may require increasing log size/retention or SIEM ingestion capacity.'
+                $finding.BackupRollback = 'Easy — revert the GPO setting; effective at next Group Policy refresh, no data loss.'
 Verify and enable advanced audit policies on this DC by running:
 auditpol /get /category:*
 
@@ -301,6 +313,9 @@ Configure via Group Policy: Computer Config > Windows Settings > Security Settin
                 $finding.Description = "The AdminSDHolder object does not have audit rules (SACL) configured to log access attempts."
                 $finding.Impact = "Changes to privileged group permissions and access attempts to critical AD objects will not be logged, hindering incident detection."
                 $finding.Remediation = @"
+                $finding.EstimatedEffort = 'Low — adding a SACL entry to one object.'
+                $finding.KnownRisks = 'No access-control impact; increases Security event log volume for changes to this specific object.'
+                $finding.BackupRollback = 'Easy — remove the SACL entry; effective immediately, no data loss.'
 Configure SACL on AdminSDHolder to audit modifications:
 1. Open ADSI Edit
 2. Navigate to CN=AdminSDHolder,CN=System,DC=domain,DC=com
@@ -343,6 +358,9 @@ Set-Acl `$path `$acl
                 $finding.Description = "The domain root object does not have audit rules (SACL) configured."
                 $finding.Impact = "Critical changes to domain-level permissions and replication rights will not be logged."
                 $finding.Remediation = "Configure SACL on the domain root to audit Write Property, Modify Permissions, and Extended Rights for Everyone."
+                $finding.EstimatedEffort = 'Low — adding a SACL entry to one object.'
+                $finding.KnownRisks = 'No access-control impact; increases Security event log volume for changes to this specific object.'
+                $finding.BackupRollback = 'Easy — remove the SACL entry; effective immediately, no data loss.'
                 $finding.Details = @{
                     DistinguishedName = $domainRoot
                 }
