@@ -535,9 +535,16 @@ function Start-ADSecurityAudit {
             # rather than inserted after DetectedDate, so this fix itself
             # doesn't reorder/renumber any pre-existing column a downstream
             # consumer may reference positionally.
+            #
+            # EstimatedEffort/KnownRisks/BackupRollback/OperationalNotes
+            # (the v1.24.0 change-management enrichment fields) had the
+            # exact same gap: present on every finding and in the JSON
+            # export, but never added to this hand-maintained CSV column
+            # list. Appended after Details for the same reason - no
+            # reordering of any existing column.
             Write-Progress -Activity "Exporting Audit Reports" -Status "Writing CSV report..." -PercentComplete 70
             $csvPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.csv"
-            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight, SeverityLevel, Details |
+            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight, SeverityLevel, Details, EstimatedEffort, KnownRisks, BackupRollback, OperationalNotes |
                 ForEach-Object {
                     [PSCustomObject]@{
                         Category = $_.Category | ConvertTo-SafeCsvValue
@@ -559,6 +566,10 @@ function Start-ADSecurityAudit {
                         # Still sanitized against formula injection like every
                         # other free-text column.
                         Details = ($_.Details | ConvertTo-Json -Compress -Depth 5) | ConvertTo-SafeCsvValue
+                        EstimatedEffort = $_.EstimatedEffort | ConvertTo-SafeCsvValue
+                        KnownRisks = $_.KnownRisks | ConvertTo-SafeCsvValue
+                        BackupRollback = $_.BackupRollback | ConvertTo-SafeCsvValue
+                        OperationalNotes = $_.OperationalNotes | ConvertTo-SafeCsvValue
                     }
                 } |
                 Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8

@@ -359,9 +359,9 @@ function Test-ADKerberosHardening {
             $finding.Description = "RC4-HMAC Kerberos encryption is still permitted: $($rc4Accounts.Count) privileged/krbtgt account(s), $($rc4Trusts.Count) trust(s) without AES enforced$(if ($domainPolicyWeak) { ', and the domain-wide Kerberos encryption-type policy' })."
             $finding.Impact = "RC4-HMAC uses a key derived directly from the account password's NT hash, making Kerberoasted service tickets and cross-realm referral tickets far cheaper to crack offline than their AES equivalents, and allows downgrade attacks even where AES support exists elsewhere."
             $finding.Remediation = "Set 'msDS-SupportedEncryptionTypes' to AES-only (Set-ADUser -KerberosEncryptionType AES256,AES128) on privileged accounts and krbtgt, enforce 'Network security: Configure encryption types allowed for Kerberos' to AES128/AES256 only via GPO, and enable AES on cross-realm trusts (netdom trust /EnableAes  or ksetup, as appropriate) before removing RC4 domain-wide."
-            $finding.EstimatedEffort = 'Medium — touches multiple privileged/service accounts and cross-realm trust configuration, and needs a short monitoring window before disabling RC4 domain-wide.'
-            $finding.KnownRisks = 'Authentication may break for clients, applications, or devices that cannot negotiate AES — commonly legacy non-Windows Kerberos clients, appliances/printers with RC4-only libraries, or older applications with hardcoded RC4 configs.'
-            $finding.BackupRollback = 'Easy — re-enable RC4 via msDS-SupportedEncryptionTypes/GPO; takes effect at next Kerberos ticket renewal/GPO refresh with no data loss.'
+            $finding.EstimatedEffort = 'Medium - touches multiple privileged/service accounts and cross-realm trust configuration, and needs a short monitoring window before disabling RC4 domain-wide.'
+            $finding.KnownRisks = 'Authentication may break for clients, applications, or devices that cannot negotiate AES - commonly legacy non-Windows Kerberos clients, appliances/printers with RC4-only libraries, or older applications with hardcoded RC4 configs.'
+            $finding.BackupRollback = 'Easy - re-enable RC4 via msDS-SupportedEncryptionTypes/GPO; takes effect at next Kerberos ticket renewal/GPO refresh with no data loss.'
             $finding.OperationalNotes = 'Enable AES on accounts first and monitor for RC4-ticket issuance in DC logs before enforcing AES-only, so any remaining RC4-dependent client shows up before it''s cut off.'
             $finding.Details = @{
                 PrivilegedAndKrbtgtAccountsPermittingRC4 = @($rc4Accounts)
@@ -484,9 +484,9 @@ function Test-ADKerberosHardening {
                     $finding.Description = "Kerberos Armoring (FAST) is not fully enabled: KDC support $(if ($kdcEnabled) { 'enabled' } else { 'NOT enabled' }); client support $(if ($clientEnabled) { 'enabled' } else { 'NOT enabled' })."
                     $finding.Impact = "Without FAST/armoring, the initial AS-REQ exchange is unprotected, leaving pre-authentication data exposed to offline attack and preventing use of compound authentication/claims-based conditional access policies."
                     $finding.Remediation = "Enable 'KDC support for claims, compound authentication, and Kerberos armoring' (set to at least 'Supported') on all Domain Controllers, and 'Kerberos client support for claims, compound authentication, and Kerberos armoring' domain-wide, via GPO."
-                    $finding.EstimatedEffort = 'Medium — enabling requires the domain functional level and all clients to support FAST (Windows 8/Server 2012 R2+); Microsoft''s own guidance recommends a staged "Supported" rollout before "Always provide claims" enforcement.'
-                    $finding.KnownRisks = 'Enforcing Kerberos armoring will break authentication for any client that doesn''t support FAST — older Windows versions and many non-Windows Kerberos implementations — so a "Supported" (not yet enforced) first step is Microsoft''s own documented recommendation.'
-                    $finding.BackupRollback = 'Easy — revert the GPO setting to Not Defined/Supported; effective at next Group Policy refresh and Kerberos ticket renewal, no data loss.'
+                    $finding.EstimatedEffort = 'Medium - enabling requires the domain functional level and all clients to support FAST (Windows 8/Server 2012 R2+); Microsoft''s own guidance recommends a staged "Supported" rollout before "Always provide claims" enforcement.'
+                    $finding.KnownRisks = 'Enforcing Kerberos armoring will break authentication for any client that doesn''t support FAST - older Windows versions and many non-Windows Kerberos implementations - so a "Supported" (not yet enforced) first step is Microsoft''s own documented recommendation.'
+                    $finding.BackupRollback = 'Easy - revert the GPO setting to Not Defined/Supported; effective at next Group Policy refresh and Kerberos ticket renewal, no data loss.'
                     $finding.Details = @{
                         KdcArmoringEnabled    = $kdcEnabled
                         KdcDetail             = $kdcDetail
@@ -545,9 +545,9 @@ function Test-ADKerberosHardening {
             $finding.Description = "$($delegationTrusts.Count) trust(s) have the CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION attribute set, permitting a client's TGT to be forwarded across the trust boundary during constrained delegation: $($targets -join ', ')."
             $finding.Impact = "Allowing TGTs to cross a trust boundary during S4U2Proxy widens the blast radius of a compromise on either side of the trust - a compromised resource on the trusting side can receive and potentially misuse TGT material belonging to principals from the other domain/forest."
             $finding.Remediation = "Review whether cross-organization TGT delegation is actually required for this trust; if not, clear the CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION attribute (Netdom or the appropriate trust-management tooling) so delegation stops at the trust boundary."
-            $finding.EstimatedEffort = 'Medium — disabling this trust attribute requires confirming no legitimate application performs Kerberos delegation across that trust boundary (e.g. a multi-forest SharePoint/SQL double-hop scenario).'
+            $finding.EstimatedEffort = 'Medium - disabling this trust attribute requires confirming no legitimate application performs Kerberos delegation across that trust boundary (e.g. a multi-forest SharePoint/SQL double-hop scenario).'
             $finding.KnownRisks = 'Disabling cross-trust TGT delegation can break any application that legitimately performs Kerberos delegation across that trust boundary.'
-            $finding.BackupRollback = 'Moderate — trust attributes can be reconfigured back via netdom/PowerShell, but requires coordination with the other domain/forest''s admins to re-verify, like any other trust property change.'
+            $finding.BackupRollback = 'Moderate - trust attributes can be reconfigured back via netdom/PowerShell, but requires coordination with the other domain/forest''s admins to re-verify, like any other trust property change.'
             $finding.Details = @{
                 Trusts = @($delegationTrusts)
             }

@@ -140,7 +140,7 @@ function renderSummary(findings) {
   if (lastUpdatedEl) {
     lastUpdatedEl.textContent = latest
       ? `Updated ${formatDate(latest)}`
-      : 'Waiting for data…';
+      : 'Waiting for data...';
   }
 }
 
@@ -151,7 +151,7 @@ function renderAdminCounts(metadata) {
     { id: 'schema-admins-count', value: metadata.schemaAdmins },
   ];
   entries.forEach((entry) => {
-    const display = entry.value ?? '—';
+    const display = entry.value ?? '-';
     setText(entry.id, display);
   });
 }
@@ -368,7 +368,7 @@ function renderRiskCallouts(findings) {
         <strong>${escapeHtml(finding.Issue || 'Unknown Issue')}</strong>
         <div class="meta-row">
           <span>${escapeHtml(finding.Category || 'Uncategorized')}</span>
-          <span>• Affected: <span class="meta-code">${escapeHtml(finding.AffectedObject || 'Unknown')}</span></span>
+          <span>- Affected: <span class="meta-code">${escapeHtml(finding.AffectedObject || 'Unknown')}</span></span>
         </div>
       `;
 
@@ -750,9 +750,9 @@ function renderMeta(metadata) {
   
   container.innerHTML = '';
   const entries = [
-    { label: 'Privileged Accounts', value: metadata.privilegedAccounts ?? '—', hint: 'High-risk identities to lock down' },
-    { label: 'Domain Controllers', value: metadata.domainControllers ?? '—', hint: 'Visibility across replication scope' },
-    { label: 'Audit generated', value: metadata.auditGenerated ? formatDate(metadata.auditGenerated) : '—', hint: 'Report timestamp' },
+    { label: 'Privileged Accounts', value: metadata.privilegedAccounts ?? '-', hint: 'High-risk identities to lock down' },
+    { label: 'Domain Controllers', value: metadata.domainControllers ?? '-', hint: 'Visibility across replication scope' },
+    { label: 'Audit generated', value: metadata.auditGenerated ? formatDate(metadata.auditGenerated) : '-', hint: 'Report timestamp' },
   ];
 
   entries.forEach((entry) => {
