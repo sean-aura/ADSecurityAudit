@@ -679,11 +679,19 @@ $categoryBarsSvg
 "@
         foreach ($cp in $controlPathFindings) {
             $sevClass = $cp.Severity.ToLower()
-            $hopChain = if ($cp.Details -and $cp.Details.ContainsKey('HopChain')) { HtmlEncode "$($cp.Details.HopChain)" } else { HtmlEncode $cp.AffectedObject }
+            # Test-ADFindingDetailsKey, not a bare .Details.ContainsKey():
+            # the latter only exists on a real Hashtable, which Details
+            # always is during a live run - but NOT after a JSON
+            # round-trip (Export-ADSecurityReportHTMLFromJson), where
+            # ConvertFrom-Json turns Details into a PSCustomObject
+            # instead. See Test-ADFindingDetailsKey's own docs (Common.ps1)
+            # for the reported "does not contain a method named
+            # 'ContainsKey'" error this fixes.
+            $hopChain = if ($cp.Details -and (Test-ADFindingDetailsKey -Details $cp.Details -Key 'HopChain')) { HtmlEncode "$($cp.Details.HopChain)" } else { HtmlEncode $cp.AffectedObject }
             $diagramSvg = ''
-            if ($cp.Details -and $cp.Details.ContainsKey('Source') -and $cp.Details.ContainsKey('Target')) {
+            if ($cp.Details -and (Test-ADFindingDetailsKey -Details $cp.Details -Key 'Source') -and (Test-ADFindingDetailsKey -Details $cp.Details -Key 'Target')) {
                 $diagramColor = if ($sevClass -eq 'critical') { '#b3261e' } else { '#c8590b' }
-                $hopCountForDiagram = if ($cp.Details.ContainsKey('HopCount')) { [int]$cp.Details.HopCount } else { 1 }
+                $hopCountForDiagram = if (Test-ADFindingDetailsKey -Details $cp.Details -Key 'HopCount') { [int]$cp.Details.HopCount } else { 1 }
                 $diagramSvg = Get-ADSvgControlPathDiagram -Source "$($cp.Details.Source)" -Target "$($cp.Details.Target)" -HopCount $hopCountForDiagram -Color $diagramColor
             }
             $html += @"

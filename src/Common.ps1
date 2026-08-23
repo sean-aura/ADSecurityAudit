@@ -1676,6 +1676,58 @@ function ConvertTo-ADFlatFindingsArray {
     return @($flat)
 }
 
+function Test-ADFindingDetailsKey {
+    <#
+    .SYNOPSIS
+        Checks whether a finding's Details bag has a given key, regardless
+        of whether Details is a real Hashtable (a live/in-memory run) or a
+        PSCustomObject (a finding that came from ConvertFrom-Json - the
+        default, non--AsHashtable parse turns every JSON object, including
+        a finding's Details, into a PSCustomObject instead of a
+        Hashtable).
+    .DESCRIPTION
+        FIXED (reported): Export-ADSecurityReportHTML's control-path
+        section called $finding.Details.ContainsKey(...) directly, which
+        only exists on IDictionary (Hashtable). That's correct for a live
+        Start-ADSecurityAudit run - Details is always built as a
+        Hashtable there - but Export-ADSecurityReportHTMLFromJson feeds it
+        findings read back from a JSON export instead, where Details has
+        already round-tripped through ConvertFrom-Json into a
+        PSCustomObject. PSCustomObject has no ContainsKey method at all,
+        so every one of those calls threw "Method invocation failed
+        because [...PSCustomObject] does not contain a method named
+        'ContainsKey'" - reliably, for every control-path finding, any
+        time a report was recreated from JSON.
+
+        This is the general-purpose fix, not a one-off patch of the
+        JSON-recreate code path specifically: any current or future
+        caller that might receive JSON-sourced findings (directly, or via
+        a snapshot/retest/consolidation file that itself embeds findings)
+        can use this instead of assuming Details is a Hashtable.
+    .PARAMETER Details
+        The finding's .Details value. $null-safe - returns $false.
+    .PARAMETER Key
+        The key/property name to look for.
+    .OUTPUTS
+        [bool]
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        $Details,
+
+        [Parameter(Mandatory)]
+        [string]$Key
+    )
+    if ($null -eq $Details) { return $false }
+    if ($Details -is [System.Collections.IDictionary]) {
+        return $Details.ContainsKey($Key)
+    }
+    # PSCustomObject (or anything else exposing PSObject.Properties, e.g.
+    # a deserialized JSON object) - check by property name instead.
+    return [bool]($Details.PSObject.Properties.Name -contains $Key)
+}
+
 function Get-ADFindingMatchKey {
     <#
     .SYNOPSIS

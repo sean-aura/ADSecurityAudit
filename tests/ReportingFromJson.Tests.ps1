@@ -34,10 +34,19 @@ BeforeAll {
         return $f
     }
 
+    $script:ControlPathFinding = New-TestFinding -Issue 'Control Path to Domain Admins' -Category 'Attack Paths' -Severity 'High' -SeverityLevel 3 -AffectedObject 'user1'
+    $script:ControlPathFinding.Details = @{
+        HopChain  = 'user1 -> GroupA -> Domain Admins'
+        Source    = 'user1'
+        Target    = 'Domain Admins'
+        HopCount  = 2
+    }
+
     $script:Findings = @(
         New-TestFinding -Issue 'Inactive Enabled Account' -Category 'User Account' -Severity 'Low' -SeverityLevel 1 -AffectedObject 'user1'
         New-TestFinding -Issue 'Kerberoastable Account' -Category 'Kerberos Security' -Severity 'High' -SeverityLevel 3 -AffectedObject 'svc1'
         New-TestFinding -Issue 'AdminSDHolder ACL Modified' -Category 'AdminSDHolder' -Severity 'Critical' -SeverityLevel 4 -AffectedObject 'AdminSDHolder'
+        $script:ControlPathFinding
     )
     foreach ($finding in $script:Findings) { [void](Set-ADFindingMetadata -Finding $finding) }
 
@@ -126,5 +135,75 @@ Describe 'Export-ADSecurityReportHTMLFromJson' {
 
     It 'throws a clear error when the path does not exist' {
         { Export-ADSecurityReportHTMLFromJson -FindingsPath (Join-Path $TestDrive 'does-not-exist') -OutputPath (Join-Path $TestDrive 'irrelevant.html') } | Should -Throw
+    }
+
+    Context 'Control-path (Attack Paths) findings - Details survives the JSON round-trip' {
+        <#
+            Regression coverage for a reported bug: Details is declared
+            [hashtable] on a live ADSecurityFinding, but
+            Export-ADSecurityReportHTMLFromJson reads findings back via a
+            plain ConvertFrom-Json (no -AsHashtable), which deserializes
+            every JSON object - including a finding's Details - into a
+            PSCustomObject instead. The control-path rendering code in
+            Export-ADSecurityReportHTML called $finding.Details.ContainsKey(...)
+            unconditionally, which only exists on Hashtable/IDictionary,
+            so recreating a report from JSON for ANY run that had a
+            control-path finding threw "Method invocation failed because
+            [...PSCustomObject] does not contain a method named
+            'ContainsKey'" on every single one. Fixed via
+            Test-ADFindingDetailsKey (Common.ps1), which works for either
+            shape.
+        #>
+        It 'recreates a report containing a control-path finding without throwing' {
+            $folder = New-FindingsFixture -FolderName 'control-path' -Findings $script:Findings -Timestamp '2026-08-07_00-00-00'
+            $outPath = Join-Path $TestDrive 'recreated-control-path.html'
+
+            { Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $outPath } | Should -Not -Throw
+            Test-Path $outPath | Should -BeTrue
+        }
+
+        It 'renders the HopChain from a JSON-deserialized (PSCustomObject) Details' {
+            $folder = New-FindingsFixture -FolderName 'control-path-hopchain' -Findings $script:Findings -Timestamp '2026-08-08_00-00-00'
+            $outPath = Join-Path $TestDrive 'recreated-control-path-hopchain.html'
+            Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $outPath
+
+            $content = Get-Content -Path $outPath -Raw
+            $content | Should -Match 'Control Path to Domain Admins'
+            $content | Should -Match 'user1 -&gt; GroupA -&gt; Domain Admins'
+        }
+
+        It 'still works when Details is a genuine Hashtable (not JSON-sourced), unaffected by the fix' {
+            $liveFindings = @($script:ControlPathFinding)
+            $outPath = Join-Path $TestDrive 'live-control-path.html'
+            $summary = @{ Critical = 0; High = 1; Medium = 0; Low = 0 }
+            $riskScore = Get-ADRiskScore -Findings $liveFindings
+            { Export-ADSecurityReportHTML -Findings $liveFindings -OutputPath $outPath -Domain 'contoso.com' -Summary $summary `
+                -Duration ([timespan]::Zero) -RiskScore $riskScore -RunMode 'Live' -SnapshotCollectedDate $null `
+                -PrivilegedUsers $null -OfflineSkipNotes @() } | Should -Not -Throw
+
+            $content = Get-Content -Path $outPath -Raw
+            $content | Should -Match 'user1 -&gt; GroupA -&gt; Domain Admins'
+        }
+    }
+}
+
+Describe 'Test-ADFindingDetailsKey' {
+    It 'finds a key on a real Hashtable' {
+        Test-ADFindingDetailsKey -Details @{ Foo = 'bar' } -Key 'Foo' | Should -BeTrue
+    }
+    It 'returns $false for a missing key on a Hashtable' {
+        Test-ADFindingDetailsKey -Details @{ Foo = 'bar' } -Key 'Missing' | Should -BeFalse
+    }
+    It 'finds a key on a JSON-deserialized PSCustomObject' {
+        $obj = (@{ Foo = 'bar' } | ConvertTo-Json | ConvertFrom-Json)
+        Test-ADFindingDetailsKey -Details $obj -Key 'Foo' | Should -BeTrue
+    }
+    It 'returns $false for a missing key on a PSCustomObject' {
+        $obj = (@{ Foo = 'bar' } | ConvertTo-Json | ConvertFrom-Json)
+        Test-ADFindingDetailsKey -Details $obj -Key 'Missing' | Should -BeFalse
+    }
+    It 'returns $false (not a throw) for $null Details' {
+        { Test-ADFindingDetailsKey -Details $null -Key 'Foo' } | Should -Not -Throw
+        Test-ADFindingDetailsKey -Details $null -Key 'Foo' | Should -BeFalse
     }
 }
