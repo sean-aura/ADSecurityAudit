@@ -198,7 +198,29 @@ function Get-ADSnapshot {
     # -Server below, which is what can add one.
     Reset-ADRunScopeNotes
 
-    $effectiveServer = Resolve-ADSecurityAuditTargetServer -Server $Server
+    # Tracked BEFORE this call touches anything, so cleanup at every exit
+    # point below only removes an override THIS call installed - not one
+    # a caller already had active (e.g. this collection pass running
+    # nested inside another already-scoped run). Mirrors the
+    # $__adAuditServerAlreadyActive pattern used by the Test-AD* checks in
+    # AdminSDAudits.ps1/DomainAdminEquivalence.ps1/etc.
+    $__snapshotServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+
+    $effectiveServer = if ($__snapshotServerAlreadyActive) {
+        # An override is already active for this session (e.g. this
+        # collection pass is running inside a Start-ADSecurityAudit run
+        # that already resolved and installed one) - reuse it directly.
+        # Re-running Resolve-ADSecurityAuditTargetServer against an
+        # already-resolved value (a domain's PDC Emulator FQDN) would
+        # misclassify it as an operator-named explicit DC and corrupt the
+        # shared explicit-DC scope flag other checks in the same run rely
+        # on - see Resolve-ADSecurityAuditTargetServer's own idempotency
+        # guard for the full explanation. This was a real, confirmed bug.
+        Get-ADSecurityAuditActiveServerOverride
+    }
+    else {
+        Resolve-ADSecurityAuditTargetServer -Server $Server
+    }
     if ($effectiveServer) {
         $serverSource = if ($Server) { 'explicit -Server' } else { "your own domain, `$env:USERDNSDOMAIN" }
         Write-Verbose "Get-ADSnapshot: all AD queries in this collection pass will explicitly target '$effectiveServer' ($serverSource)."
@@ -217,7 +239,7 @@ function Get-ADSnapshot {
             }
             catch {
                 Write-Error "Get-ADSnapshot: could not create -ToJson output directory '$toJsonDir': $_"
-                if ($effectiveServer) { Clear-ADSecurityAuditTargetServer }
+                if ($effectiveServer -and -not $__snapshotServerAlreadyActive) { Clear-ADSecurityAuditTargetServer }
                 return
             }
         }
@@ -1163,7 +1185,7 @@ function Get-ADSnapshot {
     }
 
     Write-Verbose "Get-ADSnapshot: collection pass complete."
-    if ($effectiveServer) { Clear-ADSecurityAuditTargetServer }
+    if ($effectiveServer -and -not $__snapshotServerAlreadyActive) { Clear-ADSecurityAuditTargetServer }
     return $snapshot
 }
 

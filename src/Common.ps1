@@ -398,6 +398,43 @@ function Resolve-ADSecurityAuditTargetServer {
         [string]$Server
     )
 
+    # IDEMPOTENCY GUARD (fixes a real, confirmed regression): ten check
+    # functions (AdminSDAudits, DomainAdminEquivalence, DomainHardening-
+    # Audits, GpoAudits, GroupAudits, KerberosHardeningAudits,
+    # PermissionsAudits, PrivilegedUsers, RodcSecurityAudits, UserAudits)
+    # each independently call
+    # `Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)`
+    # so they're self-sufficient when invoked standalone, outside Main.ps1's
+    # pipeline. But when invoked FROM Main.ps1, $Server here is not the
+    # operator's raw input - it's $effectiveServer, the ALREADY-RESOLVED
+    # value this same function produced moments earlier (e.g. a domain's
+    # PDC Emulator FQDN, resolved from "no -Server given" or a domain
+    # name). That resolved FQDN is, by definition, itself a valid DC
+    # identity - so re-running full resolution against it made
+    # Get-ADDomainController -Identity succeed and misclassified it as
+    # "the operator explicitly named this one DC", flipping
+    # $Script:ADSecurityAuditServerIsExplicitDC from false to true even
+    # though no -Server was ever given at the top level. Since that flag
+    # is script-scoped (not reset between checks), this also silently
+    # corrupted every LATER check in the same run that reads the flag
+    # without calling Resolve again itself (e.g. AuditPolicyAudits.ps1) -
+    # explaining reports of audit-policy-style checks narrowing to a
+    # single DC even on a plain, no-argument run.
+    #
+    # Once $Server already matches the currently active override (i.e.
+    # this exact value already went through resolution earlier THIS
+    # session - always true for the ten call sites above when running
+    # under Main.ps1), there is nothing new to resolve: return it
+    # unchanged and leave the explicit-DC flag exactly as it already is,
+    # rather than re-deriving (and potentially corrupting) it. This does
+    # not change standalone-invocation behavior at all - the first call
+    # in a session (or a call with a genuinely different $Server) still
+    # runs the full resolution logic below.
+    if ($Server -and $Server -eq (Get-ADSecurityAuditActiveServerOverride)) {
+        Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$Server' already matches the active override for this session; returning it unchanged without re-deriving the explicit-DC scope flag."
+        return $Server
+    }
+
     $requested = $null
     if ($Server) {
         $requested = $Server

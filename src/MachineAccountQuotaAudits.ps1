@@ -104,7 +104,28 @@ function Test-ADMachineAccountQuota {
             # the wrong domain. -Server, if supplied, is used explicitly;
             # if not, defaults to the current user's own domain
             # ($env:USERDNSDOMAIN) rather than the ambiguous default.
-            $effectiveServer = Resolve-ADSecurityAuditTargetServer -Server $Server
+            #
+            # CONFIRMED REGRESSION, FIXED: when called from
+            # Start-ADSecurityAudit, $Server here is not the operator's
+            # raw input - it's $effectiveServer, the value
+            # Resolve-ADSecurityAuditTargetServer already resolved moments
+            # earlier (e.g. a domain's PDC Emulator FQDN, from a plain
+            # no-argument run). Re-running full resolution against an
+            # already-resolved DC FQDN makes Get-ADDomainController
+            # -Identity succeed and misclassifies it as "the operator
+            # explicitly named this DC", corrupting the shared explicit-DC
+            # scope flag other checks in the same run rely on (see
+            # Resolve-ADSecurityAuditTargetServer's own idempotency guard).
+            # When an override is already active for this session, reuse
+            # it directly instead of re-resolving; only resolve fresh when
+            # this is genuinely the first call (e.g. this function invoked
+            # standalone, outside Start-ADSecurityAudit).
+            if (Get-ADSecurityAuditActiveServerOverride) {
+                $effectiveServer = Get-ADSecurityAuditActiveServerOverride
+            }
+            else {
+                $effectiveServer = Resolve-ADSecurityAuditTargetServer -Server $Server
+            }
 
             $domainParams = @{ ErrorAction = 'Stop' }
             if ($effectiveServer) { $domainParams['Server'] = $effectiveServer }

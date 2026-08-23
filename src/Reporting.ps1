@@ -306,7 +306,6 @@ function Export-ADSecurityReportHTML {
         .finding-section { margin: 15px 0; padding: 15px; background: var(--surface); border-radius: 4px; border: 1px solid var(--border); }
         .finding-section h4 { color: var(--ink-muted); margin-bottom: 10px; font-size: 1em; text-transform: uppercase; letter-spacing: 0.5px; }
         .finding-section p { color: var(--ink); line-height: 1.7; }
-        .finding-section.finding-enrichment { border-left: 3px solid var(--brand); background: var(--surface); }
         .privileged-users-table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 0.9em; }
         .privileged-users-table th { background: var(--brand); color: #fff; padding: 12px; text-align: left; font-weight: 600; }
         .privileged-users-table td { padding: 10px; border-bottom: 1px solid var(--border); }
@@ -1130,15 +1129,15 @@ function Get-FindingHTML {
 "@
         }
         $enrichmentHtml = @"
-                <div class="finding-section finding-enrichment">
+                <div class="finding-section">
                     <h4>Estimated Effort</h4>
                     <p>$estimatedEffort</p>
                 </div>
-                <div class="finding-section finding-enrichment">
+                <div class="finding-section">
                     <h4>Known Risks</h4>
                     <p>$knownRisks</p>
                 </div>
-                <div class="finding-section finding-enrichment">
+                <div class="finding-section">
                     <h4>Backup / Rollback</h4>
                     <p>$backupRollback</p>
                 </div>
