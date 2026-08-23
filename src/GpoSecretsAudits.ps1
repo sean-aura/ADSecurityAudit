@@ -247,6 +247,9 @@ function Test-ADGpoDeployedSecrets {
                         $finding.Description = "GPO '$($gpo.DisplayName)' contains a Group Policy Preferences file with a 'cpassword' attribute set, a known-broken (MS14-025) reversible encryption scheme for which the AES key is public."
                         $finding.Impact = "Any authenticated user can read the file from SYSVOL and trivially recover the plaintext password, typically for a local administrator, service, or mapped-drive account."
                         $finding.Remediation = "Remove the affected GPP setting (Group Policy Management Console), delete the leftover XML file if the GPO no longer references it, and rotate the exposed credential immediately. Do not deploy passwords via GPP; use LAPS or a managed service account instead."
+                        $finding.EstimatedEffort = 'Medium - the embedded account''s password must be rotated everywhere it''s used (it''s already fully compromised) and the GPP item removed or recreated without cpassword.'
+                        $finding.KnownRisks = 'The embedded password is trivially decryptable by any authenticated user, since Microsoft publicly released the AES key used for GPP cpassword encryption after MS14-025 - treat it as already fully compromised and rotate the account''s password before or immediately after removing the GPP item.'
+                        $finding.BackupRollback = 'Hard/Limited - like the logon-script credential finding, this isn''t a reversible setting; the exposure already happened and the credential must be rotated, not restored.'
                         $finding.Details = @{
                             GpoId    = $gpo.Id
                             FilePath = $gppFile.FullName
@@ -304,6 +307,9 @@ function Test-ADGpoDeployedSecrets {
                             $finding.Description = "GPO '$($gpo.DisplayName)' deploys a script that appears to reference a credential inline (e.g. a 'net use /user:', 'runas /savecred', or ConvertTo-SecureString-style pattern)."
                             $finding.Impact = "A credential embedded in a script deployed to every targeted computer/user is readable by any authenticated principal with SYSVOL read access, without needing to decrypt anything."
                             $finding.Remediation = "Remove hard-coded credentials from logon/startup/shutdown scripts. Use a managed identity (gMSA), LAPS, or a secrets vault retrieved at runtime instead of embedding credentials in a script deployed via GPO."
+                            $finding.EstimatedEffort = 'High - the exposed credential must be rotated everywhere it''s used, and the script reworked to avoid embedding credentials (e.g. migrating to a gMSA), which may involve other teams if the account is shared.'
+                            $finding.KnownRisks = 'The credential must be treated as already compromised, since any authenticated user can read SYSVOL; rotating it needs to be coordinated with everything else that uses the same account/password.'
+                            $finding.BackupRollback = 'Hard/Limited - this isn''t a reversible setting; once a credential has been exposed via SYSVOL it must be rotated, not restored, and the exposure history can''t be undone.'
                             $finding.Details = @{
                                 GpoId       = $gpo.Id
                                 FilePath    = $scriptFile.FullName
@@ -370,6 +376,9 @@ function Test-ADGpoDeployedSecrets {
                     $finding.Description = "GPO '$($gpo.DisplayName)' deploys one or more weakening settings:`n$insecureSettingBullets"
                     $finding.Impact = "Disabling the host firewall, hiding file extensions, or weakening RDP authentication/encryption each independently lowers the bar for initial access, lateral movement, or social-engineering-based execution on every computer the GPO applies to."
                     $finding.Remediation = "Review the GPO's Security Options and re-enable the Windows Firewall for all profiles, restore default Folder Options (show known file extensions), and require Network Level Authentication with a secure (SSL/TLS) RDP security layer."
+                    $finding.EstimatedEffort = 'Medium - a single GPO setting change; confirm no application depends on the weaker current setting before tightening it.'
+                    $finding.KnownRisks = 'Depends on the specific setting; generically, confirm no application or workflow relies on the current, weaker behavior before changing it.'
+                    $finding.BackupRollback = 'Easy - revert the specific GPO setting; effective at next Group Policy refresh, no data loss.'
                     $finding.Details = @{
                         GpoId            = $gpo.Id
                         FilePath         = $gptTmplPath
@@ -425,6 +434,9 @@ function Test-ADGpoDeployedSecrets {
                     $finding.Description = "GPO '$($gpo.DisplayName)' deploys a User Rights Assignment granting a sensitive logon right to an overly broad principal:`n$grantBullets"
                     $finding.Impact = "Granting network or RDP logon rights to Everyone, ANONYMOUS LOGON, or Authenticated Users can silently re-open anonymous or unauthenticated-adjacent access to every computer the GPO applies to, independent of any domain-wide anonymous-access setting."
                     $finding.Remediation = "Edit the GPO's User Rights Assignment (Computer Configuration > Windows Settings > Security Settings > Local Policies > User Rights Assignment) and remove Everyone/ANONYMOUS LOGON/Authenticated Users from the affected right(s), granting access only to specific, intended security groups."
+                    $finding.EstimatedEffort = 'Medium - removing a broad principal from a User Rights Assignment in one GPO; confirm no legitimate broad-access scenario (e.g. an intentional kiosk deployment) depends on it.'
+                    $finding.KnownRisks = 'Removing a broad principal from a sensitive logon right can lock out any system or service that currently relies on that broad grant, so confirm intent before narrowing.'
+                    $finding.BackupRollback = 'Easy - revert the User Rights Assignment setting in the GPO; effective at next Group Policy refresh, no data loss.'
                     $finding.Details = @{
                         GpoId       = $gpo.Id
                         FilePath    = $gptTmplPath

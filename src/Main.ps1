@@ -89,6 +89,10 @@ function Start-ADSecurityAudit {
     # previous Start-ADSecurityAudit call in the same PowerShell session
     # never leak into this run's HTML report.
     Reset-ADOfflineSkipNotes
+
+    # Same reset, for run-scope notes (e.g. a "PDC-only" check running
+    # against an explicitly-named non-PDC DC) - see Common.ps1.
+    Reset-ADRunScopeNotes
     
     if (-not (Test-Path $ExportPath)) {
         try {
@@ -218,7 +222,17 @@ function Start-ADSecurityAudit {
         # Start-ADSecurityAudit call in the same session.
         if ($effectiveServer) {
             $serverSource = if ($Server) { 'explicit -Server' } else { "your own domain, `$env:USERDNSDOMAIN" }
-            Write-Host "Server override: forcing all AD queries to target '$effectiveServer' ($serverSource)`n" -ForegroundColor Cyan
+            if (Get-ADSecurityAuditServerIsExplicitDC) {
+                # $Server named one specific DC (not a domain name) - every
+                # per-DC check in this run is narrowed to ONLY that DC, not
+                # just the default/domain-wide query target. Say so here,
+                # not just in -Verbose output, since this is a real
+                # coverage-scope decision worth surfacing by default.
+                Write-Host "Server override: '$effectiveServer' is an explicit, specific Domain Controller ($serverSource) - every AD query, including per-DC checks (audit policy, Kerberos hardening, RODC posture, etc.), is scoped to ONLY this DC for the rest of the run. Other Domain Controllers in the domain will not be evaluated.`n" -ForegroundColor Cyan
+            }
+            else {
+                Write-Host "Server override: '$effectiveServer' (the domain's PDC Emulator, resolved from $serverSource) is the default/domain-wide query target for this run. Per-DC checks still enumerate and evaluate EVERY Domain Controller in the domain.`n" -ForegroundColor Cyan
+            }
             Set-ADSecurityAuditTargetServer -Server $effectiveServer
         }
 
@@ -299,6 +313,7 @@ function Start-ADSecurityAudit {
             'DangerousPermissions' = { Test-ADDangerousPermissions }
             'CertificateServices' = { Test-ADCertificateServices }
             'ADCSExtended' = { Test-ADCSExtended }
+            'ADCSChaseFallback' = { Test-ADCSChaseFallback }
             'KRBTGTAccount' = { Test-KRBTGTAccount -MaxPasswordAgeDays 180 }
             'DomainTrusts' = { Test-ADDomainTrusts }
             'LAPSDeployment' = { Test-LAPSDeployment }
@@ -364,6 +379,10 @@ function Start-ADSecurityAudit {
                             $finding.Description = $result.Description
                             $finding.Impact = $result.Impact
                             $finding.Remediation = $result.Remediation
+                            $finding.EstimatedEffort = $result.EstimatedEffort
+                            $finding.KnownRisks = $result.KnownRisks
+                            $finding.BackupRollback = $result.BackupRollback
+                            $finding.OperationalNotes = $result.OperationalNotes
                             $finding.Details = if ($result.Details) { $result.Details } else { @{} }
                             $allFindings += $finding
                         }
@@ -439,6 +458,10 @@ function Start-ADSecurityAudit {
 
         # Tag every finding with MITRE / ANSSI / Weight from the central mapping
         # table so findings are born score/MITRE-aware (v1.2.0 contract layer).
+        # EstimatedEffort/KnownRisks/BackupRollback/OperationalNotes (v1.24.0)
+        # are set directly in each check alongside Description/Impact/
+        # Remediation (see src/*.ps1), so no separate tagging pass is needed
+        # for those fields.
         foreach ($finding in $allFindings) {
             [void](Set-ADFindingMetadata -Finding $finding)
         }
@@ -491,7 +514,23 @@ function Start-ADSecurityAudit {
                 }
             }
             $offlineSkipNotes = @(Get-ADOfflineSkipNotes)
-            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunMode $reportRunMode -SnapshotCollectedDate $reportSnapshotCollectedDate -OfflineSkipNotes $offlineSkipNotes
+
+            # Merge notes recorded THIS run/session (Get-ADRunScopeNotes -
+            # populated live whenever a "PDC-only" check runs against an
+            # explicitly-named non-PDC DC) with any notes carried inside
+            # the snapshot itself (only relevant for -FromSnapshot: those
+            # notes were recorded at COLLECTION time, and this analysis
+            # pass performs no live resolution of its own to re-detect the
+            # condition). De-duplicated by message text, since a snapshot
+            # collected and then immediately re-analysed in the same
+            # session could otherwise show the same note twice.
+            $runScopeNotesFromSnapshot = if ($FromSnapshot -and $snapshot.ContainsKey('RunScopeNotes')) { @($snapshot.RunScopeNotes) } else { @() }
+            $runScopeNotes = @(@(Get-ADRunScopeNotes) + $runScopeNotesFromSnapshot | Sort-Object Message -Unique)
+            if ($runScopeNotes.Count -gt 0) {
+                Write-Host "Run scope note: $($runScopeNotes.Count) note(s) about how this run was scoped - see the HTML report's 'Run Scope Information' section.`n" -ForegroundColor Yellow
+            }
+
+            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunMode $reportRunMode -SnapshotCollectedDate $reportSnapshotCollectedDate -OfflineSkipNotes $offlineSkipNotes -RunScopeNotes $runScopeNotes
             Write-Host "HTML report exported to: $htmlPath" -ForegroundColor Green
             
             # Export to CSV with formula injection protection
@@ -506,9 +545,16 @@ function Start-ADSecurityAudit {
             # rather than inserted after DetectedDate, so this fix itself
             # doesn't reorder/renumber any pre-existing column a downstream
             # consumer may reference positionally.
+            #
+            # EstimatedEffort/KnownRisks/BackupRollback/OperationalNotes
+            # (the v1.24.0 change-management enrichment fields) had the
+            # exact same gap: present on every finding and in the JSON
+            # export, but never added to this hand-maintained CSV column
+            # list. Appended after Details for the same reason - no
+            # reordering of any existing column.
             Write-Progress -Activity "Exporting Audit Reports" -Status "Writing CSV report..." -PercentComplete 70
             $csvPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.csv"
-            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight, SeverityLevel, Details |
+            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight, SeverityLevel, Details, EstimatedEffort, KnownRisks, BackupRollback, OperationalNotes |
                 ForEach-Object {
                     [PSCustomObject]@{
                         Category = $_.Category | ConvertTo-SafeCsvValue
@@ -530,6 +576,10 @@ function Start-ADSecurityAudit {
                         # Still sanitized against formula injection like every
                         # other free-text column.
                         Details = ($_.Details | ConvertTo-Json -Compress -Depth 5) | ConvertTo-SafeCsvValue
+                        EstimatedEffort = $_.EstimatedEffort | ConvertTo-SafeCsvValue
+                        KnownRisks = $_.KnownRisks | ConvertTo-SafeCsvValue
+                        BackupRollback = $_.BackupRollback | ConvertTo-SafeCsvValue
+                        OperationalNotes = $_.OperationalNotes | ConvertTo-SafeCsvValue
                     }
                 } |
                 Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8

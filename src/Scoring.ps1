@@ -129,9 +129,11 @@ $Script:ADFindingMetadataMap = @{
     'Password Complexity Disabled'                         = @{ Mitre = 'T1110';     Anssi = 'vuln2_pwd_complexity_disabled'; Weight = 20 }
     'Reversible Encryption Enabled Domain-Wide'            = @{ Mitre = 'T1003';     Anssi = 'vuln1_reversible_domain_wide';  Weight = 40 }
     'Outdated Domain Functional Level'                     = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_outdated_dfl';            Weight = 4  }
+    'Outdated Forest Functional Level'                     = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_outdated_ffl';            Weight = 4  }
     'AD Recycle Bin Not Enabled'                           = @{ Mitre = 'T1485';     Anssi = 'vuln5_recycle_bin_disabled';    Weight = 1  }
     'Legacy Operating Systems in Domain'                   = @{ Mitre = 'T1210';     Anssi = 'vuln3_legacy_os';               Weight = 10 }
     'Stale AzureADSSOACC Kerberos Key'                     = @{ Mitre = 'T1558.002'; Anssi = 'vuln2_azuread_sso_key';         Weight = 20 }
+    'Short Tombstone Lifetime'                             = @{ Mitre = '';          Anssi = 'vuln5_short_tombstone_lifetime'; Weight = 1  }
 
     # --- Domain Trusts ---
     'Bidirectional Domain Trust'                           = @{ Mitre = 'T1482';     Anssi = 'vuln4_bidirectional_trust';     Weight = 4  }
@@ -152,6 +154,7 @@ $Script:ADFindingMetadataMap = @{
     'CA Web Enrollment over HTTP (ESC8)'                               = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_esc8';        Weight = 40 }
     'ROCA-Vulnerable Certificate Key'                                  = @{ Mitre = 'T1649'; Anssi = 'vuln2_adcs_roca';        Weight = 20 }
     'Weak Signature Algorithm in PKI Trust Store'                      = @{ Mitre = 'T1649'; Anssi = 'vuln3_adcs_weak_signature'; Weight = 10 }
+    'CA Chase-Fallback Enabled (CVE-2026-54121 / Certighost Exposure)' = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_certighost_chase'; Weight = 40 }
 
     # --- Kerberos Security (KRBTGT) ---
     'KRBTGT Password Age Exceeds Recommended Threshold'   = @{ Mitre = 'T1558.001'; Anssi = 'vuln1_krbtgt_age';              Weight = 40 }
@@ -178,6 +181,8 @@ $Script:ADFindingMetadataMap = @{
     'Enterprise Key Admins Over-Privileged (Misconfiguration Bug)'              = @{ Mitre = 'T1556'; Anssi = 'vuln2_enterprise_key_admins'; Weight = 20 }
     'Enterprise Key Admins Permissions Not Scoped to msDS-KeyCredentialLink'    = @{ Mitre = 'T1556'; Anssi = 'vuln3_enterprise_key_admins_scope'; Weight = 10 }
     'Dangerous Rights on Critical OU'                    = @{ Mitre = 'T1098';     Anssi = 'vuln1_dangerous_ou_rights';      Weight = 40 }
+    'Non-Standard Permissions on Schema Naming Context'         = @{ Mitre = 'T1098'; Anssi = 'vuln1_schema_nc_acl'; Weight = 40 }
+    'Non-Standard Permissions on Configuration Naming Context'  = @{ Mitre = 'T1098'; Anssi = 'vuln1_config_nc_acl'; Weight = 40 }
 
     # --- Legacy Attack Vector / Admin Equivalence ---
     'Shadow Credentials Detected'                        = @{ Mitre = 'T1556';     Anssi = 'vuln1_shadow_credentials';       Weight = 40 }

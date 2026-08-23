@@ -167,7 +167,20 @@ function Export-ADSecurityReportHTML {
         # go dig through the run's transcript to know what this specific
         # report does and doesn't cover.
         [Parameter()]
-        [array]$OfflineSkipNotes = @()
+        [array]$OfflineSkipNotes = @(),
+
+        # General-purpose "this check ran, but against a narrower/
+        # different target than its normal assumption" notes
+        # (Get-ADRunScopeNotes) - distinct from OfflineSkipNotes, which is
+        # specifically about -Snapshot coverage. So far, populated only
+        # when -Server named an explicit, non-PDC Domain Controller and a
+        # "PDC-only" check (Test-ADMachineAccountQuota,
+        # Test-ADDomainSecurity) ran against it directly. Rendered as a
+        # "Run Scope Information" section, for both live and offline runs
+        # (an offline run's notes come from the snapshot's own
+        # RunScopeNotes field, recorded at collection time).
+        [Parameter()]
+        [array]$RunScopeNotes = @()
     )
     
     $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -437,6 +450,19 @@ $(($OfflineSkipNotes | Sort-Object Test, Check | ForEach-Object {
         </div>
 "@
 })
+"@
+})
+$(if (@($RunScopeNotes).Count -gt 0) {
+@"
+        <div class="warning-box" style="background:#eef3fb; border-color:#2f5fa8;">
+            <p><strong>RUN SCOPE INFORMATION</strong> - $(@($RunScopeNotes).Count) note(s) about how this run was scoped that may affect how to read specific findings below.</p>
+            <table class="mitre-table">
+                <tr><th>Category</th><th>Note</th></tr>
+$(($RunScopeNotes | Sort-Object Category | ForEach-Object {
+    "                <tr><td>$(HtmlEncode $_.Category)</td><td>$(HtmlEncode $_.Message)</td></tr>"
+}) -join "`n")
+            </table>
+        </div>
 "@
 })
         
@@ -1078,6 +1104,46 @@ function Get-FindingHTML {
     if ([string]::IsNullOrWhiteSpace($impact))      { $impact      = 'Not specified for this finding.' }
     if ([string]::IsNullOrWhiteSpace($remediation)) { $remediation = 'Not specified for this finding.' }
     $remediation = $remediation -replace "`r`n", '<br>' -replace "`n", '<br>'
+
+    # Change-management enrichment (v1.24.0) - EstimatedEffort/KnownRisks/
+    # BackupRollback are shown once per finding group (they're identical for
+    # every item, keyed on Category+Issue like MitreTechnique/AnssiControl
+    # above); OperationalNotes is genuinely optional and omitted entirely
+    # when blank, per Finding-Enrichment-Prompt.md ("omit this field
+    # entirely if there is nothing genuinely additive to say").
+    $estimatedEffort  = HtmlEncode $first.EstimatedEffort
+    $knownRisks       = HtmlEncode $first.KnownRisks
+    $backupRollback   = HtmlEncode $first.BackupRollback
+    $operationalNotes = HtmlEncode $first.OperationalNotes
+    $enrichmentHtml = ''
+    if (-not [string]::IsNullOrWhiteSpace($estimatedEffort) -or
+        -not [string]::IsNullOrWhiteSpace($knownRisks) -or
+        -not [string]::IsNullOrWhiteSpace($backupRollback)) {
+        $opNotesHtml = ''
+        if (-not [string]::IsNullOrWhiteSpace($operationalNotes)) {
+            $opNotesHtml = @"
+                <div class="finding-section">
+                    <h4>Operational Notes</h4>
+                    <p>$operationalNotes</p>
+                </div>
+"@
+        }
+        $enrichmentHtml = @"
+                <div class="finding-section">
+                    <h4>Estimated Effort</h4>
+                    <p>$estimatedEffort</p>
+                </div>
+                <div class="finding-section">
+                    <h4>Known Risks</h4>
+                    <p>$knownRisks</p>
+                </div>
+                <div class="finding-section">
+                    <h4>Backup / Rollback</h4>
+                    <p>$backupRollback</p>
+                </div>
+$opNotesHtml
+"@
+    }
     # Optional metadata tags (v1.2.0) - these come from the shared Issue ->
     # MITRE/ANSSI mapping, so they're identical across every item in the
     # group; render once from the first item rather than once per object.
@@ -1135,6 +1201,7 @@ function Get-FindingHTML {
                     <h4>Remediation</h4>
                     <p>$remediation</p>
                 </div>
+$enrichmentHtml
             </div>
         </details>
 "@
@@ -1183,6 +1250,7 @@ function Get-FindingHTML {
                     <h4>Remediation</h4>
                     <p>$remediation</p>
                 </div>
+$enrichmentHtml
                 <div class="finding-section">
                     <h4>Affected Objects ($count)</h4>
                     <ul class="finding-instance-list">

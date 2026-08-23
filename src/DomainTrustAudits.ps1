@@ -51,6 +51,9 @@ function Test-ADDomainTrusts {
                 $finding.Description = "Bidirectional trust exists with domain '$($trust.Target)', allowing authentication in both directions."
                 $finding.Impact = "Increases attack surface as compromise of either domain could affect the other. Consider if bidirectional trust is necessary."
                 $finding.Remediation = "Review if bidirectional trust is required. If not, convert to one-way trust or implement selective authentication."
+                $finding.EstimatedEffort = 'High - narrowing a bidirectional trust to one-way is a structural, cross-forest/cross-domain decision requiring sign-off from the other domain''s owners and a dependency discovery of which direction of access is actually used.'
+                $finding.KnownRisks = 'Narrowing to one-way removes the ability for principals on the now-untrusted side to authenticate to resources on the other side, so a dependency check with the other domain''s owners is required before narrowing, not just a local change.'
+                $finding.BackupRollback = 'Moderate - trust direction can be reconfigured back to bidirectional via Active Directory Domains and Trusts (or netdom) at any time, effective quickly with no data loss, but requires the same cross-domain admin coordination to make the change again.'
                 $finding.Details = @{
                     Target = $trust.Target
                     Direction = $trust.Direction
@@ -70,6 +73,9 @@ function Test-ADDomainTrusts {
                 $finding.Description = "SID filtering is disabled on external trust with '$($trust.Target)', allowing SID history injection attacks."
                 $finding.Impact = "Attackers in the trusted domain could forge credentials with privileged SIDs from your domain, leading to privilege escalation."
                 $finding.Remediation = "Enable SID filtering: netdom trust $domainName /domain:$($trust.Target) /quarantine:yes"
+                $finding.EstimatedEffort = 'Low - a single trust property toggle.'
+                $finding.KnownRisks = 'SID filtering blocks SID-history-based authorization across the trust, so if the other domain legitimately relies on SID history for migrated accounts to retain access, enabling filtering can break that access; confirm no active migration depends on it.'
+                $finding.BackupRollback = 'Easy - toggle SID filtering back off; effective immediately, no data loss.'
                 $finding.Details = @{
                     Target = $trust.Target
                     TrustType = $trust.TrustType
@@ -88,6 +94,9 @@ function Test-ADDomainTrusts {
                 $finding.Description = "Forest trust with '$($trust.Target)' does not use selective authentication, granting broad access."
                 $finding.Impact = "All users in the trusted forest can authenticate to resources in this domain without explicit permission."
                 $finding.Remediation = "Enable selective authentication to require explicit permission for cross-forest access."
+                $finding.EstimatedEffort = 'Medium - enabling selective authentication requires then explicitly granting "Allowed to Authenticate" rights to every resource/group that legitimately needs cross-forest access, so plan a discovery pass of existing cross-forest access first.'
+                $finding.KnownRisks = 'Enabling selective authentication immediately blocks all cross-forest authentication except where an explicit Allowed-to-Authenticate ACE has been granted, so existing legitimate cross-forest access will break until those ACEs are added.'
+                $finding.BackupRollback = 'Easy - toggle selective authentication back off via Domains and Trusts; effective immediately, no data loss.'
                 $finding.Details = @{
                     Target = $trust.Target
                     TrustType = $trust.TrustType
@@ -108,6 +117,9 @@ function Test-ADDomainTrusts {
                     $finding.Description = "Trust with '$($trust.Target)' has not been modified in $($trustAge.Days) days. Trust passwords should rotate automatically every 30 days."
                     $finding.Impact = "May indicate trust relationship issues or lack of maintenance."
                     $finding.Remediation = "Verify trust health: netdom trust $domainName /domain:$($trust.Target) /verify"
+                    $finding.EstimatedEffort = 'Low - a single reset command per trust.'
+                    $finding.KnownRisks = 'Resetting the trust password briefly interrupts the secure channel until both sides sync, so schedule it during a low-authentication-volume window; a mismatched reset (only one side updated) can break the trust until corrected, a documented Netlogon secure-channel behavior.'
+                    $finding.BackupRollback = 'Easy - the secure channel can be re-reset on both sides if an issue arises; no data loss beyond a brief authentication interruption.'
                     $finding.Details = @{
                         Target = $trust.Target
                         LastModified = $trust.Modified
@@ -146,6 +158,9 @@ function Test-ADDomainTrusts {
                 $finding.Description = "Bidirectional trust exists with domain '$($trust.Target)', allowing authentication in both directions."
                 $finding.Impact = "Increases attack surface as compromise of either domain could affect the other. Consider if bidirectional trust is necessary."
                 $finding.Remediation = "Review if bidirectional trust is required. If not, convert to one-way trust or implement selective authentication."
+                $finding.EstimatedEffort = 'High - narrowing a bidirectional trust to one-way is a structural, cross-forest/cross-domain decision requiring sign-off from the other domain''s owners and a dependency discovery of which direction of access is actually used.'
+                $finding.KnownRisks = 'Narrowing to one-way removes the ability for principals on the now-untrusted side to authenticate to resources on the other side, so a dependency check with the other domain''s owners is required before narrowing, not just a local change.'
+                $finding.BackupRollback = 'Moderate - trust direction can be reconfigured back to bidirectional via Active Directory Domains and Trusts (or netdom) at any time, effective quickly with no data loss, but requires the same cross-domain admin coordination to make the change again.'
                 $finding.Details = @{
                     Target = $trust.Target
                     Direction = $trust.Direction
@@ -166,6 +181,9 @@ function Test-ADDomainTrusts {
                 $finding.Description = "SID filtering is disabled on external trust with '$($trust.Target)', allowing SID history injection attacks."
                 $finding.Impact = "Attackers in the trusted domain could forge credentials with privileged SIDs from your domain, leading to privilege escalation."
                 $finding.Remediation = "Enable SID filtering: netdom trust $($domain.DNSRoot) /domain:$($trust.Target) /quarantine:yes"
+                $finding.EstimatedEffort = 'Low - a single trust property toggle.'
+                $finding.KnownRisks = 'SID filtering blocks SID-history-based authorization across the trust, so if the other domain legitimately relies on SID history for migrated accounts to retain access, enabling filtering can break that access; confirm no active migration depends on it.'
+                $finding.BackupRollback = 'Easy - toggle SID filtering back off; effective immediately, no data loss.'
                 $finding.Details = @{
                     Target = $trust.Target
                     TrustType = $trust.TrustType
@@ -185,6 +203,9 @@ function Test-ADDomainTrusts {
                 $finding.Description = "Forest trust with '$($trust.Target)' does not use selective authentication, granting broad access."
                 $finding.Impact = "All users in the trusted forest can authenticate to resources in this domain without explicit permission."
                 $finding.Remediation = "Enable selective authentication to require explicit permission for cross-forest access."
+                $finding.EstimatedEffort = 'Medium - enabling selective authentication requires then explicitly granting "Allowed to Authenticate" rights to every resource/group that legitimately needs cross-forest access, so plan a discovery pass of existing cross-forest access first.'
+                $finding.KnownRisks = 'Enabling selective authentication immediately blocks all cross-forest authentication except where an explicit Allowed-to-Authenticate ACE has been granted, so existing legitimate cross-forest access will break until those ACEs are added.'
+                $finding.BackupRollback = 'Easy - toggle selective authentication back off via Domains and Trusts; effective immediately, no data loss.'
                 $finding.Details = @{
                     Target = $trust.Target
                     TrustType = $trust.TrustType
@@ -206,6 +227,9 @@ function Test-ADDomainTrusts {
                     $finding.Description = "Trust with '$($trust.Target)' has not been modified in $($trustAge.Days) days. Trust passwords should rotate automatically every 30 days."
                     $finding.Impact = "May indicate trust relationship issues or lack of maintenance."
                     $finding.Remediation = "Verify trust health: netdom trust $($domain.DNSRoot) /domain:$($trust.Target) /verify"
+                    $finding.EstimatedEffort = 'Low - a single reset command per trust.'
+                    $finding.KnownRisks = 'Resetting the trust password briefly interrupts the secure channel until both sides sync, so schedule it during a low-authentication-volume window; a mismatched reset (only one side updated) can break the trust until corrected, a documented Netlogon secure-channel behavior.'
+                    $finding.BackupRollback = 'Easy - the secure channel can be re-reset on both sides if an issue arises; no data loss beyond a brief authentication interruption.'
                     $finding.Details = @{
                         Target = $trust.Target
                         LastModified = $trust.Modified

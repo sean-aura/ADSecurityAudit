@@ -86,6 +86,9 @@ function Test-ADGroupPolicies {
                             $finding.Description = "GPO '$($gpo.DisplayName)' grants '$dangerousRight' to non-privileged principal '$trustee'."
                             $finding.Impact = "Low-privileged users or groups can modify the GPO, leading to privilege escalation, malware deployment, or persistence mechanisms."
                             $finding.Remediation = "Remove dangerous permission: Set-GPPermission -Guid $($gpo.Id) -TargetName '$trustee' -TargetType User -PermissionLevel None"
+                            $finding.EstimatedEffort = 'Medium - removing a non-standard Edit/FullControl right from one GPO; confirm the trustee isn''t a legitimate delegated owner.'
+                            $finding.KnownRisks = 'Procedural - confirm the trustee isn''t an active, legitimate delegated GPO administrator before removing their rights.'
+                            $finding.BackupRollback = 'Easy - restore the GPO permission via GPMC; effective immediately, no data loss.'
                             $finding.Details = @{
                                 GPOID = $gpo.Id
                                 Trustee = $trustee
@@ -115,6 +118,9 @@ function Test-ADGroupPolicies {
                         $finding.Description = "GPO '$($gpo.DisplayName)' is linked to Domain Controllers OU but has edit rights granted to non-admin principals."
                         $finding.Impact = "Attackers can deploy malicious packages or configurations to Domain Controllers with SYSTEM-level rights, leading to full domain compromise."
                         $finding.Remediation = "Restrict GPO permissions to only Domain Admins and Enterprise Admins. Remove all non-admin edit rights immediately."
+                        $finding.EstimatedEffort = 'Medium - removing a non-standard Edit/Write right from the GPO object itself; confirm the trustee isn''t a legitimate delegated GPO-management account.'
+                        $finding.KnownRisks = 'Procedural - confirm the trustee isn''t a legitimate delegated GPO administrator for that specific GPO before removing their rights.'
+                        $finding.BackupRollback = 'Easy - restore the GPO permission via GPMC; effective immediately, though the change still needs to replicate to all DCs.'
                         $finding.Details = @{
                             GPOID = $gpo.Id
                             LinkedOU = ($dcOuLinks -join '; ')
@@ -134,6 +140,9 @@ function Test-ADGroupPolicies {
                     $finding.Description = "GPO '$($gpo.DisplayName)' is not linked to any OU or domain."
                     $finding.Impact = "Unlinked GPOs create clutter and may contain misconfigurations that could cause issues if accidentally linked."
                     $finding.Remediation = "Review the GPO and delete if no longer needed: Remove-GPO -Guid $($gpo.Id)"
+                    $finding.EstimatedEffort = 'Low - this is a hygiene finding; typical remediation is to delete the unused GPO or formally document/retain it.'
+                    $finding.KnownRisks = 'Deleting an unlinked GPO is safe in the sense that it isn''t currently applied anywhere, but if it''s only temporarily unlinked (e.g. staged for a future rollout), deleting it loses that work - confirm with whoever created it first.'
+                    $finding.BackupRollback = 'Moderate - back up the GPO with Backup-GPO before deleting so it can be restored with Restore-GPO if needed.'
                     $finding.Details = @{
                         GPOID = $gpo.Id
                         CreatedDate = $gpo.CreationTime
@@ -217,6 +226,9 @@ function Test-ADGroupPolicies {
                         $finding.Description = "GPO '$($gpo.DisplayName)' grants '$dangerousRight' to non-privileged principal '$trustee'."
                         $finding.Impact = "Low-privileged users or groups can modify the GPO, leading to privilege escalation, malware deployment, or persistence mechanisms."
                         $finding.Remediation = "Remove dangerous permission: Set-GPPermission -Guid $($gpo.Id) -TargetName '$trustee' -TargetType User -PermissionLevel None"
+                        $finding.EstimatedEffort = 'Medium - removing a non-standard Edit/FullControl right from one GPO; confirm the trustee isn''t a legitimate delegated owner.'
+                        $finding.KnownRisks = 'Procedural - confirm the trustee isn''t an active, legitimate delegated GPO administrator before removing their rights.'
+                        $finding.BackupRollback = 'Easy - restore the GPO permission via GPMC; effective immediately, no data loss.'
                         $finding.Details = @{
                             GPOID = $gpo.Id
                             GPOPath = $gpo.Path
@@ -252,6 +264,9 @@ function Test-ADGroupPolicies {
                         $finding.Description = "GPO '$($gpo.DisplayName)' is linked to Domain Controllers OU but has edit rights granted to non-admin principals."
                         $finding.Impact = "Attackers can deploy malicious packages or configurations to Domain Controllers with SYSTEM-level rights, leading to full domain compromise."
                         $finding.Remediation = "Restrict GPO permissions to only Domain Admins and Enterprise Admins. Remove all non-admin edit rights immediately."
+                        $finding.EstimatedEffort = 'Medium - removing a non-standard Edit/Write right from the GPO object itself; confirm the trustee isn''t a legitimate delegated GPO-management account.'
+                        $finding.KnownRisks = 'Procedural - confirm the trustee isn''t a legitimate delegated GPO administrator for that specific GPO before removing their rights.'
+                        $finding.BackupRollback = 'Easy - restore the GPO permission via GPMC; effective immediately, though the change still needs to replicate to all DCs.'
                         $finding.Details = @{
                             GPOID = $gpo.Id
                             LinkedOU = $link.DistinguishedName
@@ -273,6 +288,9 @@ function Test-ADGroupPolicies {
                 $finding.Description = "GPO '$($gpo.DisplayName)' is not linked to any OU or domain."
                 $finding.Impact = "Unlinked GPOs create clutter and may contain misconfigurations that could cause issues if accidentally linked."
                 $finding.Remediation = "Review the GPO and delete if no longer needed: Remove-GPO -Guid $($gpo.Id)"
+                $finding.EstimatedEffort = 'Low - this is a hygiene finding; typical remediation is to delete the unused GPO or formally document/retain it.'
+                $finding.KnownRisks = 'Deleting an unlinked GPO is safe in the sense that it isn''t currently applied anywhere, but if it''s only temporarily unlinked (e.g. staged for a future rollout), deleting it loses that work - confirm with whoever created it first.'
+                $finding.BackupRollback = 'Moderate - back up the GPO with Backup-GPO before deleting so it can be restored with Restore-GPO if needed.'
                 $finding.Details = @{
                     GPOID = $gpo.Id
                     CreatedDate = $gpo.CreationTime
@@ -321,6 +339,9 @@ function Test-ADGroupPolicies {
                         $finding.Description = "SYSVOL has write permissions granted to '$($ace.IdentityReference)'."
                         $finding.Impact = "Attackers can tamper with GPO files, scripts, and policies that apply to all domain members, leading to widespread compromise."
                         $finding.Remediation = "Restrict SYSVOL permissions. Remove write access for non-admin principals. Only Domain Admins and SYSTEM should have write access."
+                        $finding.EstimatedEffort = 'Medium - correcting ACLs on SYSVOL/NETLOGON shares (and their filesystem equivalents) on every DC, then validating legitimate scripts/GPOs still function for all clients.'
+                        $finding.KnownRisks = 'Over-tightening SYSVOL permissions can break clients'' ability to read GPOs or logon scripts if a legitimate group loses access it was relying on; validate with a domain-wide policy refresh test after the change.'
+                        $finding.BackupRollback = 'Moderate - export the current SYSVOL share/NTFS ACL (icacls or Get-Acl) before changing it, and allow for DFSR/FRS replication across all DCs before the change is fully in effect.'
                         $finding.Details = @{
                             Path = $sysvolPath
                             Identity = $ace.IdentityReference

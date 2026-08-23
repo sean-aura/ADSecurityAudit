@@ -150,6 +150,9 @@ function Test-ADDomainAdminEquivalence {
                     $finding.Description = "User has 'adminCount=1' but is not a member of any protected group. This may indicate a leftover administrative account or a persistence backdoor where ACLs are frozen by SDProp."
                     $finding.Impact = "The account's ACL inheritance remains disabled and its permissions frozen even though it's no longer in a protected group, which can mask a persistence mechanism or leave stale, overly-permissive rights in place unnoticed."
                     $finding.Remediation = "Clear the 'adminCount' attribute (set to 0) and enable permission inheritance on the object. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
+                    $finding.EstimatedEffort = 'Low - a single adminCount reset plus re-enabling inheritance on one object.'
+                    $finding.KnownRisks = 'Low technical risk; confirm the account isn''t intentionally protected for an undocumented but legitimate reason (e.g. a break-glass account) before clearing adminCount.'
+                    $finding.BackupRollback = 'Easy - reset adminCount to 1 and disable inheritance again if needed; effective immediately, no data loss.'
                     $finding.Details = @{ UserDN = $user.DistinguishedName; Domain = $domainName }
                     $findings += $finding
                 }
@@ -170,6 +173,9 @@ function Test-ADDomainAdminEquivalence {
                 $finding.Description = "Object has 'msDS-KeyCredentialLink' populated. Unless Windows Hello for Business is deployed, this indicates a potential 'Shadow Credentials' attack (Whisker/Certipy) allowing account takeover."
                 $finding.Impact = "An attacker with this key credential can authenticate as the object via PKINIT without knowing (or changing) its password, giving silent, persistent account takeover that survives a password reset."
                 $finding.Remediation = "Investigate the 'msDS-KeyCredentialLink' attribute. If not legitimate WHfB, clear the attribute immediately. Reference: https://posts.specterops.io/shadow-credentials-abusing-key-credential-link-translation-to-en-9d8f9fb12be8"
+                $finding.EstimatedEffort = 'Low - clearing the msDS-KeyCredentialLink attribute is a single-attribute change on one object.'
+                $finding.KnownRisks = 'Removing an unauthorized key credential has no legitimate compatibility impact unless it is actually a currently-enrolled Windows Hello for Business or passwordless-auth key, so confirm the key isn''t legitimate before clearing.'
+                $finding.BackupRollback = 'Moderate - export the current msDS-KeyCredentialLink value before clearing so a legitimate key can be restored if the removal turns out to affect a real passwordless sign-in.'
                 $finding.Details = @{
                     ObjectDN    = $obj.DistinguishedName
                     ObjectClass = if ($collectionKey -eq 'Users') { 'user' } else { 'computer' }
@@ -251,6 +257,10 @@ function Test-ADDomainAdminEquivalence {
                         $finding.Description = "User contains a SID from the CURRENT domain in its SID History ($sidStr). This is a definitive sign of a Golden Ticket or SID History injection attack."
                         $finding.Impact = "The account carries privileges from the injected SID in addition to its normal group memberships, effectively granting hidden, unauthorized access that standard group-membership reviews will not reveal."
                         $finding.Remediation = "Immediate Incident Response required. Reset the account and investigate origin. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
+                        $finding.EstimatedEffort = 'High - this is an active-compromise indicator, not a configuration fix; it requires incident-response engagement, forensic investigation, and likely a KRBTGT password reset (twice) if a Golden Ticket is suspected, not a single change.'
+                        $finding.KnownRisks = 'Resetting the account or clearing sIDHistory while an attacker may still have persistence elsewhere (forged tickets, other backdoors) can tip them off without fully evicting them, so this needs IR judgment, not just a config change.'
+                        $finding.BackupRollback = 'Hard/Limited - this isn''t a reversible setting; it''s an incident-response action (reset/disable the account and investigate origin) with no rollback concept.'
+                        $finding.OperationalNotes = 'Engage incident response before making changes if compromise is suspected, since a same-domain sIDHistory entry is a well-documented Golden Ticket/injection indicator rather than a misconfiguration.'
                         $finding.Details = @{ UserDN = $user.DistinguishedName; InjectedSID = $sidStr; Domain = $domainName }
                         $findings += $finding
                     }
@@ -264,6 +274,9 @@ function Test-ADDomainAdminEquivalence {
                         $finding.Description = "User has a highly privileged SID ($sidStr) in their SID History. They possess Domain Admin rights regardless of group membership."
                         $finding.Impact = "The account has effective Domain Admin (or equivalent) rights that won't show up in any group-membership audit, since the privilege comes from SID History rather than an actual group the account belongs to."
                         $finding.Remediation = "Clear the sIDHistory attribute immediately unless this is a verified migration account. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
+                        $finding.EstimatedEffort = 'Medium - clearing sIDHistory is simple technically, but confirming the account isn''t an active cross-domain migration in progress requires checking with whoever ran the migration.'
+                        $finding.KnownRisks = 'If a domain migration is still underway, clearing sIDHistory before every migrated resource''s ACL has been updated to the new SID can break the migrated user''s access to resources that still only trust the old SID.'
+                        $finding.BackupRollback = 'Hard/Limited - sIDHistory can''t be restored to its prior value without re-injecting it via the same migration tooling (e.g. ADMT) that originally populated it; treat clearing it as a one-way cleanup once confirmed unauthorized.'
                         $finding.Details = @{ UserDN = $user.DistinguishedName; PrivilegedSID = $sidStr; Domain = $domainName }
                         $findings += $finding
                     }
@@ -284,6 +297,9 @@ function Test-ADDomainAdminEquivalence {
                 $finding.Description = "User has a legacy logon script defined: '$($user.scriptPath)'. Attackers can modify this file to achieve code execution upon user logon."
                 $finding.Impact = "Anyone able to write to the referenced script file gains code execution as every user the script runs for at their next logon, a low-effort persistence and lateral-movement foothold."
                 $finding.Remediation = "Migrate to Group Policy Preferences and clear the 'scriptPath' attribute. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/logon-script-issues"
+                $finding.EstimatedEffort = 'Low - a single scriptPath/userWorkstations-style attribute per account.'
+                $finding.KnownRisks = 'Removing or migrating a working legacy logon script could break whatever the script does for affected users until an equivalent modern (GPO-based) replacement is validated.'
+                $finding.BackupRollback = 'Easy - restore the scriptPath attribute to its prior value; effective at next logon, no data loss.'
                 $finding.Details = @{ UserDN = $user.DistinguishedName; ScriptPath = $user.scriptPath; Domain = $domainName }
                 $findings += $finding
             }
@@ -331,6 +347,10 @@ function Test-ADDomainAdminEquivalence {
                     $finding.Description = "Principal '$principal' has dangerous rights ($($ace.ActiveDirectoryRights)) on AdminSDHolder. This grants persistent Domain Admin rights via SDProp."
                     $finding.Impact = "Because SDProp periodically re-applies AdminSDHolder's ACL to every protected (Tier-0) account and group, this principal effectively controls the DACL of every Domain Admin, Enterprise Admin, and other protected object in the domain - a single ACE here compromises the entire tier."
                     $finding.Remediation = "Remove the ACE immediately and check all protected groups for 'adminCount=1' users. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
+                    $finding.EstimatedEffort = 'Low - removing a single unauthorized ACE from one object (AdminSDHolder); SDProp then reapplies the corrected ACL to every protected object automatically.'
+                    $finding.KnownRisks = 'Low technical risk; an unauthorized ACE here grants no legitimate capability, so removing it has no realistic compatibility impact beyond confirming it isn''t a very recent, still-being-configured delegation.'
+                    $finding.BackupRollback = 'Moderate - export the current AdminSDHolder ACL (dsacls or Get-Acl) before removing the ACE so it can be restored if needed; the correction only reaches every protected Tier-0 object once SDProp''s next propagation cycle runs, not instantly.'
+                    $finding.OperationalNotes = 'SDProp runs on a periodic interval (roughly hourly by default), so previously-protected objects keep the old, compromised ACL until the next cycle completes.'
                     $finding.Details = @{ Principal = $principal; Rights = "$($ace.ActiveDirectoryRights)"; Domain = $domainName }
                     $findings += $finding
                 }
@@ -422,6 +442,9 @@ function Test-ADDomainAdminEquivalence {
             $evidenceBullets = ($evidence.Reason | ForEach-Object { "- $_" }) -join "`n"
             $finding.Description = "Principal '$principal' holds permissions that provide Domain Admin-equivalent control:`n$evidenceBullets"
             $finding.Impact = 'Compromise of this principal would allow attackers to seize control of protected groups, the domain naming context, PKI infrastructure, or perform DCSync.'
+            $finding.EstimatedEffort = 'High - the underlying access is typically composed of multiple pieces of evidence (nested groups, ACEs, ownership), each of which may need a separate fix, similar to breaking a control-path chain.'
+            $finding.KnownRisks = 'Removing any single contributing factor could break a legitimate, if undocumented, delegation if it was set up intentionally, so confirm with the principal''s owning team before changing each piece of evidence.'
+            $finding.BackupRollback = 'Moderate - export/record each ACE or membership being changed before removing it, then re-run the audit to confirm the effective access is gone.'
             $finding.Remediation = @"
 Review and remove the excessive permissions listed in the evidence:
 1. Restrict Domain Naming Context and AdminSDHolder control.
@@ -653,6 +676,9 @@ Review and remove the excessive permissions listed in the evidence:
                 $finding.Description = "User has 'adminCount=1' but is not a member of any protected group. This may indicate a leftover administrative account or a persistence backdoor where ACLs are frozen by SDProp."
                 $finding.Impact = "The account's ACL inheritance remains disabled and its permissions frozen even though it's no longer in a protected group, which can mask a persistence mechanism or leave stale, overly-permissive rights in place unnoticed."
                 $finding.Remediation = "Clear the 'adminCount' attribute (set to 0) and enable permission inheritance on the object. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
+                $finding.EstimatedEffort = 'Low - a single adminCount reset plus re-enabling inheritance on one object.'
+                $finding.KnownRisks = 'Low technical risk; confirm the account isn''t intentionally protected for an undocumented but legitimate reason (e.g. a break-glass account) before clearing adminCount.'
+                $finding.BackupRollback = 'Easy - reset adminCount to 1 and disable inheritance again if needed; effective immediately, no data loss.'
                 $finding.Details = @{
                     UserDN = $user.DistinguishedName
                     Domain = $domain.DNSRoot
@@ -686,6 +712,9 @@ Review and remove the excessive permissions listed in the evidence:
             $finding.Description = "Object has 'msDS-KeyCredentialLink' populated. Unless Windows Hello for Business is deployed, this indicates a potential 'Shadow Credentials' attack (Whisker/Certipy) allowing account takeover."
             $finding.Impact = "An attacker with this key credential can authenticate as the object via PKINIT without knowing (or changing) its password, giving silent, persistent account takeover that survives a password reset."
             $finding.Remediation = "Investigate the 'msDS-KeyCredentialLink' attribute. If not legitimate WHfB, clear the attribute immediately. Reference: https://posts.specterops.io/shadow-credentials-abusing-key-credential-link-translation-to-en-9d8f9fb12be8"
+            $finding.EstimatedEffort = 'Low - clearing the msDS-KeyCredentialLink attribute is a single-attribute change on one object.'
+            $finding.KnownRisks = 'Removing an unauthorized key credential has no legitimate compatibility impact unless it is actually a currently-enrolled Windows Hello for Business or passwordless-auth key, so confirm the key isn''t legitimate before clearing.'
+            $finding.BackupRollback = 'Moderate - export the current msDS-KeyCredentialLink value before clearing so a legitimate key can be restored if the removal turns out to affect a real passwordless sign-in.'
             $finding.Details = @{
                 ObjectDN    = $obj.DistinguishedName
                 ObjectClass = $obj.objectClass -join ', '
@@ -837,6 +866,10 @@ Review and remove the excessive permissions listed in the evidence:
                     $finding.Description = "User contains a SID from the CURRENT domain in its SID History ($sidStr). This is a definitive sign of a Golden Ticket or SID History injection attack."
                     $finding.Impact = "The account carries privileges from the injected SID in addition to its normal group memberships, effectively granting hidden, unauthorized access that standard group-membership reviews will not reveal."
                     $finding.Remediation = "Immediate Incident Response required. Reset the account and investigate origin. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
+                    $finding.EstimatedEffort = 'High - this is an active-compromise indicator, not a configuration fix; it requires incident-response engagement, forensic investigation, and likely a KRBTGT password reset (twice) if a Golden Ticket is suspected, not a single change.'
+                    $finding.KnownRisks = 'Resetting the account or clearing sIDHistory while an attacker may still have persistence elsewhere (forged tickets, other backdoors) can tip them off without fully evicting them, so this needs IR judgment, not just a config change.'
+                    $finding.BackupRollback = 'Hard/Limited - this isn''t a reversible setting; it''s an incident-response action (reset/disable the account and investigate origin) with no rollback concept.'
+                    $finding.OperationalNotes = 'Engage incident response before making changes if compromise is suspected, since a same-domain sIDHistory entry is a well-documented Golden Ticket/injection indicator rather than a misconfiguration.'
                     $finding.Details = @{
                         UserDN       = $user.DistinguishedName
                         InjectedSID  = $sidStr
@@ -855,6 +888,9 @@ Review and remove the excessive permissions listed in the evidence:
                     $finding.Description = "User has a highly privileged SID ($sidStr) in their SID History. They possess Domain Admin rights regardless of group membership."
                     $finding.Impact = "The account has effective Domain Admin (or equivalent) rights that won't show up in any group-membership audit, since the privilege comes from SID History rather than an actual group the account belongs to."
                     $finding.Remediation = "Clear the sIDHistory attribute immediately unless this is a verified migration account. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
+                    $finding.EstimatedEffort = 'Medium - clearing sIDHistory is simple technically, but confirming the account isn''t an active cross-domain migration in progress requires checking with whoever ran the migration.'
+                    $finding.KnownRisks = 'If a domain migration is still underway, clearing sIDHistory before every migrated resource''s ACL has been updated to the new SID can break the migrated user''s access to resources that still only trust the old SID.'
+                    $finding.BackupRollback = 'Hard/Limited - sIDHistory can''t be restored to its prior value without re-injecting it via the same migration tooling (e.g. ADMT) that originally populated it; treat clearing it as a one-way cleanup once confirmed unauthorized.'
                     $finding.Details = @{
                         UserDN       = $user.DistinguishedName
                         PrivilegedSID = $sidStr
@@ -891,6 +927,9 @@ Review and remove the excessive permissions listed in the evidence:
             $finding.Description = "User has a legacy logon script defined: '$path'. Attackers can modify this file to achieve code execution upon user logon."
             $finding.Impact = "Anyone able to write to the referenced script file gains code execution as every user the script runs for at their next logon, a low-effort persistence and lateral-movement foothold."
             $finding.Remediation = "Migrate to Group Policy Preferences and clear the 'scriptPath' attribute. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/logon-script-issues"
+            $finding.EstimatedEffort = 'Low - a single scriptPath/userWorkstations-style attribute per account.'
+            $finding.KnownRisks = 'Removing or migrating a working legacy logon script could break whatever the script does for affected users until an equivalent modern (GPO-based) replacement is validated.'
+            $finding.BackupRollback = 'Easy - restore the scriptPath attribute to its prior value; effective at next logon, no data loss.'
             $finding.Details = @{
                 UserDN     = $user.DistinguishedName
                 ScriptPath = $path
@@ -969,6 +1008,10 @@ Review and remove the excessive permissions listed in the evidence:
                     $finding.Description = "Principal '$principal' has dangerous rights ($($ace.ActiveDirectoryRights)) on AdminSDHolder. This grants persistent Domain Admin rights via SDProp."
                     $finding.Impact = "Because SDProp periodically re-applies AdminSDHolder's ACL to every protected (Tier-0) account and group, this principal effectively controls the DACL of every Domain Admin, Enterprise Admin, and other protected object in the domain - a single ACE here compromises the entire tier."
                     $finding.Remediation = "Remove the ACE immediately and check all protected groups for 'adminCount=1' users. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
+                    $finding.EstimatedEffort = 'Low - removing a single unauthorized ACE from one object (AdminSDHolder); SDProp then reapplies the corrected ACL to every protected object automatically.'
+                    $finding.KnownRisks = 'Low technical risk; an unauthorized ACE here grants no legitimate capability, so removing it has no realistic compatibility impact beyond confirming it isn''t a very recent, still-being-configured delegation.'
+                    $finding.BackupRollback = 'Moderate - export the current AdminSDHolder ACL (dsacls or Get-Acl) before removing the ACE so it can be restored if needed; the correction only reaches every protected Tier-0 object once SDProp''s next propagation cycle runs, not instantly.'
+                    $finding.OperationalNotes = 'SDProp runs on a periodic interval (roughly hourly by default), so previously-protected objects keep the old, compromised ACL until the next cycle completes.'
                     $finding.Details = @{
                         Principal = $principal
                         Rights    = $ace.ActiveDirectoryRights.ToString()
@@ -1167,6 +1210,9 @@ Review and remove the excessive permissions listed in the evidence:
             $evidenceBullets = ($evidence.Reason | ForEach-Object { "- $_" }) -join "`n"
             $finding.Description = "Principal '$principal' holds permissions that provide Domain Admin-equivalent control:`n$evidenceBullets"
             $finding.Impact = 'Compromise of this principal would allow attackers to seize control of protected groups, the domain naming context, PKI infrastructure, or perform DCSync.'
+            $finding.EstimatedEffort = 'High - the underlying access is typically composed of multiple pieces of evidence (nested groups, ACEs, ownership), each of which may need a separate fix, similar to breaking a control-path chain.'
+            $finding.KnownRisks = 'Removing any single contributing factor could break a legitimate, if undocumented, delegation if it was set up intentionally, so confirm with the principal''s owning team before changing each piece of evidence.'
+            $finding.BackupRollback = 'Moderate - export/record each ACE or membership being changed before removing it, then re-run the audit to confirm the effective access is gone.'
             $finding.Remediation = @"
 Review and remove the excessive permissions listed in the evidence:
 1. Restrict Domain Naming Context and AdminSDHolder control.

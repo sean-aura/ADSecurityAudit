@@ -92,6 +92,9 @@ function Test-ADPrivilegedGroups {
                 $finding.Description = "The '$groupName' group has $memberCount members, exceeding the recommended threshold of $threshold."
                 $finding.Impact = "Over-privileged accounts increase the attack surface and make it harder to maintain accountability."
                 $finding.Remediation = "Review and reduce membership. Remove unnecessary accounts and implement role-based access with custom delegated groups. Use temporary privileged access where possible."
+                $finding.EstimatedEffort = 'Medium - requires reviewing each member for actual ongoing need rather than a single mechanical change, and coordinating with each member or their manager.'
+                $finding.KnownRisks = 'Removing a member who still has a legitimate ongoing need for privileged access will break their ability to perform that work until re-added, so this needs a per-member justification review, not a blanket removal.'
+                $finding.BackupRollback = 'Easy - re-add any member whose access need is confirmed; effective on next Kerberos ticket refresh, no data loss.'
                 $finding.Details = @{
                     GroupDN = $group.DistinguishedName
                     MemberCount = $memberCount
@@ -112,6 +115,9 @@ function Test-ADPrivilegedGroups {
                 $finding.Description = "The critical group '$groupName' contains $($nestedGroups.Count) nested group(s), which complicates access management."
                 $finding.Impact = "Nested groups create choke points and can lead to unintentional privileged access. They make it difficult to audit who has access."
                 $finding.Remediation = "Remove nested groups and add users directly, or create custom delegated groups instead. Nested groups: $($nestedGroups.SamAccountName -join ', ')"
+                $finding.EstimatedEffort = 'Medium - un-nesting a group from a Tier-0 group can silently revoke access for every member of the nested group, so first enumerate who''s actually inside it.'
+                $finding.KnownRisks = 'Because nested group membership is often not obvious in a quick review, un-nesting can unexpectedly revoke privileged access from many users at once if the nested group''s full membership wasn''t understood beforehand.'
+                $finding.BackupRollback = 'Easy - re-add the nested group as a member if needed; effective on next Kerberos ticket refresh, no data loss.'
                 $finding.Details = @{
                     GroupDN = $group.DistinguishedName
                     NestedGroups = ($nestedGroups | Select-Object @{N='Name';E={$_.SamAccountName}}, DistinguishedName)
@@ -144,6 +150,9 @@ function Test-ADPrivilegedGroups {
                     $finding.Description = "Disabled user '$($userDetails.SamAccountName)' is still a member of privileged group '$groupName'."
                     $finding.Impact = "Disabled accounts in privileged groups should be removed to maintain clean access control."
                     $finding.Remediation = "Remove the disabled user: Remove-ADGroupMember -Identity '$groupName' -Members '$($userDetails.SamAccountName)' -Confirm:`$false"
+                    $finding.EstimatedEffort = 'Low - removing one already-disabled account from one group.'
+                    $finding.KnownRisks = 'Essentially none - the account is already disabled and cannot authenticate, so removing its group membership has no functional impact; confirm it isn''t an intentionally disabled-but-provisioned break-glass account first.'
+                    $finding.BackupRollback = 'Easy - re-add if needed; effective immediately, no functional impact either way since the account is disabled.'
                     $finding.Details = @{
                         UserDN = $userDetails.DistinguishedName
                         GroupDN = $group.DistinguishedName
@@ -289,6 +298,9 @@ function Test-ADPrivilegedGroups {
                         $finding.Description = "The '$groupName' group (domain: $groupDomainDN) has $(@($membershipSplit.Foreign).Count) member(s) whose own DistinguishedName belongs to a different domain."
                         $finding.Impact = "This can be legitimate (a universal group, or intentional cross-domain nesting in this forest) - but if this domain was not the one you intended to audit (-Server), it can also indicate the audit is unexpectedly reading data from another domain in the forest."
                         $finding.Remediation = "Review the listed accounts' domains. If this is unintentional, verify -Server was resolved to the intended domain (check the run's 'Server override:' console/verbose output) and that DNS for the target domain resolves correctly from this machine."
+                        $finding.EstimatedEffort = 'Medium - removing a foreign-domain principal from a local privileged group; confirm with the other domain''s admins it isn''t an intentional, documented cross-domain admin delegation before removing.'
+                        $finding.KnownRisks = 'Procedural - confirm with the other domain''s admins that the membership isn''t an intentional cross-domain delegation before removing, since doing so revokes that principal''s privileged access entirely.'
+                        $finding.BackupRollback = 'Easy - re-add the principal to the group if needed; effective on next Kerberos ticket refresh, no data loss.'
                         $finding.Details = @{
                             GroupDN         = $group.DistinguishedName
                             ForeignDomains  = @($membershipSplit.Foreign | ForEach-Object { if ($_.DistinguishedName -match '(DC=.+)$') { $matches[1] } }) | Select-Object -Unique
@@ -314,6 +326,9 @@ function Test-ADPrivilegedGroups {
                     $finding.Description = "The '$groupName' group has $memberCount members, exceeding the recommended threshold of $threshold."
                     $finding.Impact = "Over-privileged accounts increase the attack surface and make it harder to maintain accountability."
                     $finding.Remediation = "Review and reduce membership. Remove unnecessary accounts and implement role-based access with custom delegated groups. Use temporary privileged access where possible."
+                    $finding.EstimatedEffort = 'Medium - requires reviewing each member for actual ongoing need rather than a single mechanical change, and coordinating with each member or their manager.'
+                    $finding.KnownRisks = 'Removing a member who still has a legitimate ongoing need for privileged access will break their ability to perform that work until re-added, so this needs a per-member justification review, not a blanket removal.'
+                    $finding.BackupRollback = 'Easy - re-add any member whose access need is confirmed; effective on next Kerberos ticket refresh, no data loss.'
                     $finding.Details = @{
                         GroupDN = $group.DistinguishedName
                         MemberCount = $memberCount
@@ -334,6 +349,9 @@ function Test-ADPrivilegedGroups {
                     $finding.Description = "The critical group '$groupName' contains $($nestedGroups.Count) nested group(s), which complicates access management."
                     $finding.Impact = "Nested groups create choke points and can lead to unintentional privileged access. They make it difficult to audit who has access."
                     $finding.Remediation = "Remove nested groups and add users directly, or create custom delegated groups instead. Nested groups: $($nestedGroups.Name -join ', ')"
+                    $finding.EstimatedEffort = 'Medium - un-nesting a group from a Tier-0 group can silently revoke access for every member of the nested group, so first enumerate who''s actually inside it.'
+                    $finding.KnownRisks = 'Because nested group membership is often not obvious in a quick review, un-nesting can unexpectedly revoke privileged access from many users at once if the nested group''s full membership wasn''t understood beforehand.'
+                    $finding.BackupRollback = 'Easy - re-add the nested group as a member if needed; effective on next Kerberos ticket refresh, no data loss.'
                     $finding.Details = @{
                         GroupDN = $group.DistinguishedName
                         NestedGroups = ($nestedGroups | Select-Object Name, DistinguishedName)
@@ -379,6 +397,9 @@ function Test-ADPrivilegedGroups {
                         $finding.Description = "Disabled user '$($userDetails.SamAccountName)' is still a member of privileged group '$groupName'."
                         $finding.Impact = "Disabled accounts in privileged groups should be removed to maintain clean access control."
                         $finding.Remediation = "Remove the disabled user: Remove-ADGroupMember -Identity '$groupName' -Members '$($userDetails.SamAccountName)' -Confirm:`$false"
+                        $finding.EstimatedEffort = 'Low - removing one already-disabled account from one group.'
+                        $finding.KnownRisks = 'Essentially none - the account is already disabled and cannot authenticate, so removing its group membership has no functional impact; confirm it isn''t an intentionally disabled-but-provisioned break-glass account first.'
+                        $finding.BackupRollback = 'Easy - re-add if needed; effective immediately, no functional impact either way since the account is disabled.'
                         $finding.Details = @{
                             UserDN = $userDetails.DistinguishedName
                             GroupDN = $group.DistinguishedName

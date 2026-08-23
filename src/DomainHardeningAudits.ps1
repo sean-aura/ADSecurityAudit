@@ -185,6 +185,9 @@ function Test-ADDomainHardeningFlags {
                 $finding.Description = "The dSHeuristics attribute on the Directory Service object contains $($flagIssues.Count) dangerous flag(s):`n$flagBullets"
                 $finding.Impact = "dSHeuristics settings apply forest-wide and can silently weaken anonymous-access restrictions, object-visibility security, or AdminSDHolder ACL enforcement without touching any individual object's permissions, making the change easy to miss in routine ACL reviews."
                 $finding.Remediation = "Review each flagged position against Microsoft's documented dSHeuristics semantics and reset it to the secure default (character removed or '0') unless there is a specific, documented business reason for the current value: `Set-ADObject -Identity '$dsServiceDN' -Replace @{dSHeuristics='<corrected-value>'}`."
+                $finding.EstimatedEffort = 'Low - a single attribute change on one forest-wide object.'
+                $finding.KnownRisks = 'Low risk resetting to the default, unless the specific bit was intentionally set for a documented reason (e.g. relaxed list-object mode); confirm before resetting.'
+                $finding.BackupRollback = 'Easy - revert to the previous dsHeuristics string value; effective forest-wide on next replication, no data loss.'
                 $finding.Details = @{
                     DistinguishedName = $dsServiceDN
                     RawValue          = $dsHeuristics
@@ -259,6 +262,9 @@ function Test-ADDomainHardeningFlags {
             $finding.Description = "The built-in 'Pre-Windows 2000 Compatible Access' group contains the following broad principal(s): $($uniquePrincipals -join ', ')."
             $finding.Impact = "Members of this group are granted Read access to most user and group attributes domain-wide (a legacy compatibility grant for pre-Windows 2000 systems). Including Authenticated Users, Everyone, or ANONYMOUS LOGON effectively exposes that attribute-level read access to anyone who can reach the domain, aiding reconnaissance (e.g. user enumeration, password-policy discovery) and tools such as null-session enumeration."
             $finding.Remediation = "Remove the broad principal(s) from 'Pre-Windows 2000 Compatible Access' and replace with only the specific legacy service accounts or systems that genuinely require this compatibility access, if any: `Remove-ADGroupMember -Identity 'Pre-Windows 2000 Compatible Access' -Members '<principal>'`."
+            $finding.EstimatedEffort = 'Medium - removing Authenticated Users/Everyone from this legacy compatibility group; confirm no genuinely legacy (pre-Windows 2000 era) system still depends on it.'
+            $finding.KnownRisks = 'The group was created specifically for NT4/pre-Windows-2000 compatibility and grants read access to many user/group attributes to anyone in it; removing broad membership is safe in virtually all modern environments, but confirm no true legacy system remains.'
+            $finding.BackupRollback = 'Easy - re-add the removed principal if needed; effective on next Kerberos ticket refresh, no data loss.'
             $finding.Details = @{
                 DistinguishedName = $groupDN
                 BroadPrincipals   = $uniquePrincipals
@@ -350,6 +356,9 @@ function Test-ADDomainHardeningFlags {
                     $finding.Description = "An anonymous (unauthenticated) LDAP bind to RootDSE succeeded against $($vulnerableDCs.Count) of $($anonDomainControllers.Count) Domain Controller(s): $($vulnerableDCs -join ', ')."
                     $finding.Impact = "Anonymous LDAP binding is a null-session indicator: it lets unauthenticated clients enumerate directory-service metadata (naming contexts, supported capabilities, schema/config paths) without any credentials, aiding reconnaissance ahead of further attacks. Because this was observed on only some Domain Controllers, exposure is inconsistent across the environment rather than a single domain-wide setting - see PerDomainControllerResults for which DCs still refuse the bind."
                     $finding.Remediation = "Restrict anonymous LDAP operations via dSHeuristics (character 7) and/or the 'Network access: Let Everyone permissions apply to anonymous users' and related null-session security policy settings, ensuring the policy is applied consistently to every Domain Controller listed above, then re-test."
+                    $finding.EstimatedEffort = 'Medium - disabling anonymous LDAP bind requires confirming no legacy or third-party application relies on anonymous read access first.'
+                    $finding.KnownRisks = 'Some legacy or third-party applications (older Unix LDAP clients, network appliances) query AD anonymously for RootDSE/schema info or basic lookups and will break once anonymous bind is disabled.'
+                    $finding.BackupRollback = 'Easy - revert the dsHeuristics anonymous-bind bit (or equivalent registry/GPO setting) to its prior value; effective at next LDAP bind attempt, no data loss.'
                     $finding.Details = @{
                         DomainControllersTested     = $anonDomainControllers.Count
                         VulnerableDomainControllers = $vulnerableDCs
@@ -514,6 +523,9 @@ function Test-ADDomainHardeningFlags {
                     $finding.Description = "`RestrictNullSessAccess` ('Network access: Restrict anonymous access to Named Pipes and Shares') is disabled ($source).$listSummary"
                     $finding.Impact = "With this restriction disabled, an unauthenticated (null-session) client can access the named pipes and shares listed in `NullSessionPipes`/`NullSessionShares` without any credentials - the SMB/named-pipe equivalent of the anonymous LDAP bind exposure above, aiding reconnaissance (e.g. share/pipe enumeration, IPC`$ access) and, depending on which pipes/shares are exposed, further attacks."
                     $finding.Remediation = "Set 'Network access: Restrict anonymous access to Named Pipes and Shares' (`RestrictNullSessAccess`) to Enabled (value 1) via a GPO enforced on Domain Controllers (and ideally all member servers), and review the `NullSessionPipes`/`NullSessionShares` allow-lists to remove any entries not genuinely required for legacy compatibility."
+                    $finding.EstimatedEffort = 'Medium - restricting NullSessionPipes/NullSessionShares across every DC; confirm no legacy trust relationship or very old third-party tool relies on anonymous IPC$/named-pipe access.'
+                    $finding.KnownRisks = 'Removing null-session access can break very old applications or trust setups that rely on anonymous IPC$ or named-pipe access, though this is rare in modern environments.'
+                    $finding.BackupRollback = 'Easy - restore the prior registry/GPO values; effective at next policy refresh/service restart.'
                     $detail.NullSessionPipes  = $nullSessionPipes
                     $detail.NullSessionShares = $nullSessionShares
                     $finding.Details = $detail

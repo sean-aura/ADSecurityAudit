@@ -105,6 +105,9 @@ function Test-ADReplicationSecurity {
                     $finding.Description = "Non-standard principal '$identityReference' has DCSync replication rights on the domain."
                     $finding.Impact = "This principal can perform DCSync attacks to retrieve password hashes for any account, including KRBTGT and Domain Admins. Attackers can then create Golden Tickets for persistent, unrestricted domain access."
                     $finding.Remediation = "Remove replication rights immediately: `$acl = Get-Acl 'AD:\`$domainDN'; Find and remove the ACE for '$identityReference'; Set-Acl -Path 'AD:\`$domainDN' -AclObject `$acl"
+                    $finding.EstimatedEffort = 'Low - removing two specific extended-right ACEs (Replicating Directory Changes / Replicating Directory Changes All) from one object, a well-scoped ACE change.'
+                    $finding.KnownRisks = 'Legitimate DCSync-capable accounts are normally limited to Domain Controllers, Domain/Enterprise Admins, and directory-sync tools like Azure AD Connect; removing an unauthorized grant has no legitimate compatibility impact unless it turns out to be an undocumented, currently-in-use sync or identity-governance tool, so confirm no such tool depends on it.'
+                    $finding.BackupRollback = 'Moderate - export the domain object''s ACL before removing the specific extended-right ACEs so they can be restored if a legitimate sync tool is affected; changes follow normal AD replication.'
                     $finding.Details = @{
                         Identity = $identityReference
                         ObjectClass = $principalClass
@@ -142,6 +145,9 @@ function Test-ADReplicationSecurity {
                     $finding.Description = "Group '$groupName' has $($members.Count) member(s). These groups have powerful rights that could be leveraged for privilege escalation or data exfiltration."
                     $finding.Impact = "Members of this group may have rights that can be leveraged for privilege escalation or data exfiltration."
                     $finding.Remediation = "Review membership and remove unnecessary accounts. Members: $($members -join ', ')"
+                    $finding.EstimatedEffort = 'Medium - reviewing each member of the operations group (e.g. Backup/Server/Account/Print Operators) for actual ongoing need, rather than a single mechanical change.'
+                    $finding.KnownRisks = 'Removing a member who still has a legitimate operational need for the group''s rights will break their ability to perform that work until re-added, so confirm with each member or their manager first.'
+                    $finding.BackupRollback = 'Easy - re-add any member whose need is confirmed; effective on next Kerberos ticket refresh, no data loss.'
                     $finding.Details = @{
                         GroupDN = $group.DistinguishedName
                         Members = $members
@@ -261,6 +267,9 @@ function Test-ADReplicationSecurity {
                 $finding.Description = "Non-standard principal '$identityReference' has DCSync replication rights on the domain."
                 $finding.Impact = "This principal can perform DCSync attacks to retrieve password hashes for any account, including KRBTGT and Domain Admins. Attackers can then create Golden Tickets for persistent, unrestricted domain access."
                 $finding.Remediation = "Remove replication rights immediately: `$acl = Get-Acl 'AD:\$domainDN'; Find and remove the ACE for '$identityReference'; Set-Acl -Path 'AD:\$domainDN' -AclObject `$acl"
+                $finding.EstimatedEffort = 'Low - removing two specific extended-right ACEs (Replicating Directory Changes / Replicating Directory Changes All) from one object, a well-scoped ACE change.'
+                $finding.KnownRisks = 'Legitimate DCSync-capable accounts are normally limited to Domain Controllers, Domain/Enterprise Admins, and directory-sync tools like Azure AD Connect; removing an unauthorized grant has no legitimate compatibility impact unless it turns out to be an undocumented, currently-in-use sync or identity-governance tool, so confirm no such tool depends on it.'
+                $finding.BackupRollback = 'Moderate - export the domain object''s ACL before removing the specific extended-right ACEs so they can be restored if a legitimate sync tool is affected; changes follow normal AD replication.'
                 $finding.Details = @{
                     Identity = $identityReference
                     ObjectClass = $principalClass
@@ -306,6 +315,9 @@ function Test-ADReplicationSecurity {
                         $finding.Description = "Group '$groupName' has $($members.Count) member(s). These groups have powerful rights that could be leveraged for privilege escalation or data exfiltration."
                         $finding.Impact = "Members of this group may have rights that can be leveraged for privilege escalation or data exfiltration."
                         $finding.Remediation = "Review membership and remove unnecessary accounts. Members: $($members.SamAccountName -join ', ')"
+                        $finding.EstimatedEffort = 'Medium - reviewing each member of the operations group (e.g. Backup/Server/Account/Print Operators) for actual ongoing need, rather than a single mechanical change.'
+                        $finding.KnownRisks = 'Removing a member who still has a legitimate operational need for the group''s rights will break their ability to perform that work until re-added, so confirm with each member or their manager first.'
+                        $finding.BackupRollback = 'Easy - re-add any member whose need is confirmed; effective on next Kerberos ticket refresh, no data loss.'
                         $finding.Details = @{
                             GroupDN = $group.DistinguishedName
                             Members = ($members | Select-Object Name, SamAccountName, DistinguishedName)

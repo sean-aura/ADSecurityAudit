@@ -454,6 +454,9 @@ function Test-ADKnownDCVulnerabilities {
         $finding.Description = "$($zeroLogonDCs.Count) Domain Controller(s) show no patch/build evidence on or after the $($info.Cve) (ZeroLogon) fix date of $($info.FixDate.ToString('yyyy-MM-dd')): $($zeroLogonDCs -join ', ')."
         $finding.Impact = $info.Description
         $finding.Remediation = "Install the $($info.FixNote) Verify with `Get-HotFix -ComputerName <DC>` and enforce Netlogon secure-channel signing/sealing (`FullSecureChannelProtection`) once all DCs and trusts are updated."
+        $finding.EstimatedEffort = 'High - requires coordinated cumulative/security-update patching across every DC in the domain in the same maintenance window; a Critical, unauthenticated, actively-weaponized flaw is not something to patch piecemeal.'
+        $finding.KnownRisks = 'Minimal regression risk from this specific 2020 fix; there is no legitimate functionality reliant on the vulnerable Netlogon behavior it closes.'
+        $finding.BackupRollback = 'Moderate - the update can technically be uninstalled via WSUS/DISM if it causes a regression, but doing so re-opens a Critical vulnerability with public exploit tooling, so treat this as a one-way step in practice.'
         $finding.Details = @{
             Cve                       = $info.Cve
             FixDate                   = $info.FixDate.ToString('yyyy-MM-dd')
@@ -481,6 +484,9 @@ function Test-ADKnownDCVulnerabilities {
         $finding.Description = "$($ms17010DCs.Count) Domain Controller(s) show no patch/build evidence on or after the $($info.Cve) fix date of $($info.FixDate.ToString('yyyy-MM-dd')): $($ms17010DCs -join ', ')."
         $finding.Impact = $info.Description
         $finding.Remediation = "Install the $($info.FixNote) If SMBv1 is not required, also disable it entirely (`Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol`)."
+        $finding.EstimatedEffort = 'High - requires coordinated patching across every DC in the same maintenance window.'
+        $finding.KnownRisks = 'No legitimate functionality relies on the vulnerable SMBv1 code path this fixes; the only realistic risk is from unrelated compatibility issues in the broader cumulative update, which standard patch-testing practice covers.'
+        $finding.BackupRollback = 'Moderate - the update can technically be uninstalled, but doing so reopens EternalBlue, a vulnerability class historically responsible for mass-scale ransomware outbreaks (WannaCry/NotPetya) - do not roll back except as a genuine emergency measure with compensating network controls in place.'
         $finding.Details = @{
             Cve                       = $info.Cve
             FixDate                   = $info.FixDate.ToString('yyyy-MM-dd')
@@ -508,6 +514,9 @@ function Test-ADKnownDCVulnerabilities {
         $finding.Description = "$($ms14068DCs.Count) Domain Controller(s) show no patch/build evidence on or after the $($info.Cve) (MS14-068) fix date of $($info.FixDate.ToString('yyyy-MM-dd')): $($ms14068DCs -join ', ')."
         $finding.Impact = $info.Description
         $finding.Remediation = "Install the $($info.FixNote) This is a long-superseded out-of-band fix; any DC still missing it should also be checked for currency against all subsequent cumulative updates."
+        $finding.EstimatedEffort = 'High - requires coordinated patching across every DC in the same maintenance window.'
+        $finding.KnownRisks = 'No legitimate functionality relies on the unpatched Kerberos PAC validation behavior; this is a decade-old out-of-band fix with essentially universal applicability by now.'
+        $finding.BackupRollback = 'Moderate - the update can technically be uninstalled, but doing so reopens a well-documented forged-PAC Domain Admin escalation path.'
         $finding.Details = @{
             Cve                       = $info.Cve
             FixDate                   = $info.FixDate.ToString('yyyy-MM-dd')
@@ -535,6 +544,10 @@ function Test-ADKnownDCVulnerabilities {
         $finding.Description = "$($printNightmareDCs.Count) Domain Controller(s) are running the Print Spooler service AND show no patch/build evidence on or after the $($info.Cve) (PrintNightmare) fix date of $($info.FixDate.ToString('yyyy-MM-dd')): $($printNightmareDCs -join ', ')."
         $finding.Impact = $info.Description
         $finding.Remediation = "Install the $($info.FixNote) As defense-in-depth regardless of patch level, disable and stop the Spooler service on all Domain Controllers unless print serving from a DC is an explicit, documented requirement."
+        $finding.EstimatedEffort = 'Medium - the patch itself needs the same coordinated maintenance-window rollout as other DC cumulative updates, but the faster practical fix (stopping the Print Spooler service on DCs) is a single-service change per DC.'
+        $finding.KnownRisks = 'Applying the patch carries no legitimate compatibility risk; disabling Spooler as the faster interim fix removes DC print/driver-install capability, which is essentially never a legitimate DC function.'
+        $finding.BackupRollback = 'Easy for the Spooler-disable route (service restarts immediately); Moderate for the cumulative-update route (same considerations as other DC patches).'
+        $finding.OperationalNotes = 'This finding overlaps with the separate "Print Spooler Running on Domain Controller" finding - disabling the service is the faster of the two available fixes if patching must wait.'
         $finding.Details = @{
             Cve                       = $info.Cve
             FixDate                   = $info.FixDate.ToString('yyyy-MM-dd')
@@ -562,6 +575,9 @@ function Test-ADKnownDCVulnerabilities {
         $finding.Description = "$($netlogon2026DCs.Count) Domain Controller(s) show no patch/build evidence on or after the $($info.Cve) fix date of $($info.FixDate.ToString('yyyy-MM-dd')): $($netlogon2026DCs -join ', ')."
         $finding.Impact = $info.Description
         $finding.Remediation = "Install the $($info.FixNote) Treat as emergency-patch priority given active in-the-wild exploitation reported since late May / early June 2026 - verify with `Get-HotFix -ComputerName <DC>` and confirm against the current MSRC Update Guide entry for $($info.Cve) before considering a DC remediated."
+        $finding.EstimatedEffort = 'High - requires coordinated patching across every DC in the same maintenance window; multiple vendors explicitly warn that a partially-patched DC fleet is an indefensible state given active in-the-wild exploitation.'
+        $finding.KnownRisks = 'No legitimate functionality relies on the vulnerable Netlogon packet-handling code path; the risk of leaving any single DC unpatched is that it remains a viable, unauthenticated, actively-exploited entry point to the rest of the domain.'
+        $finding.BackupRollback = 'Moderate - the update can technically be uninstalled if it causes a regression, but doing so reopens an actively-exploited, unauthenticated remote-code-execution vulnerability on a domain controller.'
         $finding.Details = @{
             Cve                       = $info.Cve
             FixDate                   = $info.FixDate.ToString('yyyy-MM-dd')
@@ -603,6 +619,10 @@ function Test-ADKnownDCVulnerabilities {
         $finding.Description = "$($server2025DCs.Count) Domain Controller(s) are running Windows Server 2025 (build >= $($Script:KnownVulnServer2025Build)), which introduces delegated Managed Service Accounts (dMSA): $($server2025DCs -join ', '). Patch-level (UBR) breakdown for CVE-2025-53779: $($badSuccessorPatchedDCs.Count) patched (UBR >= $($Script:KnownVulnBadSuccessorPatchedUBR))$(if ($badSuccessorPatchedDCs.Count -gt 0) { ": $($badSuccessorPatchedDCs -join ', ')" }); $($badSuccessorUnpatchedDCs.Count) unpatched$(if ($badSuccessorUnpatchedDCs.Count -gt 0) { ": $($badSuccessorUnpatchedDCs -join ', ')" }); $($badSuccessorUnknownDCs.Count) unknown patch level (UBR unreadable)$(if ($badSuccessorUnknownDCs.Count -gt 0) { ": $($badSuccessorUnknownDCs -join ', ')"})."
         $finding.Impact = "The dMSA feature ('BadSuccessor') originally let any principal with CreateChild/msDS-DelegatedManagedServiceAccount rights over an OU create a dMSA and link it one-sidedly to an existing account to inherit that account's effective privileges and Kerberos keys - abusable against any account, including Tier-0. Microsoft's August 2025 fix (CVE-2025-53779, build 26100.4946+) made the KDC require a mutual (two-sided) link before honoring the relationship, closing that direct path on DCs confirmed patched above, but does not restrict who can create a dMSA or write its link attributes - independent research has shown a controlled dMSA can still be paired with a target the attacker also controls to extract that target's credentials, even on a fully patched DC. Any DC reported above as unpatched or unknown patch level remains exposed to the original one-sided-link escalation as well."
         $finding.Remediation = "Ensure all Server 2025 DCs are updated to at least the August 2025 cumulative update (KB5063878, build 26100.4946) or later, which addresses CVE-2025-53779 - prioritize any DC listed above as unpatched or unknown patch level (an unreadable UBR should be treated as unpatched until confirmed otherwise, e.g. remote registry access was denied). Independently of patch level, audit and restrict who holds CreateChild/msDS-DelegatedManagedServiceAccount and generic-write rights on OUs and on dMSA objects themselves, especially anywhere at or above Tier-0; monitor for unexpected dMSA creation and changes to the migration-link attributes; consult current Microsoft/vendor guidance before treating any specific configuration as fully mitigated."
+        $finding.EstimatedEffort = 'High - requires both patching every affected Server 2025 DC to the fixed build and, independently of patch level, an OU/dMSA-object permissions review across the environment (per Microsoft/Akamai guidance, the patch alone doesn''t restrict who can create or link a dMSA).'
+        $finding.KnownRisks = 'Independent Akamai research confirmed that even on a fully patched DC, a dMSA an attacker controls can still be paired with a target account the attacker also controls to extract that target''s credentials, so patching alone does not fully close the exposure - the permissions review is a genuine, separate, needed step, not padding.'
+        $finding.BackupRollback = 'Easy - the patch itself is a normal cumulative update with standard rollback options; the permissions tightening (restricting CreateChild/msDS-DelegatedManagedServiceAccount rights) can be reverted by re-granting the prior delegation if needed.'
+        $finding.OperationalNotes = 'Enable auditing on dMSA creation and migration-link attribute changes (both the dMSA''s link and the superseded account''s link), per Akamai''s own detection guidance, since the technique remains relevant even after patching.'
         $finding.Details = @{
             AffectedDomainControllers          = @($server2025DCs)
             Server2025BuildThreshold           = $Script:KnownVulnServer2025Build

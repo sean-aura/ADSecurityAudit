@@ -98,12 +98,29 @@ class ADSecurityFinding {
     [string]$AnssiControl     # ANSSI-style control id, e.g. 'vuln1_krbtgt_age'
     [int]$Weight              # Risk-score contribution (default 0)
 
+    # --- Additive enrichment fields (introduced in v1.24.0) ---
+    # Change-management-ready guidance appended per the process in
+    # Finding-Enrichment-Prompt.md. These are OPTIONAL and set directly in
+    # each check (src/*.ps1) immediately after Description/Impact/
+    # Remediation, the same way those three fields already work - no
+    # separate lookup table or tagging pass to cross-reference. Existing
+    # consumers that ignore them are unaffected. Per the contract: finding
+    # fields are additive only.
+    [string]$EstimatedEffort  # Low/Medium/High + one-sentence reason
+    [string]$KnownRisks       # 1-2 sentences on plausible compatibility/technical risk
+    [string]$BackupRollback   # Easy/Moderate/Hard-Limited + one-sentence undo summary
+    [string]$OperationalNotes # Optional; omitted when there's nothing additive to say
+
     ADSecurityFinding() {
         $this.DetectedDate = Get-Date
         $this.Details = @{}
         $this.MitreTechnique = ''
         $this.AnssiControl = ''
         $this.Weight = 0
+        $this.EstimatedEffort = ''
+        $this.KnownRisks = ''
+        $this.BackupRollback = ''
+        $this.OperationalNotes = ''
     }
 }
 
@@ -381,6 +398,43 @@ function Resolve-ADSecurityAuditTargetServer {
         [string]$Server
     )
 
+    # IDEMPOTENCY GUARD (fixes a real, confirmed regression): ten check
+    # functions (AdminSDAudits, DomainAdminEquivalence, DomainHardening-
+    # Audits, GpoAudits, GroupAudits, KerberosHardeningAudits,
+    # PermissionsAudits, PrivilegedUsers, RodcSecurityAudits, UserAudits)
+    # each independently call
+    # `Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)`
+    # so they're self-sufficient when invoked standalone, outside Main.ps1's
+    # pipeline. But when invoked FROM Main.ps1, $Server here is not the
+    # operator's raw input - it's $effectiveServer, the ALREADY-RESOLVED
+    # value this same function produced moments earlier (e.g. a domain's
+    # PDC Emulator FQDN, resolved from "no -Server given" or a domain
+    # name). That resolved FQDN is, by definition, itself a valid DC
+    # identity - so re-running full resolution against it made
+    # Get-ADDomainController -Identity succeed and misclassified it as
+    # "the operator explicitly named this one DC", flipping
+    # $Script:ADSecurityAuditServerIsExplicitDC from false to true even
+    # though no -Server was ever given at the top level. Since that flag
+    # is script-scoped (not reset between checks), this also silently
+    # corrupted every LATER check in the same run that reads the flag
+    # without calling Resolve again itself (e.g. AuditPolicyAudits.ps1) -
+    # explaining reports of audit-policy-style checks narrowing to a
+    # single DC even on a plain, no-argument run.
+    #
+    # Once $Server already matches the currently active override (i.e.
+    # this exact value already went through resolution earlier THIS
+    # session - always true for the ten call sites above when running
+    # under Main.ps1), there is nothing new to resolve: return it
+    # unchanged and leave the explicit-DC flag exactly as it already is,
+    # rather than re-deriving (and potentially corrupting) it. This does
+    # not change standalone-invocation behavior at all - the first call
+    # in a session (or a call with a genuinely different $Server) still
+    # runs the full resolution logic below.
+    if ($Server -and $Server -eq (Get-ADSecurityAuditActiveServerOverride)) {
+        Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$Server' already matches the active override for this session; returning it unchanged without re-deriving the explicit-DC scope flag."
+        return $Server
+    }
+
     $requested = $null
     if ($Server) {
         $requested = $Server
@@ -409,8 +463,62 @@ function Resolve-ADSecurityAuditTargetServer {
     try {
         $specificDC = Get-ADDomainController -Identity $requested -ErrorAction Stop
         if ($specificDC) {
-            Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$requested' is itself a specific Domain Controller; using it directly rather than substituting the domain's PDC Emulator for it."
             $Script:ADSecurityAuditServerIsExplicitDC = $true
+
+            # Determine BEFORE logging whether this explicitly-named DC
+            # happens to also be the domain's PDC Emulator, so the verbose
+            # message (and the run-scope note below) can say so either way
+            # instead of always phrasing this as "avoided substituting the
+            # PDC" - which reads as if the PDC was somehow at risk of being
+            # used, even on the (common) occasion the operator's explicit
+            # DC IS the PDC. $requested is asked about its OWN domain here
+            # (Get-ADDomain -Server $requested) - always reachable, since
+            # $requested is the one DC we already know this run can talk
+            # to - so this adds no new reachability dependency beyond what
+            # -Server already requires.
+            $pdcEmulator = $null
+            $pdcLookupFailed = $false
+            try {
+                $pdcEmulator = (Get-ADDomain -Server $requested -ErrorAction Stop).PDCEmulator
+            }
+            catch {
+                $pdcLookupFailed = $true
+                Write-Verbose "Resolve-ADSecurityAuditTargetServer: could not determine whether '$requested' is the domain's PDC Emulator: $_"
+            }
+
+            $isPdc = $pdcEmulator -and $specificDC.HostName -and
+                $pdcEmulator.ToString().ToLowerInvariant() -eq $specificDC.HostName.ToString().ToLowerInvariant()
+
+            if ($isPdc) {
+                Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$requested' is itself a specific Domain Controller (and happens to be the domain's PDC Emulator); using it directly. NOTE: because -Server named a specific DC rather than a domain name, every per-DC check in this run is scoped to ONLY '$requested' - other Domain Controllers in the domain will NOT be evaluated (see Get-ADSecurityAuditDomainController)."
+            }
+            elseif ($pdcLookupFailed) {
+                Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$requested' is itself a specific Domain Controller; using it directly rather than substituting the domain's PDC Emulator for it (could not confirm whether it is also the PDC Emulator - see prior warning). NOTE: because -Server named a specific DC rather than a domain name, every per-DC check in this run is scoped to ONLY '$requested' - other Domain Controllers in the domain will NOT be evaluated."
+            }
+            else {
+                Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$requested' is itself a specific Domain Controller (NOT the domain's PDC Emulator, which is '$pdcEmulator'); using it directly rather than substituting the PDC Emulator for it. NOTE: because -Server named a specific DC rather than a domain name, every per-DC check in this run is scoped to ONLY '$requested' - other Domain Controllers in the domain will NOT be evaluated."
+            }
+
+            # Surface a run-scope note whenever -Server names one explicit,
+            # specific DC, since this narrows every per-DC probe in the
+            # module (Get-ADSecurityAuditDomainController) to ONLY that DC
+            # for the rest of the run - a real coverage gap the report
+            # reader should know about regardless of whether the named DC
+            # happens to also be the PDC. The wording differs because the
+            # PDC-only-check implication (Test-ADMachineAccountQuota,
+            # Test-ADDomainSecurity - see their own docs) only applies when
+            # the named DC is NOT the PDC; when it IS the PDC, those
+            # specific checks are unaffected and the note says so.
+            if ($isPdc) {
+                Add-ADRunScopeNote -Category 'PDC Scope' -Message "This run was scoped to a single, explicitly-named Domain Controller ('$($specificDC.HostName)'), which also happens to be the domain's PDC Emulator. This module's 'PDC-only' checks (e.g. Machine Account Quota, password policy, domain/forest functional level, tombstone lifetime) are unaffected by this. However, every OTHER per-DC check (e.g. audit policy, LDAP signing/channel binding, Kerberos hardening, legacy-auth surface, RODC posture) was scoped to this one DC only and did NOT evaluate any other Domain Controller in the domain - if the environment has other DCs with different configuration or patch levels, this run will not have surfaced that."
+            }
+            elseif (-not $pdcLookupFailed) {
+                Add-ADRunScopeNote -Category 'PDC Scope' -Message "This run was scoped to Domain Controller '$($specificDC.HostName)', which is NOT the domain's PDC Emulator ('$pdcEmulator'). This module's 'PDC-only' checks (e.g. Machine Account Quota, password policy, domain/forest functional level, tombstone lifetime) read a single domain/forest-wide attribute and queried '$($specificDC.HostName)' directly rather than the PDC - the value should be identical to the PDC's own barring replication lag, but confirm '$($specificDC.HostName)' is fully replicated if these findings are load-bearing for this engagement. Every other per-DC check was also scoped to this one DC only and did NOT evaluate any other Domain Controller in the domain."
+            }
+            else {
+                Add-ADRunScopeNote -Category 'PDC Scope' -Message "This run was scoped to a single, explicitly-named Domain Controller ('$($specificDC.HostName)'). Whether this is also the domain's PDC Emulator could not be confirmed (see Verbose log), so this module's 'PDC-only' checks (e.g. Machine Account Quota, password policy, domain/forest functional level, tombstone lifetime) may have queried a non-PDC DC. Every per-DC check was scoped to this one DC only and did NOT evaluate any other Domain Controller in the domain."
+            }
+
             return $requested
         }
     }
@@ -432,7 +540,7 @@ function Resolve-ADSecurityAuditTargetServer {
     try {
         $pdcEmulator = (Get-ADDomain -Server $requested -ErrorAction Stop).PDCEmulator
         if ($pdcEmulator) {
-            Write-Verbose "Resolve-ADSecurityAuditTargetServer: resolved '$requested' to its PDC Emulator '$pdcEmulator' - every AD query for the rest of this run/call will target this DC specifically."
+            Write-Verbose "Resolve-ADSecurityAuditTargetServer: resolved '$requested' to its PDC Emulator '$pdcEmulator' - this DC is the default/domain-wide query target for the rest of this run/call (e.g. single-attribute 'PDC-only' checks). This is NOT a single-DC scope: per-DC checks (audit policy, Kerberos hardening, RODC posture, etc.) still enumerate and evaluate EVERY Domain Controller in the domain, exactly as when -Server is omitted entirely."
             return $pdcEmulator
         }
     }
@@ -777,14 +885,46 @@ function Get-ADSecurityAuditDomainController {
         syntax Get-ADDomainController itself does (e.g. a RODC-only
         filter), while still getting correct domain scoping (or, when
         -Server is an explicit specific DC, correct single-DC scoping).
+    .PARAMETER IgnoreExplicitDCScope
+        When set, ALWAYS enumerates every DC belonging to the resolved
+        target domain, even if -Server is itself an explicit, specific DC
+        that would otherwise narrow the result to just that one DC.
+
+        Added for callers that need the domain's TRUE total DC inventory
+        for a purpose OTHER than deciding which DCs to probe/query live -
+        e.g. the "Insufficient Domain Controller Count" redundancy finding
+        (Test-ADStaleObjectDepth), and the primaryGroupID=516 legitimacy
+        check in that same function (a real DC's computer object is only
+        recognized as legitimately holding primaryGroupID 516 if its DN
+        appears in the enumerated DC set - narrowing that set to one
+        explicitly-named DC would misclassify every OTHER real DC in the
+        domain as suspicious). Both are properties of the DOMAIN, not of
+        which DC(s) the operator happened to scope live probing to, so
+        narrowing them to match -Server's probe-scoping intent would
+        produce an actively wrong answer (an under-count, or a false-
+        positive "rogue DC-like object" finding) rather than a merely
+        incomplete one.
+
+        $Server is still used as the QUERY TARGET when this switch is
+        set (the one DC we ask has to be reachable - typically the same
+        explicitly-named DC that's reachable for everything else in this
+        run) - only the RESULT-SET NARROWING is bypassed. This is safe:
+        Get-ADDomainController's -Filter search reads the forest-wide
+        Configuration container, which every DC (including the one
+        explicitly named) replicates in full, so asking dc07 "list every
+        DC in this domain" returns a complete, accurate answer even
+        though dc07 itself is the only DC this run has been told to
+        contact.
     .OUTPUTS
         Array of Get-ADDomainController result objects: every DC belonging
-        to the resolved target domain (the normal case), or exactly the
-        one DC named by -Server when it is an explicit specific DC (empty
-        if that DC doesn't match a non-default -Filter). Throws if the
-        Get-ADDomain call, or resolving an explicit -Server to its DC,
-        fails - mirroring the -ErrorAction Stop every existing call site
-        already used on its own bare Get-ADDomainController call.
+        to the resolved target domain (the normal case, or always when
+        -IgnoreExplicitDCScope is set), or exactly the one DC named by
+        -Server when it is an explicit specific DC and
+        -IgnoreExplicitDCScope is NOT set (empty if that DC doesn't match
+        a non-default -Filter). Throws if the Get-ADDomain call, or
+        resolving an explicit -Server to its DC, fails - mirroring the
+        -ErrorAction Stop every existing call site already used on its own
+        bare Get-ADDomainController call.
     #>
     [CmdletBinding()]
     param(
@@ -792,14 +932,17 @@ function Get-ADSecurityAuditDomainController {
         [string]$Server,
 
         [Parameter()]
-        $Filter = '*'
+        $Filter = '*',
+
+        [Parameter()]
+        [switch]$IgnoreExplicitDCScope
     )
 
     $domainParams = @{ ErrorAction = 'Stop' }
     if ($Server) { $domainParams['Server'] = $Server }
     $targetDomainDNSRoot = (Get-ADDomain @domainParams).DNSRoot
 
-    if ($Server -and (Get-ADSecurityAuditServerIsExplicitDC)) {
+    if ($Server -and (Get-ADSecurityAuditServerIsExplicitDC) -and -not $IgnoreExplicitDCScope) {
         Write-Verbose "Get-ADSecurityAuditDomainController: '$Server' is an explicit, specific Domain Controller (not a domain name); scoping to ONLY this DC instead of enumerating every DC in '$targetDomainDNSRoot'."
         try {
             $singleDC = Get-ADDomainController -Identity $Server -ErrorAction Stop
@@ -847,9 +990,39 @@ function Get-ADTargetDomainController {
     <#
     .SYNOPSIS
         Resolves one Domain Controller for a live network probe (e.g. an
-        anonymous-bind check, a zone-transfer SOA query), honoring the
-        Set-ADSecurityAuditTargetServer -Server override when active
-        instead of unconditionally calling -Discover.
+        anonymous-bind check, a zone-transfer SOA query, an AD-integrated
+        DNS zone read), honoring the Set-ADSecurityAuditTargetServer
+        -Server override when active instead of unconditionally calling
+        -Discover.
+    .DESCRIPTION
+        These callers only ever talk to ONE DC (the underlying operation -
+        a single LDAP bind, a single DNS query - has no per-DC variation to
+        probe, unlike the true per-DC probes that use
+        Get-ADSecurityAuditDomainController's full enumeration instead).
+        Per the module's "PDC-only" convention for exactly this kind of
+        single-server, domain-wide-state check: when the target is a
+        DOMAIN (an explicit domain name, or the default), this resolves
+        to that domain's actual PDC Emulator specifically - not an
+        arbitrary DC picked by enumeration order, which
+        Get-ADDomainController's -Filter does not guarantee to be
+        deterministic or PDC-first. When the target is instead an
+        explicit, specific DC the operator named, that DC is honored
+        exactly as given (never substituted for the PDC), per
+        Resolve-ADSecurityAuditTargetServer's own established principle:
+        an operator who names one specific DC has often done so because
+        it's the only one reachable for this engagement, and redirecting
+        elsewhere would defeat the purpose of naming it.
+
+        FIXED (reported): previously took the first entry
+        (Get-ADSecurityAuditDomainController -Server $overrideServer)[0]
+        of the enumerated DC list without regard to which DC that
+        actually was - functionally fine for these checks (any DC in the
+        domain has consistent AD-integrated DNS/LDAP state), but
+        inconsistent with the "PDC-only checks use the PDC of the domain
+        in scope" convention documented and followed elsewhere in this
+        module (e.g. Test-ADMachineAccountQuota, Test-ADDomainSecurity),
+        and non-deterministic across runs/domains since enumeration order
+        is not guaranteed to put the PDC first.
     .OUTPUTS
         A Get-ADDomainController result object (has .HostName, etc.), or
         $null if resolution failed.
@@ -861,26 +1034,45 @@ function Get-ADTargetDomainController {
 
     try {
         if ($overrideServer) {
-            # $overrideServer is very often a DOMAIN FQDN (e.g.
-            # "domainb.corp.com") - this module's own -Server documentation
-            # explicitly encourages that form for "target a domain other
-            # than your own". Get-ADDomainController's -Identity parameter
-            # requires an actual DC identity (GUID/Name/IPv4Address/DNS
-            # HostName of the DC itself, not the domain) - passing a bare
-            # domain FQDN to -Identity previously failed every time with
-            # "Cannot find directory server with identity: <domain FQDN>",
-            # silently skipping every live probe that depends on this
-            # function whenever an operator used the documented, common
-            # form of -Server. Resolve via Get-ADSecurityAuditDomainController
-            # instead - it correctly enumerates the DCs that actually belong
-            # to whichever domain $overrideServer resolves to (whether given
-            # as a domain name or a specific DC name), and this just takes
-            # the first one.
-            $dcs = @(Get-ADSecurityAuditDomainController -Server $overrideServer)
-            if ($dcs.Count -gt 0) {
-                return $dcs[0]
+            if (Get-ADSecurityAuditServerIsExplicitDC) {
+                # Operator named this exact DC - honor it as given, same
+                # principle as Resolve-ADSecurityAuditTargetServer itself.
+                # Get-ADSecurityAuditDomainController with the explicit-DC
+                # scope active returns exactly this one DC.
+                $dcs = @(Get-ADSecurityAuditDomainController -Server $overrideServer)
+                if ($dcs.Count -gt 0) {
+                    return $dcs[0]
+                }
+                throw "No Domain Controllers found for '$overrideServer'."
             }
-            throw "No Domain Controllers found for '$overrideServer'."
+
+            # $overrideServer is a domain name (or the $env:USERDNSDOMAIN
+            # default) resolved down to a DC purely as an implementation
+            # detail - for a single-server, domain-wide-state check like
+            # this one, prefer that domain's actual PDC Emulator
+            # specifically, not an arbitrary member of the enumerated set.
+            try {
+                $pdcEmulator = (Get-ADDomain -Server $overrideServer -ErrorAction Stop).PDCEmulator
+            }
+            catch {
+                $pdcEmulator = $null
+                Write-Verbose "Get-ADTargetDomainController: could not resolve the PDC Emulator for '$overrideServer' ($_); falling back to the first enumerated DC."
+            }
+
+            $dcs = @(Get-ADSecurityAuditDomainController -Server $overrideServer)
+            if ($dcs.Count -eq 0) {
+                throw "No Domain Controllers found for '$overrideServer'."
+            }
+
+            if ($pdcEmulator) {
+                $pdcMatch = $dcs | Where-Object { $_.HostName -eq $pdcEmulator } | Select-Object -First 1
+                if ($pdcMatch) {
+                    return $pdcMatch
+                }
+                Write-Verbose "Get-ADTargetDomainController: resolved PDC Emulator '$pdcEmulator' was not present in the enumerated DC set for '$overrideServer'; falling back to the first enumerated DC."
+            }
+
+            return $dcs[0]
         }
         else {
             return (Get-ADDomainController -Discover -ErrorAction Stop)
@@ -1345,6 +1537,79 @@ function Get-ADOfflineSkipNotes {
     [CmdletBinding()]
     param()
     return @($Script:ADOfflineSkipNotes)
+}
+
+# --- Run-scope notes: "this check ran, but against a narrower/different
+# target than its normal assumption" ---
+#
+# Distinct from the offline-skip-notes above (which are about -Snapshot
+# mode specifically: a sub-check didn't run at all, or ran live anyway).
+# This is for LIVE-mode (or snapshot-COLLECTION-time) scoping conditions
+# that don't stop a check from running, and don't change what it queries
+# incorrectly - but are still worth surfacing, because the reader might
+# reasonably assume something different happened. The first (and so far
+# only) case: a "PDC-only" check (Test-ADMachineAccountQuota,
+# Test-ADDomainSecurity - see their own docs for why they're PDC-only)
+# queried an explicitly-named Domain Controller that is NOT the domain's
+# actual PDC Emulator, because the operator named that specific DC via
+# -Server. The check still ran and still returned a real answer - domain-
+# wide attributes are readable from any DC - but a reader who assumes
+# "PDC-only checks always hit the PDC" should be told that didn't happen
+# this run, in case replication lag to that specific DC is a live concern
+# for their engagement.
+#
+# Reset once per Start-ADSecurityAudit run (both live and -FromSnapshot)
+# and once per Get-ADSnapshot collection pass, so notes never leak between
+# runs/collections in the same PowerShell session. A snapshot collection's
+# notes are additionally persisted into the snapshot itself
+# (Snapshot.RunScopeNotes) so a later -FromSnapshot analysis can still
+# surface a scoping condition that was true at COLLECTION time, even
+# though no live resolution happens during the analysis itself.
+$Script:ADRunScopeNotes = [System.Collections.ArrayList]::new()
+
+function Reset-ADRunScopeNotes {
+    <#
+    .SYNOPSIS
+        Clears the run-scope-note list. Called once at the start of every
+        Start-ADSecurityAudit run and every Get-ADSnapshot collection pass.
+    #>
+    [CmdletBinding()]
+    param()
+    $Script:ADRunScopeNotes = [System.Collections.ArrayList]::new()
+}
+
+function Add-ADRunScopeNote {
+    <#
+    .SYNOPSIS
+        Records one run-scope note for the HTML report's "Run Scope
+        Information" section.
+    .PARAMETER Category
+        Short label grouping the note (e.g. 'PDC Scope').
+    .PARAMETER Message
+        Full, reader-facing explanation - shown verbatim in the report.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Category,
+
+        [Parameter(Mandatory)]
+        [string]$Message
+    )
+    [void]$Script:ADRunScopeNotes.Add([PSCustomObject]@{
+        Category = $Category
+        Message  = $Message
+    })
+}
+
+function Get-ADRunScopeNotes {
+    <#
+    .SYNOPSIS
+        Returns the run-scope notes recorded so far in this run/collection.
+    #>
+    [CmdletBinding()]
+    param()
+    return @($Script:ADRunScopeNotes)
 }
 
 function ConvertTo-ADFlatFindingsArray {

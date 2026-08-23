@@ -43,6 +43,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'DangerousPermissions'     = 'Test-ADDangerousPermissions'
     'CertificateServices'      = 'Test-ADCertificateServices'
     'ADCSExtended'             = 'Test-ADCSExtended'
+    'ADCSChaseFallback'        = 'Test-ADCSChaseFallback'
     'KRBTGTAccount'            = 'Test-KRBTGTAccount'
     'DomainTrusts'             = 'Test-ADDomainTrusts'
     'LAPSDeployment'           = 'Test-LAPSDeployment'
@@ -192,13 +193,39 @@ function Get-ADSnapshot {
     # defaults to the current user's own domain ($env:USERDNSDOMAIN)
     # instead of the ambiguous default serverless bind. Cleared before
     # every exit point below (including the early return just after this).
-    $effectiveServer = Resolve-ADSecurityAuditTargetServer -Server $Server
+    # Reset run-scope notes (e.g. a "PDC-only" check running against an
+    # explicitly-named non-PDC DC - see Common.ps1) before resolving
+    # -Server below, which is what can add one.
+    Reset-ADRunScopeNotes
+
+    # Tracked BEFORE this call touches anything, so cleanup at every exit
+    # point below only removes an override THIS call installed - not one
+    # a caller already had active (e.g. this collection pass running
+    # nested inside another already-scoped run). Mirrors the
+    # $__adAuditServerAlreadyActive pattern used by the Test-AD* checks in
+    # AdminSDAudits.ps1/DomainAdminEquivalence.ps1/etc.
+    $__snapshotServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+
+    $effectiveServer = if ($__snapshotServerAlreadyActive) {
+        # An override is already active for this session (e.g. this
+        # collection pass is running inside a Start-ADSecurityAudit run
+        # that already resolved and installed one) - reuse it directly.
+        # Re-running Resolve-ADSecurityAuditTargetServer against an
+        # already-resolved value (a domain's PDC Emulator FQDN) would
+        # misclassify it as an operator-named explicit DC and corrupt the
+        # shared explicit-DC scope flag other checks in the same run rely
+        # on - see Resolve-ADSecurityAuditTargetServer's own idempotency
+        # guard for the full explanation. This was a real, confirmed bug.
+        Get-ADSecurityAuditActiveServerOverride
+    }
+    else {
+        Resolve-ADSecurityAuditTargetServer -Server $Server
+    }
     if ($effectiveServer) {
         $serverSource = if ($Server) { 'explicit -Server' } else { "your own domain, `$env:USERDNSDOMAIN" }
         Write-Verbose "Get-ADSnapshot: all AD queries in this collection pass will explicitly target '$effectiveServer' ($serverSource)."
         Set-ADSecurityAuditTargetServer -Server $effectiveServer
     }
-
     # Auto-create the -ToJson output directory up front, the same way
     # Start-ADSecurityAudit now handles -ExportPath, so a bad/missing path
     # fails fast (or just works) instead of surfacing only at the very end
@@ -212,7 +239,7 @@ function Get-ADSnapshot {
             }
             catch {
                 Write-Error "Get-ADSnapshot: could not create -ToJson output directory '$toJsonDir': $_"
-                if ($effectiveServer) { Clear-ADSecurityAuditTargetServer }
+                if ($effectiveServer -and -not $__snapshotServerAlreadyActive) { Clear-ADSecurityAuditTargetServer }
                 return
             }
         }
@@ -243,6 +270,8 @@ function Get-ADSnapshot {
         CollectedDate     = (Get-Date)
         Domain            = $null
         DomainControllers = @()
+        TotalDomainControllerCount = $null
+        AllDomainControllerComputerObjectDNs = @()
         Users             = @()
         Computers         = @()
         Groups            = @()
@@ -252,6 +281,7 @@ function Get-ADSnapshot {
         DnsZones          = @()
         Trusts            = @()
         MachineAccountQuota = $null
+        RunScopeNotes     = @()
         DsHeuristics        = $null
         DsHeuristicsDN      = $null
         PreWin2000GroupDN   = $null
@@ -313,6 +343,36 @@ function Get-ADSnapshot {
     }
     catch {
         Write-Warning "Get-ADSnapshot: failed to collect domain controllers: $_"
+    }
+
+    # --- True, unscoped domain-wide DC inventory (independent of -Server
+    # narrowing) - for Test-ADStaleObjectDepth's "Insufficient Domain
+    # Controller Count" redundancy check and its primaryGroupID=516
+    # legitimacy check. ---
+    #
+    # snapshot.DomainControllers above is deliberately -Server-scoped (it
+    # feeds live-probe-style consumers that should stay scoped to whichever
+    # DC(s) this run was told to touch). But a DC-count redundancy
+    # assessment and "which computer objects are legitimately DCs" are
+    # properties of the DOMAIN, not of -Server scoping - baking a
+    # -Server-narrowed count/DN-list into the snapshot would silently
+    # undercount the domain's real DC total (or misclassify a real DC as
+    # suspicious) for every future -FromSnapshot analysis of this file,
+    # with no way to correct it after the fact. -IgnoreExplicitDCScope
+    # still uses $effectiveServer as the query target (so this works even
+    # when only one DC was reachable at collection time) but always
+    # returns every DC belonging to the resolved domain.
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting true (unscoped) domain-wide DC count/inventory..."
+        $rawAllDCs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope (snapshot, true count)' -Query {
+            Get-ADSecurityAuditDomainController -Server $effectiveServer -IgnoreExplicitDCScope
+        })
+        $snapshot.TotalDomainControllerCount = @($rawAllDCs).Count
+        $snapshot.AllDomainControllerComputerObjectDNs = @($rawAllDCs | ForEach-Object { $_.ComputerObjectDN } | Where-Object { $_ })
+        Write-Verbose "Get-ADSnapshot: true domain-wide DC count is $($snapshot.TotalDomainControllerCount)."
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect the true (unscoped) domain-wide DC inventory; Test-ADStaleObjectDepth's DC-count/legitimacy checks will fall back to the possibly -Server-scoped DomainControllers list for this snapshot: $_"
     }
 
     # --- Machine Account Quota (ms-DS-MachineAccountQuota on domain root) ---
@@ -725,6 +785,15 @@ function Get-ADSnapshot {
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
         $aclTargets['CertificateTemplatesContainer'] = "CN=Certificate Templates,$pkiContainer"
 
+        # --- Forest-level coverage backlog: Schema/Configuration NC head ACLs ---
+        # Two more fixed ACL targets, for Test-ADDangerousPermissions's new
+        # Schema/Configuration naming-context ACL checks. $configContext is
+        # already resolved above; schemaNamingContext needs its own RootDSE
+        # read (same helper already used for the LAPS check).
+        $schemaContext = Get-ADRootDSEValue -Property schemaNamingContext -Server $effectiveServer
+        $aclTargets['SchemaNamingContext'] = $schemaContext
+        $aclTargets['ConfigurationNamingContext'] = $configContext
+
         # --- v1.19.0 offline-parity backlog, step 21 ---
         # Three more fixed ACL targets, added for Test-ADDangerousPermissions's
         # critical-OU sweep. Same loop, same flattening - just more dictionary
@@ -807,6 +876,27 @@ function Get-ADSnapshot {
     }
     catch {
         Write-Warning "Get-ADSnapshot: failed to collect forest functional level: $_"
+    }
+
+    # --- Forest-level coverage backlog: tombstone lifetime ---
+    # Single scalar read off the Directory Service object in the
+    # Configuration NC, for Test-ADDomainSecurity's new Short Tombstone
+    # Lifetime check. An unset tombstoneLifetime attribute means the
+    # effective value is 60 days (per [MS-ADTS] 6.1.1.2.4.1.1), not "no
+    # value to report" - so $null is coerced to 60 here, at collection
+    # time, rather than leaving that interpretation to every consumer.
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting forest tombstone lifetime..."
+        $configContextForTombstone = if ($configContext) { $configContext } else { Get-ADRootDSEValue -Property configurationNamingContext -Server $effectiveServer }
+        $dsObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject Directory Service tombstoneLifetime (snapshot)' -Query {
+            Get-ADObject -Identity "CN=Directory Service,CN=Windows NT,CN=Services,$configContextForTombstone" -Properties tombstoneLifetime -Server $effectiveServer -ErrorAction Stop
+        }
+        if ($dsObject) {
+            $snapshot.TombstoneLifetimeDays = if ($null -ne $dsObject.tombstoneLifetime) { [int]$dsObject.tombstoneLifetime } else { 60 }
+        }
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect forest tombstone lifetime: $_"
     }
 
     try {
@@ -1074,6 +1164,13 @@ function Get-ADSnapshot {
 
     Write-Progress -Activity "Collecting AD Snapshot" -Completed
 
+    # Persist any run-scope notes recorded during THIS collection pass
+    # (e.g. -Server named an explicit, non-PDC DC) into the snapshot
+    # itself, so a later -FromSnapshot analysis - which performs no live
+    # resolution of its own - can still surface a scoping condition that
+    # was true at collection time.
+    $snapshot.RunScopeNotes = @(Get-ADRunScopeNotes)
+
     if ($ToJson) {
         try {
             Write-Verbose "Get-ADSnapshot: serialising snapshot to JSON (this can take a while on domains with many users/computers)..."
@@ -1088,7 +1185,7 @@ function Get-ADSnapshot {
     }
 
     Write-Verbose "Get-ADSnapshot: collection pass complete."
-    if ($effectiveServer) { Clear-ADSecurityAuditTargetServer }
+    if ($effectiveServer -and -not $__snapshotServerAlreadyActive) { Clear-ADSecurityAuditTargetServer }
     return $snapshot
 }
 
@@ -1251,6 +1348,10 @@ function Invoke-ADRuleSet {
                     $finding.Description = $result.Description
                     $finding.Impact = $result.Impact
                     $finding.Remediation = $result.Remediation
+                    $finding.EstimatedEffort = $result.EstimatedEffort
+                    $finding.KnownRisks = $result.KnownRisks
+                    $finding.BackupRollback = $result.BackupRollback
+                    $finding.OperationalNotes = $result.OperationalNotes
                     $finding.Details = if ($result.Details) { $result.Details } else { @{} }
                     $allFindings += $finding
                 }

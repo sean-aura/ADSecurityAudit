@@ -3,13 +3,16 @@
 function Test-ADDangerousPermissions {
     <#
     .SYNOPSIS
-        Audits Enterprise Key Admins scoping and dangerous rights on
-        critical OUs (Domain Controllers, Users, Computers).
+        Audits Enterprise Key Admins scoping, dangerous rights on critical
+        OUs (Domain Controllers, Users, Computers), and non-standard
+        permissions on the Schema/Configuration naming context head objects.
     .PARAMETER Snapshot
         Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
         reads Snapshot.ACLs.DomainRoot/.DomainControllersOU/.UsersContainer/
-        .ComputersContainer and Snapshot.Groups instead of live queries -
-        no live AD access is performed. Added in v1.19.0.
+        .ComputersContainer/.SchemaNamingContext/.ConfigurationNamingContext
+        and Snapshot.Groups instead of live queries - no live AD access is
+        performed. Added in v1.19.0; Schema/Configuration NC coverage added
+        in v1.23.6.
     #>
     [CmdletBinding()]
     param(
@@ -64,6 +67,9 @@ function Test-ADDangerousPermissions {
                             $finding.AffectedObject = 'Enterprise Key Admins - Domain Naming Context'
                             $finding.Description = "Enterprise Key Admins group has excessive permissions '$($ace.ActiveDirectoryRights)' on the Domain Naming Context. This is a known misconfiguration bug where EKA was granted full access instead of just ReadProperty/WriteProperty for msDS-KeyCredentialLink."
                             $finding.Impact = "This misconfiguration can unintentionally grant DCSync permissions, allowing members of Enterprise Key Admins to extract password hashes for all domain accounts. Attackers can exploit this for full domain compromise."
+                            $finding.EstimatedEffort = 'Medium - re-scoping the ACE may need to be applied wherever the broader-than-intended grant was introduced (often domain- or forest-wide from a schema-update-era bug), not just one object.'
+                            $finding.KnownRisks = 'Key Admins/Enterprise Key Admins is intended to have no members by default, so re-scoping this ACE has no legitimate compatibility risk for typical environments; it only matters if the group unexpectedly has real members.'
+                            $finding.BackupRollback = 'Moderate - export the current ACL before re-scoping so it can be restored if needed; changes follow normal AD replication.'
                             $finding.Remediation = @"
 Remove the over-privileged ACE and grant only the required permissions:
 1. Remove the current ACE: Use ADSIEdit or dsacls.exe to remove the ACE for Enterprise Key Admins
@@ -93,6 +99,9 @@ Remove the over-privileged ACE and grant only the required permissions:
                             $finding.Description = "Enterprise Key Admins has WriteProperty rights that are not scoped to the msDS-KeyCredentialLink attribute only."
                             $finding.Impact = "Excessive property write permissions may allow unintended modifications to domain objects beyond the intended key credential management scope."
                             $finding.Remediation = "Scope Enterprise Key Admins permissions specifically to msDS-KeyCredentialLink attribute (GUID: $keyCredentialLinkGuid) only."
+                            $finding.EstimatedEffort = 'Medium - restricting the existing GenericWrite-style ACE to just the msDS-KeyCredentialLink attribute via an object-specific ACE.'
+                            $finding.KnownRisks = 'No legitimate compatibility risk for typical environments, since the group is intended to have no members; only affects any unexpected actual members.'
+                            $finding.BackupRollback = 'Moderate - export the current ACL before re-scoping so it can be restored if needed.'
                             $finding.Details = @{
                                 GroupDN = $ekaGroup.DistinguishedName
                                 DomainDN = $Snapshot.ACLs['DomainRoot'].DistinguishedName
@@ -148,11 +157,96 @@ Remove the over-privileged ACE and grant only the required permissions:
                     $finding.Description = "Principal '$($ace.IdentityReference)' has dangerous rights '$($ace.ActiveDirectoryRights)' on critical OU."
                     $finding.Impact = "Attackers who compromise this principal can create/modify objects in this OU, potentially adding rogue Domain Controllers or admin accounts."
                     $finding.Remediation = "Review and restrict permissions. Remove unnecessary rights using Active Directory Users and Computers > Advanced Security Settings."
+                    $finding.EstimatedEffort = 'Medium - a single-object ACE removal, but the OU''s inheritance means the change affects every object beneath it; confirm the trustee isn''t a legitimate delegated-admin or provisioning account for that OU first.'
+                    $finding.KnownRisks = 'Procedural - confirm the trustee isn''t a legitimate delegated administrator or provisioning automation for the OU before removing; no realistic legitimate technical break otherwise.'
+                    $finding.BackupRollback = 'Moderate - export the OU''s ACL (dsacls or Get-Acl) before changing it so the exact ACE can be restored if a legitimate delegation breaks.'
                     $finding.Details = @{
                         OU = $ouAcl.DistinguishedName
                         Identity = $ace.IdentityReference
                         ActiveDirectoryRights = $ace.ActiveDirectoryRights
                         AccessControlType = $ace.AccessControlType
+                    }
+                    $findings += $finding
+                }
+            }
+        }
+
+        # --- Forest-level coverage backlog: Schema/Configuration NC head ACLs ---
+        # Same allowlist-based approach as Test-AdminSDHolder's ACL check:
+        # any non-inherited ACE from outside the acceptable trustee list,
+        # granting a dangerous right, is a finding. Each target checked
+        # independently via ContainsKey so an older snapshot (collected
+        # before this coverage was added) simply skips both, same pattern
+        # as the critical-OU sweep above.
+        $ncAclTargets = @{
+            'SchemaNamingContext'        = @{
+                Issue = 'Non-Standard Permissions on Schema Naming Context'
+                AcceptableTrustees = @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
+                AcceptableGroupSuffixes = @('Domain Admins', 'Enterprise Admins', 'Schema Admins')
+            }
+            'ConfigurationNamingContext' = @{
+                Issue = 'Non-Standard Permissions on Configuration Naming Context'
+                AcceptableTrustees = @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
+                AcceptableGroupSuffixes = @('Domain Admins', 'Enterprise Admins')
+            }
+        }
+        foreach ($ncKey in $ncAclTargets.Keys) {
+            if (-not ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey($ncKey))) {
+                Write-Verbose "Test-ADDangerousPermissions: snapshot has no ACLs.$ncKey entry; skipping that target."
+                continue
+            }
+            $ncConfig = $ncAclTargets[$ncKey]
+            $ncAcl = $Snapshot.ACLs[$ncKey]
+
+            foreach ($ace in @($ncAcl.Access)) {
+                if ($ace.IsInherited) { continue }
+
+                $identityReference = $ace.IdentityReference
+                $isAcceptable = ($identityReference -in $ncConfig.AcceptableTrustees) -or
+                    ($identityReference -match 'S-1-5-32-544')
+                foreach ($suffix in $ncConfig.AcceptableGroupSuffixes) {
+                    if ($identityReference -match [regex]::Escape($suffix)) { $isAcceptable = $true; break }
+                }
+                if ($isAcceptable) { continue }
+
+                $dangerousRights = @('GenericAll', 'WriteDacl', 'WriteOwner', 'GenericWrite', 'WriteProperty')
+                $hasDangerousRight = $false
+                foreach ($right in $dangerousRights) {
+                    if ($ace.ActiveDirectoryRights -match $right) {
+                        $hasDangerousRight = $true
+                        break
+                    }
+                }
+
+                if ($hasDangerousRight) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Permissions'
+                    $finding.Issue = $ncConfig.Issue
+                    $finding.Severity = 'Critical'
+                    $finding.SeverityLevel = 4
+                    $finding.AffectedObject = "$identityReference on $($ncAcl.DistinguishedName)"
+                    $finding.Description = "A principal outside the expected administrative trustees ('$identityReference') holds '$($ace.ActiveDirectoryRights)' rights on $($ncAcl.DistinguishedName)."
+                    if ($ncKey -eq 'SchemaNamingContext') {
+                        $finding.Impact = "A principal able to write to the schema partition can alter object class and attribute definitions forest-wide, including the defaultSecurityDescriptor applied to newly created objects of a class - a documented forest-wide persistence and privilege-escalation vector. Schema changes replicate to every DC in the forest and cannot be cleanly reversed (attributes/classes can be marked defunct but not deleted)."
+                        $finding.Remediation = "Remove the non-standard ACE from the Schema naming context head object; restrict schema write access to Schema Admins only, and keep that group empty outside planned schema-extension windows."
+                        $finding.EstimatedEffort = 'Medium - a single-object ACE removal, but it touches a forest-wide replicated object, so it warrants confirming with the account/system owner whether the grant was a forgotten leftover or an active dependency before removing, plus a short post-change monitoring window.'
+                        $finding.KnownRisks = 'Removing the ACE could break a legitimate, still-in-use schema-extension process (for example, an Exchange, SCCM, or other product''s setup/install account retained for future schema updates) if the trustee turns out to be intentional automation rather than a leftover misconfiguration.'
+                        $finding.BackupRollback = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+                    }
+                    else {
+                        $finding.Impact = "The Configuration NC replicates to every DC in the forest and holds the Sites/Subnets topology, the Services container (including Public Key Services, and Exchange configuration where present), Extended-Rights definitions, and the forest's WellKnown Security Principals. A principal with write/GenericAll-equivalent rights on the head object can, depending on inheritance, create or modify objects anywhere below it - a broader and more varied blast radius than the Public Key Services container alone already covered by this tool's AD CS checks."
+                        $finding.Remediation = "Review and remove the non-standard ACE from the Configuration naming context head object; restrict write access to Enterprise Admins/Domain Admins only, and treat any change to this object as forest-wide until proven otherwise."
+                        $finding.EstimatedEffort = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+                        $finding.KnownRisks = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+                        $finding.BackupRollback = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+                        $finding.OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
+                    }
+                    $finding.Details = @{
+                        Identity = $identityReference
+                        ActiveDirectoryRights = $ace.ActiveDirectoryRights
+                        AccessControlType = $ace.AccessControlType
+                        ObjectType = $ace.ObjectType
+                        DistinguishedName = $ncAcl.DistinguishedName
                     }
                     $findings += $finding
                 }
@@ -235,6 +329,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                             $finding.AffectedObject = 'Enterprise Key Admins - Domain Naming Context'
                             $finding.Description = "Enterprise Key Admins group has excessive permissions '$($ace.ActiveDirectoryRights)' on the Domain Naming Context. This is a known misconfiguration bug where EKA was granted full access instead of just ReadProperty/WriteProperty for msDS-KeyCredentialLink."
                             $finding.Impact = "This misconfiguration can unintentionally grant DCSync permissions, allowing members of Enterprise Key Admins to extract password hashes for all domain accounts. Attackers can exploit this for full domain compromise."
+                            $finding.EstimatedEffort = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+                            $finding.KnownRisks = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+                            $finding.BackupRollback = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+                            $finding.OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
                             $finding.Remediation = @"
 Remove the over-privileged ACE and grant only the required permissions:
 1. Remove the current ACE: Use ADSIEdit or dsacls.exe to remove the ACE for Enterprise Key Admins
@@ -268,6 +366,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                             $finding.Description = "Enterprise Key Admins has WriteProperty rights that are not scoped to the msDS-KeyCredentialLink attribute only."
                             $finding.Impact = "Excessive property write permissions may allow unintended modifications to domain objects beyond the intended key credential management scope."
                             $finding.Remediation = "Scope Enterprise Key Admins permissions specifically to msDS-KeyCredentialLink attribute (GUID: $keyCredentialLinkGuid) only."
+                            $finding.EstimatedEffort = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+                            $finding.KnownRisks = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+                            $finding.BackupRollback = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+                            $finding.OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
                             $finding.Details = @{
                                 GroupDN = $ekaGroup.DistinguishedName
                                 DomainDN = $domainDN
@@ -343,6 +445,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                         $finding.Description = "Principal '$($ace.IdentityReference)' has dangerous rights '$($ace.ActiveDirectoryRights)' on critical OU."
                         $finding.Impact = "Attackers who compromise this principal can create/modify objects in this OU, potentially adding rogue Domain Controllers or admin accounts."
                         $finding.Remediation = "Review and restrict permissions. Remove unnecessary rights using Active Directory Users and Computers > Advanced Security Settings."
+                        $finding.EstimatedEffort = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+                        $finding.KnownRisks = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+                        $finding.BackupRollback = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+                        $finding.OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
                         $finding.Details = @{
                             OU = $ouDN
                             Identity = $ace.IdentityReference
@@ -358,6 +464,109 @@ Remove the over-privileged ACE and grant only the required permissions:
             }
         }
         
+        # --- Forest-level coverage backlog: Schema/Configuration NC head ACLs ---
+        Write-Verbose "Checking Schema/Configuration naming context ACLs..."
+        try {
+            $schemaContext = if ($__adServer) { Get-ADRootDSEValue -Property schemaNamingContext -Server $__adServer } else { Get-ADRootDSEValue -Property schemaNamingContext }
+            $configurationContext = if ($__adServer) { Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer } else { Get-ADRootDSEValue -Property configurationNamingContext }
+
+            if (-not $schemaContext -or -not $configurationContext) {
+                Write-Verbose "Could not resolve schema/configuration naming context; skipping Schema/Configuration NC ACL checks."
+            }
+            else {
+            $ncAclLiveTargets = @{
+                $schemaContext        = @{
+                    Issue = 'Non-Standard Permissions on Schema Naming Context'
+                    AcceptableTrustees = @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
+                    AcceptableGroupSuffixes = @('Domain Admins', 'Enterprise Admins', 'Schema Admins')
+                }
+                $configurationContext = @{
+                    Issue = 'Non-Standard Permissions on Configuration Naming Context'
+                    AcceptableTrustees = @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
+                    AcceptableGroupSuffixes = @('Domain Admins', 'Enterprise Admins')
+                }
+            }
+
+            foreach ($ncDN in $ncAclLiveTargets.Keys) {
+                if (-not $ncDN) { continue }
+                $ncConfig = $ncAclLiveTargets[$ncDN]
+                try {
+                    $ncObject = if ($__adServer) {
+                        Get-ADObject -Identity $ncDN -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+                    }
+                    else {
+                        Get-ADObject -Identity $ncDN -Properties nTSecurityDescriptor -ErrorAction Stop
+                    }
+                }
+                catch {
+                    Write-Verbose "Could not get naming context '$ncDN': $_"
+                    continue
+                }
+
+                if (-not $ncObject) { continue }
+                $ncAcl = $ncObject.nTSecurityDescriptor
+
+                foreach ($ace in @($ncAcl.Access)) {
+                    if ($ace.IsInherited) { continue }
+
+                    $identityReference = "$($ace.IdentityReference)"
+                    $isAcceptable = ($identityReference -in $ncConfig.AcceptableTrustees) -or
+                        ($identityReference -match 'S-1-5-32-544')
+                    foreach ($suffix in $ncConfig.AcceptableGroupSuffixes) {
+                        if ($identityReference -match [regex]::Escape($suffix)) { $isAcceptable = $true; break }
+                    }
+                    if ($isAcceptable) { continue }
+
+                    $dangerousRights = @('GenericAll', 'WriteDacl', 'WriteOwner', 'GenericWrite', 'WriteProperty')
+                    $hasDangerousRight = $false
+                    foreach ($right in $dangerousRights) {
+                        if ($ace.ActiveDirectoryRights -match $right) {
+                            $hasDangerousRight = $true
+                            break
+                        }
+                    }
+
+                    if ($hasDangerousRight) {
+                        $finding = [ADSecurityFinding]::new()
+                        $finding.Category = 'Permissions'
+                        $finding.Issue = $ncConfig.Issue
+                        $finding.Severity = 'Critical'
+                        $finding.SeverityLevel = 4
+                        $finding.AffectedObject = "$identityReference on $ncDN"
+                        $finding.Description = "A principal outside the expected administrative trustees ('$identityReference') holds '$($ace.ActiveDirectoryRights)' rights on $ncDN."
+                        if ($ncDN -eq $schemaContext) {
+                            $finding.Impact = "A principal able to write to the schema partition can alter object class and attribute definitions forest-wide, including the defaultSecurityDescriptor applied to newly created objects of a class - a documented forest-wide persistence and privilege-escalation vector. Schema changes replicate to every DC in the forest and cannot be cleanly reversed (attributes/classes can be marked defunct but not deleted)."
+                            $finding.Remediation = "Remove the non-standard ACE from the Schema naming context head object; restrict schema write access to Schema Admins only, and keep that group empty outside planned schema-extension windows."
+                            $finding.EstimatedEffort = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+                            $finding.KnownRisks = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+                            $finding.BackupRollback = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+                            $finding.OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
+                        }
+                        else {
+                            $finding.Impact = "The Configuration NC replicates to every DC in the forest and holds the Sites/Subnets topology, the Services container (including Public Key Services, and Exchange configuration where present), Extended-Rights definitions, and the forest's WellKnown Security Principals. A principal with write/GenericAll-equivalent rights on the head object can, depending on inheritance, create or modify objects anywhere below it - a broader and more varied blast radius than the Public Key Services container alone already covered by this tool's AD CS checks."
+                            $finding.Remediation = "Review and remove the non-standard ACE from the Configuration naming context head object; restrict write access to Enterprise Admins/Domain Admins only, and treat any change to this object as forest-wide until proven otherwise."
+                            $finding.EstimatedEffort = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+                            $finding.KnownRisks = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+                            $finding.BackupRollback = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+                            $finding.OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
+                        }
+                        $finding.Details = @{
+                            Identity = $identityReference
+                            ActiveDirectoryRights = $ace.ActiveDirectoryRights
+                            AccessControlType = $ace.AccessControlType
+                            ObjectType = $ace.ObjectType
+                            DistinguishedName = $ncDN
+                        }
+                        $findings += $finding
+                    }
+                }
+            }
+            }
+        }
+        catch {
+            Write-Verbose "Could not check Schema/Configuration naming context ACLs: $_"
+        }
+
         Write-Verbose "Dangerous permissions audit complete. Found $($findings.Count) issues."
         return $findings
     }
