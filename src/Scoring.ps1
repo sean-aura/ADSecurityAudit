@@ -130,6 +130,15 @@ $Script:ADFindingMetadataMap = @{
     'Reversible Encryption Enabled Domain-Wide'            = @{ Mitre = 'T1003';     Anssi = 'vuln1_reversible_domain_wide';  Weight = 40 }
     'Outdated Domain Functional Level'                     = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_outdated_dfl';            Weight = 4  }
     'Outdated Forest Functional Level'                     = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_outdated_ffl';            Weight = 4  }
+    # Lower weight than the "Outdated" pair above (4): Windows2016 is fully
+    # supported and not itself insecure - this is an opportunity/roadmap
+    # item (Windows Server 2025 introduced the first new functional level
+    # since 2016), not a vulnerability, so it scores like the other Low-
+    # severity hygiene items (AD Recycle Bin Not Enabled, Short Tombstone
+    # Lifetime) rather than the security-relevant "actually deprecated"
+    # levels.
+    'Domain Functional Level Could Be Raised'              = @{ Mitre = '';          Anssi = 'vuln4_upgradable_dfl';          Weight = 1  }
+    'Forest Functional Level Could Be Raised'               = @{ Mitre = '';          Anssi = 'vuln4_upgradable_ffl';          Weight = 1  }
     'AD Recycle Bin Not Enabled'                           = @{ Mitre = 'T1485';     Anssi = 'vuln5_recycle_bin_disabled';    Weight = 1  }
     'Legacy Operating Systems in Domain'                   = @{ Mitre = 'T1210';     Anssi = 'vuln3_legacy_os';               Weight = 10 }
     'Stale AzureADSSOACC Kerberos Key'                     = @{ Mitre = 'T1558.002'; Anssi = 'vuln2_azuread_sso_key';         Weight = 20 }

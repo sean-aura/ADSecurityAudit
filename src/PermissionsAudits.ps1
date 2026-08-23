@@ -471,7 +471,7 @@ Remove the over-privileged ACE and grant only the required permissions:
             $configurationContext = if ($__adServer) { Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer } else { Get-ADRootDSEValue -Property configurationNamingContext }
 
             if (-not $schemaContext -or -not $configurationContext) {
-                Write-Verbose "Could not resolve schema/configuration naming context; skipping Schema/Configuration NC ACL checks."
+                Write-Warning "Test-ADDangerousPermissions: could not resolve schema/configuration naming context, so the Schema/Configuration NC ACL checks produced no finding either way (this is NOT the same as confirming they're compliant)."
             }
             else {
             $ncAclLiveTargets = @{
@@ -564,7 +564,14 @@ Remove the over-privileged ACE and grant only the required permissions:
             }
         }
         catch {
-            Write-Verbose "Could not check Schema/Configuration naming context ACLs: $_"
+            # FIXED (reported): this was Write-Verbose-only, so ANY failure
+            # anywhere in the Schema/Configuration NC ACL read (permissions,
+            # connectivity, an unexpected RootDSE/object shape) silently
+            # skipped BOTH targets with no visible indication anything went
+            # wrong - indistinguishable from "checked, and both are clean".
+            # Write-Warning makes a real failure visible by default instead
+            # of only appearing under -Verbose.
+            Write-Warning "Test-ADDangerousPermissions: could not check Schema/Configuration naming context ACLs, so neither check produced a finding either way (this is NOT the same as confirming they're compliant): $_"
         }
 
         Write-Verbose "Dangerous permissions audit complete. Found $($findings.Count) issues."

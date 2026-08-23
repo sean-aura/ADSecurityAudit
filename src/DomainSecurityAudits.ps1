@@ -106,6 +106,20 @@ function Test-ADDomainSecurity {
         $domainLevel = if ($Snapshot.Domain) { $Snapshot.Domain.DomainMode } else { $null }
         $forestLevel = if ($Snapshot.ContainsKey('Forest') -and $Snapshot.Forest) { $Snapshot.Forest.ForestMode } else { $null }
         $deprecatedLevels = @('Windows2000Domain', 'Windows2003Domain', 'Windows2008Domain', 'Windows2008R2Domain', 'Windows2012Domain')
+        # FIXED (reported): ForestMode values are suffixed "...Forest"
+        # (a completely different string set from DomainMode's "...Domain"
+        # suffix - see the matching comment in the live-mode branch below).
+        # The forest check below used to compare $forestLevel against
+        # $deprecatedLevels (all "...Domain" strings), which can never
+        # match any real ForestMode value.
+        $deprecatedForestLevels = @('Windows2000Forest', 'Windows2003Forest', 'Windows2008Forest', 'Windows2008R2Forest', 'Windows2012Forest')
+        # See the matching comment in the live-mode branch below for why
+        # Windows2016Domain/Forest get their own lower-severity finding
+        # instead of being added to the deprecated-levels lists above:
+        # Windows Server 2025 introduced the first new functional level
+        # since 2016.
+        $upgradableLevels = @('Windows2016Domain')
+        $upgradableForestLevels = @('Windows2016Forest')
 
         if ($domainLevel -and $domainLevel -in $deprecatedLevels) {
             $finding = [ADSecurityFinding]::new()
@@ -128,7 +142,7 @@ function Test-ADDomainSecurity {
             $findings += $finding
         }
 
-        if ($forestLevel -and $forestLevel -in $deprecatedLevels) {
+        if ($forestLevel -and $forestLevel -in $deprecatedForestLevels) {
             $finding = [ADSecurityFinding]::new()
             $finding.Category = 'Domain Security'
             $finding.Issue = 'Outdated Forest Functional Level'
@@ -145,6 +159,48 @@ function Test-ADDomainSecurity {
             $finding.Details = @{
                 CurrentLevel = $forestLevel
                 RecommendedLevel = 'Windows2016Forest or higher'
+            }
+            $findings += $finding
+        }
+
+        if ($domainLevel -and $domainLevel -in $upgradableLevels) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Security'
+            $finding.Issue = 'Domain Functional Level Could Be Raised'
+            $finding.Severity = 'Low'
+            $finding.SeverityLevel = 1
+            $finding.AffectedObject = 'Domain Functional Level'
+            $finding.Description = "Domain functional level is set to '$domainLevel' - still an acceptable, secure level. Windows Server 2025 introduced the first new domain functional level since Windows Server 2016 (Windows2025Domain), so this is now one full generation behind the current ceiling and could be raised."
+            $finding.Impact = "Windows2016Domain is still considered an acceptable, secure baseline on its own - this is NOT a vulnerability finding. However, each functional level raise since has added its own protections (for example, later levels tightened default Kerberos/authentication behavior and added newer optional security features), and staying at 2016 also means missing Windows Server 2025 domain-level features (e.g. the AD database 32k-page-size option) and means the domain cannot host a Windows Server 2025 domain controller at the higher functional level until raised. Treat this as a roadmap item to plan for, not something requiring urgent remediation."
+            $finding.Remediation = "If every DC in the domain is already running Windows Server 2025 (or you plan to before raising), raise the domain functional level: Set-ADDomainMode -DomainMode Windows2025Domain"
+            $finding.EstimatedEffort = 'High - every DC in the domain must already be running Windows Server 2025 before the raise succeeds, requiring a domain-wide OS upgrade/replacement project, not just a configuration change.'
+            $finding.KnownRisks = 'Low technical risk from the raise itself once every DC is eligible; the real cost is the DC OS upgrade project that has to happen first, not the functional-level change.'
+            $finding.BackupRollback = 'Hard/Limited - like other functional-level raises, this is designed as a one-way step once every DC has adopted it (per current Microsoft guidance a same-or-newer-generation rollback is possible under narrow conditions, but treat it as effectively permanent for planning purposes).'
+            $finding.Details = @{
+                CurrentLevel = $domainLevel
+                ForestLevel = $forestLevel
+                RecommendedLevel = 'Windows2025Domain (requires every DC in the domain to already be running Windows Server 2025)'
+            }
+            $findings += $finding
+        }
+
+        if ($forestLevel -and $forestLevel -in $upgradableForestLevels) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Security'
+            $finding.Issue = 'Forest Functional Level Could Be Raised'
+            $finding.Severity = 'Low'
+            $finding.SeverityLevel = 1
+            $finding.AffectedObject = 'Forest Functional Level'
+            $finding.Description = "Forest functional level is set to '$forestLevel' - still an acceptable, secure level. Windows Server 2025 introduced the first new forest functional level since Windows Server 2016 (Windows2025Forest), so this is now one full generation behind the current ceiling and could be raised."
+            $finding.Impact = "Windows2016Forest is still considered an acceptable, secure baseline on its own - this is NOT a vulnerability finding. However, each functional level raise since has added its own protections, and staying at 2016 also means missing Windows Server 2025 forest-level features and means no domain in the forest can be raised past Windows2016Domain until this is raised first. Treat this as a roadmap item to plan for, not something requiring urgent remediation."
+            $finding.Remediation = "If every DC in every domain of the forest is already running Windows Server 2025 (or you plan to before raising), raise the forest functional level after every domain's own functional level is at Windows2025Domain: Set-ADForestMode -ForestMode Windows2025Forest"
+            $finding.EstimatedEffort = 'High - every DC in every domain of the forest must already be running Windows Server 2025 before the raise will succeed, so this needs a forest-wide OS upgrade project and sign-off from every domain admin, not just the forest root.'
+            $finding.KnownRisks = 'Low technical risk to clients or applications from the raise itself; the real cost is the forest-wide DC OS upgrade project that has to happen first.'
+            $finding.BackupRollback = 'Hard/Limited - treat as effectively permanent for planning purposes, same as other forest functional level raises.'
+            $finding.OperationalNotes = 'Raising the forest functional level does not raise domain functional levels on its own unless every DC in every domain is already running Windows Server 2025 (in which case Microsoft raises all domain levels automatically); otherwise each domain must still be raised separately.'
+            $finding.Details = @{
+                CurrentLevel = $forestLevel
+                RecommendedLevel = 'Windows2025Forest (requires every DC in every domain of the forest to already be running Windows Server 2025)'
             }
             $findings += $finding
         }
@@ -330,7 +386,28 @@ function Test-ADDomainSecurity {
         $forestLevel = (Get-ADForest -Server $__adServer).ForestMode
         
         $deprecatedLevels = @('Windows2000Domain', 'Windows2003Domain', 'Windows2008Domain', 'Windows2008R2Domain', 'Windows2012Domain')
-        
+        # FIXED (reported): ForestMode values are suffixed "...Forest"
+        # (Windows2000Forest, Windows2003Forest, Windows2008Forest,
+        # Windows2008R2Forest, Windows2012Forest, Windows2016Forest,
+        # Windows2025Forest - per Get-ADForest/Set-ADForestMode's
+        # documented ADForestMode values), a COMPLETELY DIFFERENT set of
+        # strings from DomainMode's "...Domain" suffix. The forest check
+        # below was comparing $forestLevel against $deprecatedLevels (all
+        # "...Domain" strings), which can never match any real ForestMode
+        # value - so "Outdated Forest Functional Level" has never fired
+        # for any forest, deprecated or not, live or from snapshot, since
+        # this check was introduced. This is the actual reason forest-
+        # level functional-level findings appeared not to be firing at
+        # all.
+        $deprecatedForestLevels = @('Windows2000Forest', 'Windows2003Forest', 'Windows2008Forest', 'Windows2008R2Forest', 'Windows2012Forest')
+        # See the matching comment in the snapshot-mode branch above for
+        # why Windows2016Domain/Forest get their own lower-severity
+        # finding instead of being added to the deprecated-levels lists:
+        # Windows Server 2025 introduced the first new functional level
+        # since 2016.
+        $upgradableLevels = @('Windows2016Domain')
+        $upgradableForestLevels = @('Windows2016Forest')
+
         if ($domainLevel -in $deprecatedLevels) {
             $finding = [ADSecurityFinding]::new()
             $finding.Category = 'Domain Security'
@@ -352,7 +429,7 @@ function Test-ADDomainSecurity {
             $findings += $finding
         }
         
-        if ($forestLevel -in $deprecatedLevels) {
+        if ($forestLevel -in $deprecatedForestLevels) {
             $finding = [ADSecurityFinding]::new()
             $finding.Category = 'Domain Security'
             $finding.Issue = 'Outdated Forest Functional Level'
@@ -369,6 +446,48 @@ function Test-ADDomainSecurity {
             $finding.Details = @{
                 CurrentLevel = $forestLevel
                 RecommendedLevel = 'Windows2016Forest or higher'
+            }
+            $findings += $finding
+        }
+
+        if ($domainLevel -and $domainLevel -in $upgradableLevels) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Security'
+            $finding.Issue = 'Domain Functional Level Could Be Raised'
+            $finding.Severity = 'Low'
+            $finding.SeverityLevel = 1
+            $finding.AffectedObject = 'Domain Functional Level'
+            $finding.Description = "Domain functional level is set to '$domainLevel' - still an acceptable, secure level. Windows Server 2025 introduced the first new domain functional level since Windows Server 2016 (Windows2025Domain), so this is now one full generation behind the current ceiling and could be raised."
+            $finding.Impact = "Windows2016Domain is still considered an acceptable, secure baseline on its own - this is NOT a vulnerability finding. However, each functional level raise since has added its own protections (for example, later levels tightened default Kerberos/authentication behavior and added newer optional security features), and staying at 2016 also means missing Windows Server 2025 domain-level features (e.g. the AD database 32k-page-size option) and means the domain cannot host a Windows Server 2025 domain controller at the higher functional level until raised. Treat this as a roadmap item to plan for, not something requiring urgent remediation."
+            $finding.Remediation = "If every DC in the domain is already running Windows Server 2025 (or you plan to before raising), raise the domain functional level: Set-ADDomainMode -Identity $($domain.DNSRoot) -DomainMode Windows2025Domain"
+            $finding.EstimatedEffort = 'High - every DC in the domain must already be running Windows Server 2025 before the raise succeeds, requiring a domain-wide OS upgrade/replacement project, not just a configuration change.'
+            $finding.KnownRisks = 'Low technical risk from the raise itself once every DC is eligible; the real cost is the DC OS upgrade project that has to happen first, not the functional-level change.'
+            $finding.BackupRollback = 'Hard/Limited - like other functional-level raises, this is designed as a one-way step once every DC has adopted it (per current Microsoft guidance a same-or-newer-generation rollback is possible under narrow conditions, but treat it as effectively permanent for planning purposes).'
+            $finding.Details = @{
+                CurrentLevel = $domainLevel
+                ForestLevel = $forestLevel
+                RecommendedLevel = 'Windows2025Domain (requires every DC in the domain to already be running Windows Server 2025)'
+            }
+            $findings += $finding
+        }
+
+        if ($forestLevel -and $forestLevel -in $upgradableForestLevels) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Security'
+            $finding.Issue = 'Forest Functional Level Could Be Raised'
+            $finding.Severity = 'Low'
+            $finding.SeverityLevel = 1
+            $finding.AffectedObject = 'Forest Functional Level'
+            $finding.Description = "Forest functional level is set to '$forestLevel' - still an acceptable, secure level. Windows Server 2025 introduced the first new forest functional level since Windows Server 2016 (Windows2025Forest), so this is now one full generation behind the current ceiling and could be raised."
+            $finding.Impact = "Windows2016Forest is still considered an acceptable, secure baseline on its own - this is NOT a vulnerability finding. However, each functional level raise since has added its own protections, and staying at 2016 also means missing Windows Server 2025 forest-level features and means no domain in the forest can be raised past Windows2016Domain until this is raised first. Treat this as a roadmap item to plan for, not something requiring urgent remediation."
+            $finding.Remediation = "If every DC in every domain of the forest is already running Windows Server 2025 (or you plan to before raising), raise the forest functional level after every domain's own functional level is at Windows2025Domain: Set-ADForestMode -ForestMode Windows2025Forest"
+            $finding.EstimatedEffort = 'High - every DC in every domain of the forest must already be running Windows Server 2025 before the raise will succeed, so this needs a forest-wide OS upgrade project and sign-off from every domain admin, not just the forest root.'
+            $finding.KnownRisks = 'Low technical risk to clients or applications from the raise itself; the real cost is the forest-wide DC OS upgrade project that has to happen first.'
+            $finding.BackupRollback = 'Hard/Limited - treat as effectively permanent for planning purposes, same as other forest functional level raises.'
+            $finding.OperationalNotes = 'Raising the forest functional level does not raise domain functional levels on its own unless every DC in every domain is already running Windows Server 2025 (in which case Microsoft raises all domain levels automatically); otherwise each domain must still be raised separately.'
+            $finding.Details = @{
+                CurrentLevel = $forestLevel
+                RecommendedLevel = 'Windows2025Forest (requires every DC in every domain of the forest to already be running Windows Server 2025)'
             }
             $findings += $finding
         }
@@ -401,7 +520,14 @@ function Test-ADDomainSecurity {
             }
         }
         catch {
-            Write-Verbose "Failed to read forest tombstone lifetime: $_"
+            # FIXED (reported): this was Write-Verbose-only, so ANY failure
+            # reading the tombstone lifetime (permissions, connectivity,
+            # an unexpected RootDSE/object shape) silently produced zero
+            # findings for this check with no visible indication anything
+            # went wrong - indistinguishable from "checked, and it's fine".
+            # Write-Warning makes a real failure visible by default instead
+            # of only appearing under -Verbose.
+            Write-Warning "Test-ADDomainSecurity: could not read the forest tombstone lifetime, so this check produced no finding either way (this is NOT the same as confirming it's compliant): $_"
         }
         
         # Check for Recycle Bin (best practice)
