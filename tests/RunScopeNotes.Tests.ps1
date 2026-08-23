@@ -67,7 +67,7 @@ Describe 'Resolve-ADSecurityAuditTargetServer (PDC-scope run-scope note)' {
         $notes[0].Message | Should -Match 'PDC Emulator'
     }
 
-    It 'adds NO run-scope note when -Server names an explicit DC that IS the PDC Emulator' {
+    It 'STILL adds a run-scope note when -Server names an explicit DC that IS the PDC Emulator (reported gap: a single-DC scope is a coverage gap for every OTHER per-DC check regardless of whether the named DC happens to be the PDC)' {
         function Get-ADDomainController {
             param([string]$Identity, [switch]$ErrorAction)
             [PSCustomObject]@{ HostName = 'dc01.contoso.com'; Name = 'DC01' }
@@ -80,10 +80,15 @@ Describe 'Resolve-ADSecurityAuditTargetServer (PDC-scope run-scope note)' {
         $result = Resolve-ADSecurityAuditTargetServer -Server 'dc01.contoso.com'
 
         $result | Should -Be 'dc01.contoso.com'
-        Get-ADRunScopeNotes | Should -BeNullOrEmpty
+        $notes = @(Get-ADRunScopeNotes)
+        $notes.Count | Should -Be 1
+        $notes[0].Category | Should -Be 'PDC Scope'
+        $notes[0].Message | Should -Match 'dc01\.contoso\.com'
+        $notes[0].Message | Should -Match 'also happens to be the domain''s PDC Emulator'
+        $notes[0].Message | Should -Match 'other Domain Controller'
     }
 
-    It 'the PDC comparison is case-insensitive' {
+    It 'the PDC comparison is case-insensitive (still notes the single-DC scope, but with the "is the PDC" wording)' {
         function Get-ADDomainController {
             param([string]$Identity, [switch]$ErrorAction)
             [PSCustomObject]@{ HostName = 'DC01.CONTOSO.COM'; Name = 'DC01' }
@@ -94,7 +99,9 @@ Describe 'Resolve-ADSecurityAuditTargetServer (PDC-scope run-scope note)' {
         }
 
         Resolve-ADSecurityAuditTargetServer -Server 'DC01.CONTOSO.COM' | Out-Null
-        Get-ADRunScopeNotes | Should -BeNullOrEmpty
+        $notes = @(Get-ADRunScopeNotes)
+        $notes.Count | Should -Be 1
+        $notes[0].Message | Should -Match 'also happens to be the domain''s PDC Emulator'
     }
 
     It 'adds NO run-scope note (and does not throw) when -Server is a domain name, not an explicit DC' {
@@ -111,7 +118,7 @@ Describe 'Resolve-ADSecurityAuditTargetServer (PDC-scope run-scope note)' {
         Get-ADRunScopeNotes | Should -BeNullOrEmpty
     }
 
-    It 'does not throw and adds no note when the PDC lookup itself fails' {
+    It 'does not throw when the PDC lookup itself fails, and still notes the single-DC scope (with an "unconfirmed PDC status" wording)' {
         function Get-ADDomainController {
             param([string]$Identity, [switch]$ErrorAction)
             [PSCustomObject]@{ HostName = 'dc02.contoso.com'; Name = 'DC02' }
@@ -122,6 +129,9 @@ Describe 'Resolve-ADSecurityAuditTargetServer (PDC-scope run-scope note)' {
         }
 
         { Resolve-ADSecurityAuditTargetServer -Server 'dc02.contoso.com' } | Should -Not -Throw
-        Get-ADRunScopeNotes | Should -BeNullOrEmpty
+        $notes = @(Get-ADRunScopeNotes)
+        $notes.Count | Should -Be 1
+        $notes[0].Message | Should -Match 'dc02\.contoso\.com'
+        $notes[0].Message | Should -Match 'could not be confirmed'
     }
 }

@@ -222,7 +222,17 @@ function Start-ADSecurityAudit {
         # Start-ADSecurityAudit call in the same session.
         if ($effectiveServer) {
             $serverSource = if ($Server) { 'explicit -Server' } else { "your own domain, `$env:USERDNSDOMAIN" }
-            Write-Host "Server override: forcing all AD queries to target '$effectiveServer' ($serverSource)`n" -ForegroundColor Cyan
+            if (Get-ADSecurityAuditServerIsExplicitDC) {
+                # $Server named one specific DC (not a domain name) - every
+                # per-DC check in this run is narrowed to ONLY that DC, not
+                # just the default/domain-wide query target. Say so here,
+                # not just in -Verbose output, since this is a real
+                # coverage-scope decision worth surfacing by default.
+                Write-Host "Server override: '$effectiveServer' is an explicit, specific Domain Controller ($serverSource) - every AD query, including per-DC checks (audit policy, Kerberos hardening, RODC posture, etc.), is scoped to ONLY this DC for the rest of the run. Other Domain Controllers in the domain will not be evaluated.`n" -ForegroundColor Cyan
+            }
+            else {
+                Write-Host "Server override: '$effectiveServer' (the domain's PDC Emulator, resolved from $serverSource) is the default/domain-wide query target for this run. Per-DC checks still enumerate and evaluate EVERY Domain Controller in the domain.`n" -ForegroundColor Cyan
+            }
             Set-ADSecurityAuditTargetServer -Server $effectiveServer
         }
 

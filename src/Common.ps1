@@ -463,32 +463,60 @@ function Resolve-ADSecurityAuditTargetServer {
     try {
         $specificDC = Get-ADDomainController -Identity $requested -ErrorAction Stop
         if ($specificDC) {
-            Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$requested' is itself a specific Domain Controller; using it directly rather than substituting the domain's PDC Emulator for it."
             $Script:ADSecurityAuditServerIsExplicitDC = $true
 
-            # Surface a run-scope note when this explicitly-named DC is
-            # NOT the domain's actual PDC Emulator, since a few checks in
-            # this module (Test-ADMachineAccountQuota, Test-ADDomainSecurity
-            # - see their own docs) are deliberately "PDC-only": a single
-            # domain/forest-wide attribute read that assumes the PDC as
-            # its authoritative source. Those checks still run correctly
-            # against whatever DC is named here (the attribute is readable
-            # from any DC), but a reader shouldn't be left assuming "PDC-
-            # only" checks always literally hit the PDC when this run
-            # scoped them elsewhere. $requested is asked about its OWN
-            # domain here (Get-ADDomain -Server $requested) - always
-            # reachable, since $requested is the one DC we already know
-            # this run can talk to - so this adds no new reachability
-            # dependency beyond what -Server already requires.
+            # Determine BEFORE logging whether this explicitly-named DC
+            # happens to also be the domain's PDC Emulator, so the verbose
+            # message (and the run-scope note below) can say so either way
+            # instead of always phrasing this as "avoided substituting the
+            # PDC" - which reads as if the PDC was somehow at risk of being
+            # used, even on the (common) occasion the operator's explicit
+            # DC IS the PDC. $requested is asked about its OWN domain here
+            # (Get-ADDomain -Server $requested) - always reachable, since
+            # $requested is the one DC we already know this run can talk
+            # to - so this adds no new reachability dependency beyond what
+            # -Server already requires.
+            $pdcEmulator = $null
+            $pdcLookupFailed = $false
             try {
                 $pdcEmulator = (Get-ADDomain -Server $requested -ErrorAction Stop).PDCEmulator
-                if ($pdcEmulator -and $specificDC.HostName -and
-                    $pdcEmulator.ToString().ToLowerInvariant() -ne $specificDC.HostName.ToString().ToLowerInvariant()) {
-                    Add-ADRunScopeNote -Category 'PDC Scope' -Message "This run was scoped to Domain Controller '$($specificDC.HostName)', which is NOT the domain's PDC Emulator ('$pdcEmulator'). This module's 'PDC-only' checks (e.g. Machine Account Quota, password policy, domain/forest functional level, tombstone lifetime) read a single domain/forest-wide attribute and queried '$($specificDC.HostName)' directly rather than the PDC - the value should be identical to the PDC's own barring replication lag, but confirm '$($specificDC.HostName)' is fully replicated if these findings are load-bearing for this engagement."
-                }
             }
             catch {
-                Write-Verbose "Resolve-ADSecurityAuditTargetServer: could not determine whether '$requested' is the domain's PDC Emulator (for the run-scope note): $_"
+                $pdcLookupFailed = $true
+                Write-Verbose "Resolve-ADSecurityAuditTargetServer: could not determine whether '$requested' is the domain's PDC Emulator: $_"
+            }
+
+            $isPdc = $pdcEmulator -and $specificDC.HostName -and
+                $pdcEmulator.ToString().ToLowerInvariant() -eq $specificDC.HostName.ToString().ToLowerInvariant()
+
+            if ($isPdc) {
+                Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$requested' is itself a specific Domain Controller (and happens to be the domain's PDC Emulator); using it directly. NOTE: because -Server named a specific DC rather than a domain name, every per-DC check in this run is scoped to ONLY '$requested' - other Domain Controllers in the domain will NOT be evaluated (see Get-ADSecurityAuditDomainController)."
+            }
+            elseif ($pdcLookupFailed) {
+                Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$requested' is itself a specific Domain Controller; using it directly rather than substituting the domain's PDC Emulator for it (could not confirm whether it is also the PDC Emulator - see prior warning). NOTE: because -Server named a specific DC rather than a domain name, every per-DC check in this run is scoped to ONLY '$requested' - other Domain Controllers in the domain will NOT be evaluated."
+            }
+            else {
+                Write-Verbose "Resolve-ADSecurityAuditTargetServer: '$requested' is itself a specific Domain Controller (NOT the domain's PDC Emulator, which is '$pdcEmulator'); using it directly rather than substituting the PDC Emulator for it. NOTE: because -Server named a specific DC rather than a domain name, every per-DC check in this run is scoped to ONLY '$requested' - other Domain Controllers in the domain will NOT be evaluated."
+            }
+
+            # Surface a run-scope note whenever -Server names one explicit,
+            # specific DC, since this narrows every per-DC probe in the
+            # module (Get-ADSecurityAuditDomainController) to ONLY that DC
+            # for the rest of the run - a real coverage gap the report
+            # reader should know about regardless of whether the named DC
+            # happens to also be the PDC. The wording differs because the
+            # PDC-only-check implication (Test-ADMachineAccountQuota,
+            # Test-ADDomainSecurity - see their own docs) only applies when
+            # the named DC is NOT the PDC; when it IS the PDC, those
+            # specific checks are unaffected and the note says so.
+            if ($isPdc) {
+                Add-ADRunScopeNote -Category 'PDC Scope' -Message "This run was scoped to a single, explicitly-named Domain Controller ('$($specificDC.HostName)'), which also happens to be the domain's PDC Emulator. This module's 'PDC-only' checks (e.g. Machine Account Quota, password policy, domain/forest functional level, tombstone lifetime) are unaffected by this. However, every OTHER per-DC check (e.g. audit policy, LDAP signing/channel binding, Kerberos hardening, legacy-auth surface, RODC posture) was scoped to this one DC only and did NOT evaluate any other Domain Controller in the domain - if the environment has other DCs with different configuration or patch levels, this run will not have surfaced that."
+            }
+            elseif (-not $pdcLookupFailed) {
+                Add-ADRunScopeNote -Category 'PDC Scope' -Message "This run was scoped to Domain Controller '$($specificDC.HostName)', which is NOT the domain's PDC Emulator ('$pdcEmulator'). This module's 'PDC-only' checks (e.g. Machine Account Quota, password policy, domain/forest functional level, tombstone lifetime) read a single domain/forest-wide attribute and queried '$($specificDC.HostName)' directly rather than the PDC - the value should be identical to the PDC's own barring replication lag, but confirm '$($specificDC.HostName)' is fully replicated if these findings are load-bearing for this engagement. Every other per-DC check was also scoped to this one DC only and did NOT evaluate any other Domain Controller in the domain."
+            }
+            else {
+                Add-ADRunScopeNote -Category 'PDC Scope' -Message "This run was scoped to a single, explicitly-named Domain Controller ('$($specificDC.HostName)'). Whether this is also the domain's PDC Emulator could not be confirmed (see Verbose log), so this module's 'PDC-only' checks (e.g. Machine Account Quota, password policy, domain/forest functional level, tombstone lifetime) may have queried a non-PDC DC. Every per-DC check was scoped to this one DC only and did NOT evaluate any other Domain Controller in the domain."
             }
 
             return $requested
@@ -512,7 +540,7 @@ function Resolve-ADSecurityAuditTargetServer {
     try {
         $pdcEmulator = (Get-ADDomain -Server $requested -ErrorAction Stop).PDCEmulator
         if ($pdcEmulator) {
-            Write-Verbose "Resolve-ADSecurityAuditTargetServer: resolved '$requested' to its PDC Emulator '$pdcEmulator' - every AD query for the rest of this run/call will target this DC specifically."
+            Write-Verbose "Resolve-ADSecurityAuditTargetServer: resolved '$requested' to its PDC Emulator '$pdcEmulator' - this DC is the default/domain-wide query target for the rest of this run/call (e.g. single-attribute 'PDC-only' checks). This is NOT a single-DC scope: per-DC checks (audit policy, Kerberos hardening, RODC posture, etc.) still enumerate and evaluate EVERY Domain Controller in the domain, exactly as when -Server is omitted entirely."
             return $pdcEmulator
         }
     }
