@@ -89,6 +89,10 @@ function Start-ADSecurityAudit {
     # previous Start-ADSecurityAudit call in the same PowerShell session
     # never leak into this run's HTML report.
     Reset-ADOfflineSkipNotes
+
+    # Same reset, for run-scope notes (e.g. a "PDC-only" check running
+    # against an explicitly-named non-PDC DC) - see Common.ps1.
+    Reset-ADRunScopeNotes
     
     if (-not (Test-Path $ExportPath)) {
         try {
@@ -492,7 +496,23 @@ function Start-ADSecurityAudit {
                 }
             }
             $offlineSkipNotes = @(Get-ADOfflineSkipNotes)
-            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunMode $reportRunMode -SnapshotCollectedDate $reportSnapshotCollectedDate -OfflineSkipNotes $offlineSkipNotes
+
+            # Merge notes recorded THIS run/session (Get-ADRunScopeNotes -
+            # populated live whenever a "PDC-only" check runs against an
+            # explicitly-named non-PDC DC) with any notes carried inside
+            # the snapshot itself (only relevant for -FromSnapshot: those
+            # notes were recorded at COLLECTION time, and this analysis
+            # pass performs no live resolution of its own to re-detect the
+            # condition). De-duplicated by message text, since a snapshot
+            # collected and then immediately re-analysed in the same
+            # session could otherwise show the same note twice.
+            $runScopeNotesFromSnapshot = if ($FromSnapshot -and $snapshot.ContainsKey('RunScopeNotes')) { @($snapshot.RunScopeNotes) } else { @() }
+            $runScopeNotes = @(@(Get-ADRunScopeNotes) + $runScopeNotesFromSnapshot | Sort-Object Message -Unique)
+            if ($runScopeNotes.Count -gt 0) {
+                Write-Host "Run scope note: $($runScopeNotes.Count) note(s) about how this run was scoped - see the HTML report's 'Run Scope Information' section.`n" -ForegroundColor Yellow
+            }
+
+            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunMode $reportRunMode -SnapshotCollectedDate $reportSnapshotCollectedDate -OfflineSkipNotes $offlineSkipNotes -RunScopeNotes $runScopeNotes
             Write-Host "HTML report exported to: $htmlPath" -ForegroundColor Green
             
             # Export to CSV with formula injection protection

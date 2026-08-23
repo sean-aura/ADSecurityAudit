@@ -4,12 +4,27 @@ function Test-ADDomainSecurity {
     <#
     .SYNOPSIS
         Audits domain-wide password policy, functional level, Recycle Bin,
-        legacy OS presence, and AzureADSSOACC key rotation.
+        legacy OS presence, tombstone lifetime, and AzureADSSOACC key
+        rotation.
+    .DESCRIPTION
+        PDC-ONLY CHECKS, NOTED ACCORDINGLY: every live query in this
+        function (password policy, domain/forest functional level,
+        Recycle Bin feature state, tombstone lifetime) reads a single
+        domain- or forest-wide attribute/feature that is identical
+        regardless of which DC answers - there is no per-DC state to
+        enumerate here, unlike a true per-DC probe. All of it goes through
+        $__adServer (Get-ADSecurityAuditTargetServerValue), which follows
+        the module's normal three-mode -Server contract: omitted or a
+        domain name resolves to that domain's PDC Emulator specifically
+        (the authoritative source for domain/forest-wide config); an
+        explicit, specific DC is honored exactly as given. The legacy-OS
+        computer sweep and AzureADSSOACC check are ordinary domain-wide
+        object queries, not per-DC probes, for the same reason.
     .PARAMETER Snapshot
         Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
         reads Snapshot.PasswordPolicy/.Forest/.RecycleBinEnabled/
-        Domain.DomainMode and Snapshot.Computers - no live AD access is
-        performed. Added in v1.19.0.
+        Domain.DomainMode/.TombstoneLifetimeDays and Snapshot.Computers -
+        no live AD access is performed. Added in v1.19.0.
     #>
     [CmdletBinding()]
     param(

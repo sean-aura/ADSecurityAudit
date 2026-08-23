@@ -193,13 +193,17 @@ function Get-ADSnapshot {
     # defaults to the current user's own domain ($env:USERDNSDOMAIN)
     # instead of the ambiguous default serverless bind. Cleared before
     # every exit point below (including the early return just after this).
+    # Reset run-scope notes (e.g. a "PDC-only" check running against an
+    # explicitly-named non-PDC DC - see Common.ps1) before resolving
+    # -Server below, which is what can add one.
+    Reset-ADRunScopeNotes
+
     $effectiveServer = Resolve-ADSecurityAuditTargetServer -Server $Server
     if ($effectiveServer) {
         $serverSource = if ($Server) { 'explicit -Server' } else { "your own domain, `$env:USERDNSDOMAIN" }
         Write-Verbose "Get-ADSnapshot: all AD queries in this collection pass will explicitly target '$effectiveServer' ($serverSource)."
         Set-ADSecurityAuditTargetServer -Server $effectiveServer
     }
-
     # Auto-create the -ToJson output directory up front, the same way
     # Start-ADSecurityAudit now handles -ExportPath, so a bad/missing path
     # fails fast (or just works) instead of surfacing only at the very end
@@ -244,6 +248,8 @@ function Get-ADSnapshot {
         CollectedDate     = (Get-Date)
         Domain            = $null
         DomainControllers = @()
+        TotalDomainControllerCount = $null
+        AllDomainControllerComputerObjectDNs = @()
         Users             = @()
         Computers         = @()
         Groups            = @()
@@ -253,6 +259,7 @@ function Get-ADSnapshot {
         DnsZones          = @()
         Trusts            = @()
         MachineAccountQuota = $null
+        RunScopeNotes     = @()
         DsHeuristics        = $null
         DsHeuristicsDN      = $null
         PreWin2000GroupDN   = $null
@@ -314,6 +321,36 @@ function Get-ADSnapshot {
     }
     catch {
         Write-Warning "Get-ADSnapshot: failed to collect domain controllers: $_"
+    }
+
+    # --- True, unscoped domain-wide DC inventory (independent of -Server
+    # narrowing) - for Test-ADStaleObjectDepth's "Insufficient Domain
+    # Controller Count" redundancy check and its primaryGroupID=516
+    # legitimacy check. ---
+    #
+    # snapshot.DomainControllers above is deliberately -Server-scoped (it
+    # feeds live-probe-style consumers that should stay scoped to whichever
+    # DC(s) this run was told to touch). But a DC-count redundancy
+    # assessment and "which computer objects are legitimately DCs" are
+    # properties of the DOMAIN, not of -Server scoping - baking a
+    # -Server-narrowed count/DN-list into the snapshot would silently
+    # undercount the domain's real DC total (or misclassify a real DC as
+    # suspicious) for every future -FromSnapshot analysis of this file,
+    # with no way to correct it after the fact. -IgnoreExplicitDCScope
+    # still uses $effectiveServer as the query target (so this works even
+    # when only one DC was reachable at collection time) but always
+    # returns every DC belonging to the resolved domain.
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting true (unscoped) domain-wide DC count/inventory..."
+        $rawAllDCs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope (snapshot, true count)' -Query {
+            Get-ADSecurityAuditDomainController -Server $effectiveServer -IgnoreExplicitDCScope
+        })
+        $snapshot.TotalDomainControllerCount = @($rawAllDCs).Count
+        $snapshot.AllDomainControllerComputerObjectDNs = @($rawAllDCs | ForEach-Object { $_.ComputerObjectDN } | Where-Object { $_ })
+        Write-Verbose "Get-ADSnapshot: true domain-wide DC count is $($snapshot.TotalDomainControllerCount)."
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect the true (unscoped) domain-wide DC inventory; Test-ADStaleObjectDepth's DC-count/legitimacy checks will fall back to the possibly -Server-scoped DomainControllers list for this snapshot: $_"
     }
 
     # --- Machine Account Quota (ms-DS-MachineAccountQuota on domain root) ---
@@ -1104,6 +1141,13 @@ function Get-ADSnapshot {
     }
 
     Write-Progress -Activity "Collecting AD Snapshot" -Completed
+
+    # Persist any run-scope notes recorded during THIS collection pass
+    # (e.g. -Server named an explicit, non-PDC DC) into the snapshot
+    # itself, so a later -FromSnapshot analysis - which performs no live
+    # resolution of its own - can still surface a scoping condition that
+    # was true at collection time.
+    $snapshot.RunScopeNotes = @(Get-ADRunScopeNotes)
 
     if ($ToJson) {
         try {

@@ -167,7 +167,20 @@ function Export-ADSecurityReportHTML {
         # go dig through the run's transcript to know what this specific
         # report does and doesn't cover.
         [Parameter()]
-        [array]$OfflineSkipNotes = @()
+        [array]$OfflineSkipNotes = @(),
+
+        # General-purpose "this check ran, but against a narrower/
+        # different target than its normal assumption" notes
+        # (Get-ADRunScopeNotes) - distinct from OfflineSkipNotes, which is
+        # specifically about -Snapshot coverage. So far, populated only
+        # when -Server named an explicit, non-PDC Domain Controller and a
+        # "PDC-only" check (Test-ADMachineAccountQuota,
+        # Test-ADDomainSecurity) ran against it directly. Rendered as a
+        # "Run Scope Information" section, for both live and offline runs
+        # (an offline run's notes come from the snapshot's own
+        # RunScopeNotes field, recorded at collection time).
+        [Parameter()]
+        [array]$RunScopeNotes = @()
     )
     
     $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -437,6 +450,19 @@ $(($OfflineSkipNotes | Sort-Object Test, Check | ForEach-Object {
         </div>
 "@
 })
+"@
+})
+$(if (@($RunScopeNotes).Count -gt 0) {
+@"
+        <div class="warning-box" style="background:#eef3fb; border-color:#2f5fa8;">
+            <p><strong>RUN SCOPE INFORMATION</strong> - $(@($RunScopeNotes).Count) note(s) about how this run was scoped that may affect how to read specific findings below.</p>
+            <table class="mitre-table">
+                <tr><th>Category</th><th>Note</th></tr>
+$(($RunScopeNotes | Sort-Object Category | ForEach-Object {
+    "                <tr><td>$(HtmlEncode $_.Category)</td><td>$(HtmlEncode $_.Message)</td></tr>"
+}) -join "`n")
+            </table>
+        </div>
 "@
 })
         

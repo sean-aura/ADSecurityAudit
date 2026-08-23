@@ -44,6 +44,21 @@ function Test-ADMachineAccountQuota {
         explicitly only to target a domain OTHER than your own account's.
         Ignored when -Snapshot is supplied (no live AD access is performed
         in that mode).
+
+        PDC-ONLY CHECK, NOTED ACCORDINGLY: ms-DS-MachineAccountQuota is a
+        single domain-wide attribute on the domain root object, identical
+        regardless of which DC answers - there is no per-DC variation to
+        enumerate, unlike a true per-DC probe (e.g. Spooler/SMB-signing
+        state, which genuinely differs DC to DC). This function therefore
+        makes exactly one Get-ADObject call rather than using
+        Get-ADSecurityAuditDomainController's per-DC enumeration. -Server
+        still follows the module's normal three-mode contract via
+        Resolve-ADSecurityAuditTargetServer: omitted or a domain name
+        resolves to that domain's PDC Emulator specifically (the
+        authoritative source for domain-wide config); an explicit,
+        specific DC is honored exactly as given (never redirected to the
+        PDC), since an operator naming one specific DC has often done so
+        because it's the only one reachable for this engagement.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>

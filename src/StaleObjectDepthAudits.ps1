@@ -145,6 +145,7 @@ function Test-ADStaleObjectDepth {
     $users = @()
     $computers = @()
     $domainControllers = @()
+    $totalDomainControllerCountOverride = $null
 
     try {
         if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
@@ -198,11 +199,75 @@ function Test-ADStaleObjectDepth {
         Write-Warning "Test-ADStaleObjectDepth: failed to collect domain controllers: $_"
     }
 
+    # --- True, unscoped domain-wide DC inventory (independent of a
+    # -Server-narrowed $domainControllers above) ---
+    #
+    # $domainControllers above is deliberately -Server-scoped: when the
+    # operator names one specific DC, it correctly narrows to just that DC
+    # for the subnet/site-registration check below (Check 4), which is a
+    # live per-DC probe that should only touch the DC(s) the operator
+    # scoped this run to.
+    #
+    # But TWO other things in this function need the domain's TRUE total
+    # DC inventory regardless of that scoping, because they're properties
+    # of the DOMAIN, not of which DC(s) probing was scoped to:
+    #   1. $dcComputerDNs below (which computer objects are legitimately
+    #      recognized as Domain Controllers, for the primaryGroupID=516
+    #      check) - narrowing this to one explicitly-named DC would
+    #      misclassify every OTHER real DC's computer object as a
+    #      non-DC holding a suspicious primaryGroupID, a false positive.
+    #   2. Check 5 (Insufficient Domain Controller Count) below - a
+    #      redundancy assessment of the whole domain, which must reflect
+    #      the true total regardless of -Server scoping. Reusing the
+    #      possibly-narrowed $domainControllers here previously caused
+    #      this check to report "only 1 DC" whenever -Server named one
+    #      specific DC, even in a domain with several DCs (reported bug).
+    #
+    # -IgnoreExplicitDCScope (Get-ADSecurityAuditDomainController,
+    # Common.ps1) exists specifically for this: it still USES $__adServer
+    # as the query target (so it works even when only one DC is reachable
+    # for this engagement), but always returns every DC belonging to the
+    # resolved domain rather than narrowing to just the named DC.
+    $allDomainControllersInDomain = @()
+    try {
+        if ($Snapshot) {
+            if ($Snapshot.ContainsKey('TotalDomainControllerCount') -and $null -ne $Snapshot.TotalDomainControllerCount) {
+                Write-Verbose "Test-ADStaleObjectDepth: using snapshot's true (unscoped) DC inventory for count/legitimacy checks."
+                $allDomainControllersInDomain = @($Snapshot.AllDomainControllerComputerObjectDNs | ForEach-Object {
+                    [PSCustomObject]@{ ComputerObjectDN = $_ }
+                })
+                $totalDomainControllerCountOverride = [int]$Snapshot.TotalDomainControllerCount
+            }
+            else {
+                # Older snapshot, collected before this fix: no unscoped
+                # inventory was captured, so fall back to whatever
+                # DomainControllers the snapshot has - same accuracy
+                # caveat the live path had before this fix (may undercount
+                # if that snapshot was itself collected with -Server
+                # narrowed to one specific DC).
+                Write-Verbose "Test-ADStaleObjectDepth: snapshot predates the true-DC-count fix; falling back to Snapshot.DomainControllers (may undercount if that snapshot was collected with -Server narrowed to one specific DC)."
+                $allDomainControllersInDomain = $domainControllers
+            }
+        }
+        else {
+            $allDomainControllersInDomain = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope (stale-object depth, true count)' -Query {
+                Get-ADSecurityAuditDomainController -Server $__adServer -IgnoreExplicitDCScope
+            })
+        }
+    }
+    catch {
+        Write-Warning "Test-ADStaleObjectDepth: failed to collect the true (unscoped) domain-wide DC inventory; falling back to the -Server-scoped list for the count/legitimacy checks (may undercount or misclassify a real DC if -Server was narrowed to one specific DC): $_"
+        $allDomainControllersInDomain = $domainControllers
+    }
+
     # DNs of computer objects that are actual Domain Controllers, so a
     # primaryGroupID of 516 (Domain Controllers) is recognised as legitimate
-    # only for those objects and suspicious for anything else.
+    # only for those objects and suspicious for anything else. Built from
+    # $allDomainControllersInDomain (the TRUE, unscoped domain-wide
+    # inventory), not the possibly -Server-narrowed $domainControllers -
+    # see the comment above for why.
     $dcComputerDNs = @{}
-    foreach ($dc in $domainControllers) {
+    foreach ($dc in $allDomainControllersInDomain) {
         $dcDN = $null
         if ($dc.PSObject.Properties['ComputerObjectDN']) { $dcDN = $dc.ComputerObjectDN }
         elseif ($dc -is [hashtable] -and $dc.ContainsKey('ComputerObjectDN')) { $dcDN = $dc.ComputerObjectDN }
@@ -448,7 +513,24 @@ function Test-ADStaleObjectDepth {
     try {
         Write-Verbose "Test-ADStaleObjectDepth: checking Domain Controller count..."
 
-        $dcCount = @($domainControllers).Count
+        # FIXED (reported bug): this used to read @($domainControllers).Count
+        # - the -Server-SCOPED list - so a run with -Server narrowed to one
+        # specific DC always reported "the domain has only 1 Domain
+        # Controller" regardless of how many DCs the domain actually has.
+        # This is a redundancy assessment of the whole domain, so it must
+        # always use the TRUE, unscoped count: $totalDomainControllerCountOverride
+        # when a snapshot supplied one directly (avoids re-deriving it from
+        # a DN list that may have been flattened without duplicates-safety),
+        # otherwise the count of $allDomainControllersInDomain (the live
+        # -IgnoreExplicitDCScope enumeration, or an older snapshot's
+        # DomainControllers as a last-resort fallback).
+        $dcCount = if ($null -ne $totalDomainControllerCountOverride) {
+            $totalDomainControllerCountOverride
+        }
+        else {
+            @($allDomainControllersInDomain).Count
+        }
+
         if ($dcCount -lt 2) {
             $finding = [ADSecurityFinding]::new()
             $finding.Category = 'Stale-Object & Hygiene Depth'
@@ -461,7 +543,7 @@ function Test-ADStaleObjectDepth {
             $finding.Remediation = "Deploy at least one additional Domain Controller, ideally in a separate physical/virtual failure domain, to provide redundancy for authentication and directory services."
             $finding.Details = @{
                 DomainControllerCount = $dcCount
-                DomainControllers     = @($domainControllers | ForEach-Object { $_.Name })
+                DomainControllers     = @($allDomainControllersInDomain | Where-Object { $_.PSObject.Properties['Name'] } | ForEach-Object { $_.Name })
             }
             $findings += $finding
         }
