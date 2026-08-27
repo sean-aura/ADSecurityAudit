@@ -35,6 +35,14 @@ catch {
 $moduleScripts = @(
     'src/Common.ps1',
     'src/Scoring.ps1',
+    # Data-only: the current EstimatedEffort/KnownRisks/BackupRollback/
+    # OperationalNotes text per Issue name, used by
+    # Merge-ADFindingNarrativeGaps (Common.ps1) to backfill those fields
+    # when recreating a report from an older JSON export. Must load after
+    # Common.ps1 (defines the function that reads it) but has no
+    # dependency on load order relative to the check files below - it's
+    # pure data, referenced only by Issue name string.
+    'src/FindingNarrativeLibrary.ps1',
     'src/Snapshot.ps1',
     'src/UserAudits.ps1',
     'src/GroupAudits.ps1',

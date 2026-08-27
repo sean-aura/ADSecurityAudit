@@ -1676,6 +1676,131 @@ function ConvertTo-ADFlatFindingsArray {
     return @($flat)
 }
 
+function Set-ADFindingProperty {
+    <#
+    .SYNOPSIS
+        Sets a named property on a finding, regardless of whether it's a
+        live [ADSecurityFinding] (every property already exists - plain
+        assignment works) or a PSCustomObject from an older JSON export
+        whose schema predates that property (plain assignment throws
+        "the property ... cannot be found on this object").
+    .DESCRIPTION
+        Used by Set-ADFindingMetadata (see its own docs for the bug this
+        fixes) so that MITRE/ANSSI/Weight backfill works uniformly
+        whether -Finding came from a live run or ConvertFrom-Json.
+    .PARAMETER Object
+        The finding to mutate, in place. Any shape.
+    .PARAMETER Name
+        Property name to set.
+    .PARAMETER Value
+        Value to assign.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        $Object,
+
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [Parameter()]
+        $Value
+    )
+    if ($Object.PSObject.Properties.Name -contains $Name) {
+        $Object.$Name = $Value
+    }
+    else {
+        # Property doesn't exist on this object at all (a JSON export from
+        # before this property existed in the schema) - plain assignment
+        # would throw. Add it as a new note property instead.
+        $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+    }
+}
+
+function Merge-ADFindingNarrativeGaps {
+    <#
+    .SYNOPSIS
+        Backfills EstimatedEffort/KnownRisks/BackupRollback/OperationalNotes
+        on findings loaded from an older JSON export that predates those
+        fields (or predates a given Issue's current wording), using
+        $Script:ADFindingNarrativeLibrary (src/FindingNarrativeLibrary.ps1,
+        mechanically extracted from the current source - see
+        tools/Build-ADFindingNarrativeLibrary.ps1).
+    .DESCRIPTION
+        Reported gap: recreating an HTML report from an old
+        AD_Security_Audit_*.json export (Export-ADSecurityReportHTMLFromJson)
+        silently OMITS the "Estimated Effort" / "Known Risks" /
+        "Backup / Rollback" / "Operational Notes" sections entirely for any
+        finding whose export predates those fields (added v1.24.0) - not a
+        crash, just missing sections, which reads as the recreated report
+        being incomplete/"stale" next to a fresh run's report.
+
+        This is a best-effort, clearly-labeled backfill, not a
+        reconstruction of "what the original run actually showed":
+          * A field is ONLY backfilled if the loaded finding's own value
+            for it is blank/missing. A finding that already has its own
+            text (from a reasonably recent export) is never touched -
+            this never overwrites real, originally-captured data.
+          * The backfilled text is CURRENT guidance for that Issue name,
+            not necessarily what an older module version would have
+            written at the time - the library has no version history,
+            only "whatever the source says today". For a handful of
+            Issue names PermissionsAudits.ps1 uses in two different
+            finding blocks with slightly different wording, the library
+            only has one (see the maintenance script's own conflict
+            warning) - the backfilled text is representative, not
+            guaranteed identical to what that specific instance would
+            have said.
+          * Only applies when a library entry exists for the finding's
+            Issue name at all - most findings (the ones without
+            EstimatedEffort/KnownRisks/BackupRollback in the source to
+            begin with) have no entry and are left exactly as loaded, so
+            this never invents guidance that doesn't exist anywhere in
+            the codebase.
+          * Also (re)tags MITRE/ANSSI/Weight via Set-ADFindingMetadata for
+            any finding missing that metadata - seeSet-ADFindingMetadata's
+            own docs for the related bug this depends on being fixed
+            (PSCustomObject mutation not persisting through a typed
+            parameter).
+    .PARAMETER Findings
+        Array of findings (from ConvertFrom-Json - PSCustomObject - or a
+        live run). Mutated in place.
+    .OUTPUTS
+        [int] the number of findings that had at least one field backfilled,
+        so a caller can surface it in the report (e.g. a run-scope note).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [array]$Findings
+    )
+
+    if (-not $Script:ADFindingNarrativeLibrary) {
+        Write-Verbose "Merge-ADFindingNarrativeGaps: `$Script:ADFindingNarrativeLibrary is not loaded (FindingNarrativeLibrary.ps1 not dot-sourced); skipping narrative backfill."
+        return 0
+    }
+
+    $backfilledCount = 0
+    foreach ($finding in $Findings) {
+        [void](Set-ADFindingMetadata -Finding $finding)
+
+        $libEntry = $Script:ADFindingNarrativeLibrary[$finding.Issue]
+        if (-not $libEntry) { continue }
+
+        $touchedThisFinding = $false
+        foreach ($field in @('EstimatedEffort', 'KnownRisks', 'BackupRollback', 'OperationalNotes')) {
+            $current = $finding.$field
+            if ([string]::IsNullOrWhiteSpace($current) -and -not [string]::IsNullOrWhiteSpace($libEntry.$field)) {
+                Set-ADFindingProperty -Object $finding -Name $field -Value $libEntry.$field
+                $touchedThisFinding = $true
+            }
+        }
+        if ($touchedThisFinding) { $backfilledCount++ }
+    }
+
+    return $backfilledCount
+}
+
 function Test-ADFindingDetailsKey {
     <#
     .SYNOPSIS

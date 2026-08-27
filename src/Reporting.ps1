@@ -1,3 +1,48 @@
+function Format-ADFindingDetectedDate {
+    <#
+    .SYNOPSIS
+        Formats a finding's DetectedDate for display, tolerating a missing/
+        $null value instead of throwing.
+    .DESCRIPTION
+        FIXED (reported): DetectedDate.ToString('yyyy-MM-dd HH:mm') was
+        called directly inline. On a live [ADSecurityFinding] this always
+        works (the class always sets it at construction), but a finding
+        loaded from an older JSON export that predates DetectedDate being
+        added to the schema deserializes with no DetectedDate property at
+        all - PSCustomObject property access then returns $null, and
+        calling .ToString() on $null throws "You cannot call a method on
+        a null-valued expression." for every single such finding, visibly
+        on the console, while the "Detected:" field itself silently
+        rendered blank regardless (the error was non-fatal to the overall
+        report, just noisy and wrong-looking).
+    .PARAMETER DetectedDate
+        The finding's DetectedDate. May be $null, a [datetime], or (from
+        some JSON round-trips) a date-like [string].
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        $DetectedDate
+    )
+    if ($null -eq $DetectedDate -or $DetectedDate -eq '') {
+        return 'Unknown (not present in this export)'
+    }
+    if ($DetectedDate -is [datetime]) {
+        return $DetectedDate.ToString('yyyy-MM-dd HH:mm')
+    }
+    # ConvertFrom-Json can hand back a date as a string rather than
+    # [datetime] depending on PowerShell version/format; try to parse it
+    # before giving up, so a well-formed date string still displays
+    # nicely rather than falling through to the raw string as-is.
+    $parsed = $null
+    if ([datetime]::TryParse($DetectedDate, [ref]$parsed)) {
+        return $parsed.ToString('yyyy-MM-dd HH:mm')
+    }
+    return [string]$DetectedDate
+}
+
 function Export-ADSecurityReportHTMLFromJson {
     <#
     .SYNOPSIS
@@ -98,6 +143,25 @@ function Export-ADSecurityReportHTMLFromJson {
     # for a normal, already-flat export.
     $findings = ConvertTo-ADFlatFindingsArray -Findings $findings
 
+    # Reported gap: a report recreated from an older JSON export was
+    # missing the "Estimated Effort" / "Known Risks" / "Backup / Rollback"
+    # / "Operational Notes" sections entirely for any finding whose export
+    # predates those fields, with no indication anything was missing - it
+    # just silently read as a thinner report than a fresh run would
+    # produce. Backfills those fields (and MITRE/ANSSI/Weight) from
+    # current guidance where the loaded finding is missing them and a
+    # library entry exists; never overwrites real data the export already
+    # had. See Merge-ADFindingNarrativeGaps's own docs for exactly what
+    # this does and doesn't do.
+    $backfilledCount = Merge-ADFindingNarrativeGaps -Findings $findings
+    $runScopeNotes = @(Get-ADRunScopeNotes)
+    if ($backfilledCount -gt 0) {
+        $runScopeNotes += [PSCustomObject]@{
+            Category = 'Recreated From JSON'
+            Message  = "This report was recreated from a JSON findings export, not from a live/snapshot run. $backfilledCount finding(s) in this export were missing supporting information (Estimated Effort / Known Risks / Backup-Rollback / Operational Notes) that the current module version normally provides - this typically happens when the export predates that field being added, or predates that specific finding's current wording. Those sections were backfilled with CURRENT guidance for the finding's Issue type where available; this is representative guidance, not necessarily an exact reproduction of what the original run's module version would have shown. Any finding that still shows one of these sections missing has no current guidance available to backfill from."
+        }
+    }
+
     Write-Verbose "Recomputing risk score for the recreated report under the current Get-ADRiskScore mapping table (never the original sidecar value, if one exists)..."
     $riskScore = Get-ADRiskScore -Findings $findings
 
@@ -113,7 +177,7 @@ function Export-ADSecurityReportHTMLFromJson {
     Write-Verbose "Recreating HTML report from '$($findingsFile.FullName)' ($($findings.Count) finding(s))..."
     Export-ADSecurityReportHTML -Findings $findings -OutputPath $OutputPath -Domain $Domain -Summary $summary `
         -Duration $Duration -RiskScore $riskScore -RunMode $RunMode -SnapshotCollectedDate $SnapshotCollectedDate `
-        -PrivilegedUsers $null -OfflineSkipNotes @()
+        -PrivilegedUsers $null -OfflineSkipNotes @() -RunScopeNotes $runScopeNotes
 
     Write-Verbose "Recreated HTML report written to '$OutputPath'."
 }
@@ -1194,7 +1258,7 @@ $opNotesHtml
                 <div class="finding-meta">
                     <span><strong>Category:</strong> $category</span>
                     <span><strong>Affected Object:</strong> <span class="meta-code">$affectedObject</span></span>
-                    <span><strong>Detected:</strong> $($first.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</span>
+                    <span><strong>Detected:</strong> $(Format-ADFindingDetectedDate $first.DetectedDate)</span>
                     $metaTags
                 </div>
                 <div class="finding-section">
@@ -1231,7 +1295,7 @@ $enrichmentHtml
                     <li class="finding-instance">
                         <div class="finding-instance-object">$objName</div>
                         <div class="finding-instance-desc">$objDesc</div>
-                        <div class="finding-instance-date">Detected: $($f.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</div>
+                        <div class="finding-instance-date">Detected: $(Format-ADFindingDetectedDate $f.DetectedDate)</div>
                     </li>
 "@
     }

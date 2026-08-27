@@ -287,41 +287,80 @@ function Get-ADFindingMetadataMap {
 function Set-ADFindingMetadata {
     <#
     .SYNOPSIS
-        Tags an ADSecurityFinding with MITRE / ANSSI / Weight from the central map.
+        Tags a finding with MITRE / ANSSI / Weight from the central map.
     .DESCRIPTION
         Looks the finding's Issue string up in $Script:ADFindingMetadataMap and
         populates MitreTechnique, AnssiControl, and Weight. Idempotent. For
         issues not yet in the table, falls back to severity-derived defaults so
         scoring still degrades gracefully (and emits a verbose warning so the
         gap can be closed by adding a table entry).
+
+        FIXED (reported): -Finding used to be typed [ADSecurityFinding].
+        That's correct for a live run (Main.ps1 passes genuine
+        [ADSecurityFinding] instances, a reference type, so mutations
+        inside this function correctly persisted back to the caller's
+        object) - but Export-ADSecurityReportHTMLFromJson and
+        Get-ADRetestComparison instead pass PSCustomObjects deserialized
+        from a findings JSON export. Passing a PSCustomObject to a
+        parameter typed as a specific class forces PowerShell to
+        implicitly CONSTRUCT A NEW, SEPARATE [ADSecurityFinding] instance
+        at the call boundary (a copy), tag THAT copy, and then discard it
+        when the function returns - the caller's original PSCustomObject
+        was never touched. The bug was invisible for a live run (already
+        the right type, no conversion happens) and invisible for a
+        recent-enough JSON export (Main.ps1 already tags every finding
+        with real Weight/AnssiControl before ConvertTo-Json, so the
+        IsNullOrEmpty/-le 0 guard in Get-ADRiskScore's caller skips
+        re-tagging entirely) - but for any finding whose JSON export
+        genuinely lacks this metadata (an old export from before v1.2.0
+        added tagging, or any Issue not yet in the map at export time),
+        Get-ADRiskScore's rescore call silently computed a correct-looking
+        score against a copy that was thrown away, then read Weight back
+        off the STILL-UNTAGGED original as 0 - understating (sometimes to
+        literally zero) that finding's contribution to the recomputed
+        risk score, maturity level, and MITRE summary, with no error or
+        warning of any kind.
+
+        -Finding is now untyped, so PowerShell passes the actual object
+        reference through unchanged - whatever its shape (a live
+        [ADSecurityFinding], or a JSON-deserialized PSCustomObject) - and
+        mutations below persist to the caller's own object. Property
+        writes go through Set-ADFindingProperty (not plain dot-assignment)
+        because a PSCustomObject from a JSON export that predates a given
+        property (e.g. Weight didn't exist in the schema yet) doesn't
+        have that property to assign to at all; plain "$Finding.Weight =
+        4" throws "the property 'Weight' cannot be found" in that case,
+        where a live [ADSecurityFinding] (which always has every property
+        the class declares) would not.
     .PARAMETER Finding
-        The finding to tag. Mutated in place and also returned for pipelining.
+        The finding to tag. Mutated in place and also returned for
+        pipelining. Deliberately untyped - see FIXED note above.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, ValueFromPipeline)]
-        [ADSecurityFinding]$Finding
+        $Finding
     )
 
     process {
         $meta = $Script:ADFindingMetadataMap[$Finding.Issue]
 
         if ($null -ne $meta) {
-            $Finding.MitreTechnique = $meta.Mitre
-            $Finding.AnssiControl   = $meta.Anssi
-            $Finding.Weight         = $meta.Weight
+            Set-ADFindingProperty -Object $Finding -Name 'MitreTechnique' -Value $meta.Mitre
+            Set-ADFindingProperty -Object $Finding -Name 'AnssiControl'   -Value $meta.Anssi
+            Set-ADFindingProperty -Object $Finding -Name 'Weight'         -Value $meta.Weight
         }
         else {
             Write-Verbose "Set-ADFindingMetadata: no mapping for Issue '$($Finding.Issue)'; using severity-derived defaults."
             $sev = $Finding.SeverityLevel
             if (-not $Script:ADScoreSeverityWeights.ContainsKey($sev)) { $sev = 0 }
 
-            if ($Finding.Weight -le 0) {
-                $Finding.Weight = $Script:ADScoreSeverityWeights[$sev]
+            if (-not ($Finding.Weight -gt 0)) {
+                Set-ADFindingProperty -Object $Finding -Name 'Weight' -Value $Script:ADScoreSeverityWeights[$sev]
             }
             if ([string]::IsNullOrEmpty($Finding.AnssiControl)) {
                 $lvl = $Script:ADScoreSeverityAnssiLevel[$sev]
-                $Finding.AnssiControl = "vuln${lvl}_unmapped"
+                Set-ADFindingProperty -Object $Finding -Name 'AnssiControl' -Value "vuln${lvl}_unmapped"
             }
         }
 
