@@ -121,6 +121,45 @@ Describe 'Export-ADSecurityReportCSVFromJson' {
         Test-Path $outPath | Should -BeTrue
     }
 
+    It 'accepts an existing folder for -OutputPath and auto-names the file inside it' {
+        $folder = New-FindingsFixture -FolderName 'output-folder-existing' -Findings $script:Findings -Timestamp '2026-08-17_00-00-00'
+
+        { Export-ADSecurityReportCSVFromJson -FindingsPath $folder -OutputPath $folder } | Should -Not -Throw
+        $expected = Join-Path $folder 'AD_Security_Audit_2026-08-17_00-00-00-recreated.csv'
+        Test-Path $expected | Should -BeTrue
+    }
+
+    It 'creates a not-yet-existing folder for -OutputPath and auto-names the file inside it' {
+        $folder = New-FindingsFixture -FolderName 'output-folder-new-source' -Findings $script:Findings -Timestamp '2026-08-18_00-00-00'
+        $newFolder = Join-Path $TestDrive 'brand-new-csv-output-folder'
+        Test-Path $newFolder | Should -BeFalse
+
+        { Export-ADSecurityReportCSVFromJson -FindingsPath $folder -OutputPath $newFolder } | Should -Not -Throw
+        Test-Path $newFolder | Should -BeTrue
+        $expected = Join-Path $newFolder 'AD_Security_Audit_2026-08-18_00-00-00-recreated.csv'
+        Test-Path $expected | Should -BeTrue
+    }
+
+    It 'does not overwrite an original same-timestamp CSV when -OutputPath is that same folder' {
+        $folder = New-FindingsFixture -FolderName 'output-folder-no-overwrite' -Findings $script:Findings -Timestamp '2026-08-19_00-00-00'
+        $originalCsvPath = Join-Path $folder 'AD_Security_Audit_2026-08-19_00-00-00.csv'
+        'ORIGINAL - DO NOT OVERWRITE' | Out-File -FilePath $originalCsvPath -Encoding UTF8
+
+        Export-ADSecurityReportCSVFromJson -FindingsPath $folder -OutputPath $folder
+
+        (Get-Content -Path $originalCsvPath -Raw) | Should -Match 'DO NOT OVERWRITE'
+    }
+
+    It 'derives the coverage CSV name correctly when -OutputPath was a folder' {
+        $coverage = @([PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 2; ErrorMessage = $null })
+        $folder = New-FindingsFixture -FolderName 'output-folder-coverage' -Findings $script:Findings -Timestamp '2026-08-20_00-00-00' -TestCoverage $coverage
+
+        Export-ADSecurityReportCSVFromJson -FindingsPath $folder -OutputPath $folder
+
+        $expectedCoverage = Join-Path $folder 'AD_Security_Audit_2026-08-20_00-00-00-recreated-coverage.csv'
+        Test-Path $expectedCoverage | Should -BeTrue
+    }
+
     It 'throws a clear error when the path does not exist' {
         { Export-ADSecurityReportCSVFromJson -FindingsPath (Join-Path $TestDrive 'does-not-exist') -OutputPath (Join-Path $TestDrive 'irrelevant.csv') } | Should -Throw
     }

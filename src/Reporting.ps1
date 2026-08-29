@@ -87,7 +87,13 @@ function Export-ADSecurityReportHTMLFromJson {
         folder to search for the newest one (same resolution idiom as
         Get-ADRetestComparison's -BaselinePath/-RetestPath).
     .PARAMETER OutputPath
-        Path to write the recreated HTML report to.
+        Path to write the recreated HTML report to - either an exact
+        file path, or a folder (an auto-named
+        "AD_Security_Audit_<timestamp>-recreated.html" is created inside
+        it, timestamp matched to the findings export being rebuilt from;
+        deliberately not the same name a live run would use for that
+        timestamp, so pointing this at the same folder the original
+        report already lives in can't silently overwrite it).
     .PARAMETER Domain
         Not present in the findings JSON (the ADSecurityFinding schema
         doesn't carry a Domain field - see the note in
@@ -114,6 +120,10 @@ function Export-ADSecurityReportHTMLFromJson {
     .EXAMPLE
         # Folder form - picks the newest AD_Security_Audit_*.json in it:
         Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports\recreated.html"
+    .EXAMPLE
+        # Folder form for BOTH arguments - resolves the newest export and
+        # writes an auto-named "...-recreated.html" into the given folder:
+        Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports"
     #>
     [CmdletBinding()]
     param(
@@ -138,6 +148,7 @@ function Export-ADSecurityReportHTMLFromJson {
     )
 
     $findingsFile = Resolve-ADRetestReportFile -Path $FindingsPath
+    $OutputPath = Resolve-ADRebuiltReportOutputPath -OutputPath $OutputPath -FindingsFile $findingsFile -Extension 'html'
 
     try {
         $findings = @(Get-Content -Path $findingsFile.FullName -Raw | ConvertFrom-Json)
@@ -279,10 +290,16 @@ function Export-ADSecurityReportCSVFromJson {
         Either an explicit AD_Security_Audit_<timestamp>.json file, or a
         folder to search for the newest one.
     .PARAMETER OutputPath
-        Path to write the recreated findings CSV to. If a test-coverage
-        sidecar is found, a second file is written alongside it with
-        "-coverage" inserted before the extension (e.g.
-        "recreated.csv" -> "recreated-coverage.csv").
+        Path to write the recreated findings CSV to - either an exact
+        file path, or a folder (an auto-named
+        "AD_Security_Audit_<timestamp>-recreated.csv" is created inside
+        it, timestamp matched to the findings export being rebuilt from;
+        deliberately not the same name a live run would use for that
+        timestamp, so pointing this at the same folder the original
+        report already lives in can't silently overwrite it). If a
+        test-coverage sidecar is found, a second file is written
+        alongside it with "-coverage" inserted before the extension
+        (e.g. "recreated.csv" -> "recreated-coverage.csv").
     .OUTPUTS
         None. Writes the CSV file(s) to disk.
     .EXAMPLE
@@ -291,6 +308,10 @@ function Export-ADSecurityReportCSVFromJson {
     .EXAMPLE
         # Folder form - picks the newest AD_Security_Audit_*.json in it:
         Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports\recreated.csv"
+    .EXAMPLE
+        # Folder form for BOTH arguments - resolves the newest export and
+        # writes an auto-named "...-recreated.csv" into the given folder:
+        Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports"
     #>
     [CmdletBinding()]
     param(
@@ -302,6 +323,7 @@ function Export-ADSecurityReportCSVFromJson {
     )
 
     $findingsFile = Resolve-ADRetestReportFile -Path $FindingsPath
+    $OutputPath = Resolve-ADRebuiltReportOutputPath -OutputPath $OutputPath -FindingsFile $findingsFile -Extension 'csv'
 
     try {
         $findings = @(Get-Content -Path $findingsFile.FullName -Raw | ConvertFrom-Json)
@@ -744,8 +766,9 @@ $(if (@($TestCoverage).Count -gt 0) {
     $tcExcluded = @($tcSorted | Where-Object { $_.Status -eq 'Excluded' })
     $tcUntested = $tcFailed.Count + $tcExcluded.Count
 @"
-        <div class="warning-box" style="background:#f2f7ee; border-color:#3f7d3f;" id="test-coverage">
-            <p><strong>TEST COVERAGE</strong> - $($tcSorted.Count) check(s) tracked for this run: <strong>$($tcPassed.Count) passed clean</strong> (ran, found nothing), $($tcWithFindings.Count) found issue(s), and <strong>$tcUntested untested</strong> ($($tcFailed.Count) failed, $($tcExcluded.Count) excluded). "Passed clean" means the check actually ran and found nothing to report - not that it wasn't checked; "untested" checks (failed or excluded) contributed zero findings either way and should not be read as clean.</p>
+        <details class="warning-box" style="background:#f2f7ee; border-color:#3f7d3f;" id="test-coverage">
+            <summary style="cursor:pointer; margin:-4px -4px 0 -4px; padding:4px;"><strong>TEST COVERAGE</strong> - $($tcSorted.Count) check(s) tracked for this run: <strong>$($tcPassed.Count) passed clean</strong> (ran, found nothing), $($tcWithFindings.Count) found issue(s), and <strong>$tcUntested untested</strong> ($($tcFailed.Count) failed, $($tcExcluded.Count) excluded). Click to expand the full per-check list.</summary>
+            <p style="margin-top:10px;">"Passed clean" means the check actually ran and found nothing to report - not that it wasn't checked; "untested" checks (failed or excluded) contributed zero findings either way and should not be read as clean.</p>
             <table class="mitre-table">
                 <tr><th>Check</th><th>Status</th><th>Findings</th><th>Detail</th></tr>
 $(($tcSorted | ForEach-Object {
@@ -777,7 +800,7 @@ $(($tcSorted | ForEach-Object {
 }) -join "`n")
             </table>
             <p style="margin-top:10px; font-size:0.9em; color:#5b6472;">"Excluded" checks were deliberately left out of this run's scope; "Failed" checks were attempted but errored before producing a result (see Detail) and contributed zero findings either way - neither should be read as "checked and clean".</p>
-        </div>
+        </details>
 "@
 })
         

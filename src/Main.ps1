@@ -93,6 +93,15 @@ function Start-ADSecurityAudit {
     # Same reset, for run-scope notes (e.g. a "PDC-only" check running
     # against an explicitly-named non-PDC DC) - see Common.ps1.
     Reset-ADRunScopeNotes
+
+    # Same reset, for test coverage tracking (which checks ran clean,
+    # found something, failed, or were excluded) - see
+    # Add-ADTestCoverageEntry's own docs (Common.ps1). Only -FromSnapshot
+    # actually reads this tracker (via Invoke-ADRuleSet); live mode builds
+    # $testCoverage directly in its own loop below and never touches this
+    # tracker, but resetting it unconditionally here costs nothing and
+    # keeps both code paths' state hygiene identical.
+    Reset-ADTestCoverageTracker
     
     if (-not (Test-Path $ExportPath)) {
         try {
@@ -179,6 +188,22 @@ function Start-ADSecurityAudit {
             $allFindings = @(Invoke-ADRuleSet -Snapshot $snapshot -IncludeTests $testsToRun `
                 -InactiveDaysThreshold $InactiveDaysThreshold -PasswordAgeThreshold $PasswordAgeThreshold `
                 -AllowLiveFallbackForUnsupportedTests:$AllowLiveFallbackForUnsupportedTests)
+
+            # FIXED (reported): $testCoverage was previously never assigned
+            # on this (-FromSnapshot) code path at all - only the live-mode
+            # branch below builds it directly. The shared HTML-export call
+            # near the end of this function unconditionally passes
+            # -TestCoverage $testCoverage, so an undefined variable here
+            # silently became $null, which made the Test Coverage section's
+            # gate (Count -gt 0) true while its actual row data (built via
+            # Sort-Object, which drops a $null element) came out empty -
+            # rendering a nonsensical "0 check(s) tracked" box on every
+            # single -FromSnapshot report. Invoke-ADRuleSet now populates
+            # the same tracker Add-ADTestCoverageEntry writes to
+            # (Common.ps1); read it back here so this path is a real,
+            # populated array like the live path's, not an undefined
+            # variable.
+            $testCoverage = Get-ADTestCoverageTracker
 
             $skipNotesForConsole = @(Get-ADOfflineSkipNotes)
             if ($skipNotesForConsole.Count -gt 0) {

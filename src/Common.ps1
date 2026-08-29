@@ -1560,6 +1560,102 @@ function Get-ADOfflineSkipNotes {
     return @($Script:ADOfflineSkipNotes)
 }
 
+# --- Test coverage tracking: "which checks ran clean, found something,
+# failed, or were excluded" - see Main.ps1's live-mode test loop for the
+# original (live-only) implementation, and Invoke-ADRuleSet for why
+# -FromSnapshot needed this same tracker rather than reusing that loop
+# directly. ---
+#
+# Reported gap: -FromSnapshot mode dispatches tests through
+# Invoke-ADRuleSet, a completely different code path from Main.ps1's live
+# test loop that Add-ADTestCoverageEntry calls below were built for -
+# $testCoverage was simply never assigned for -FromSnapshot runs, so the
+# shared HTML-export call at the end of Start-ADSecurityAudit referenced
+# an undefined variable (silently $null when read). That $null then hit
+# the exact "@($null) has Count 1" quirk documented on
+# ConvertTo-ADFlatFindingsArray, making Export-ADSecurityReportHTML's
+# Test Coverage section gate TRUE (Count -gt 0) while its actual per-row
+# data (built via Sort-Object, which silently drops a $null element)
+# came out empty - rendering a nonsensical "0 check(s) tracked: 0 passed
+# clean, 0 found issue(s), and 0 untested" box on every single
+# -FromSnapshot report, looking like a real (if empty) tracked run rather
+# than "coverage wasn't tracked for this run at all".
+#
+# Mirrors the Offline-Skip-Notes tracker immediately above: a
+# script-scoped list, reset once per Start-ADSecurityAudit call (both
+# live and -FromSnapshot - see Main.ps1), added to as each test
+# completes/fails/is excluded, and read back at export time.
+function Reset-ADTestCoverageTracker {
+    <#
+    .SYNOPSIS
+        Clears the test-coverage tracker. Called once at the start of
+        every Start-ADSecurityAudit run (both live and -FromSnapshot) so
+        entries never leak between runs in the same PowerShell session.
+    #>
+    [CmdletBinding()]
+    param()
+    $Script:ADTestCoverageTracker = [System.Collections.Generic.List[PSCustomObject]]::new()
+}
+
+function Add-ADTestCoverageEntry {
+    <#
+    .SYNOPSIS
+        Records one test's outcome for the current run's Test Coverage
+        section/sidecar.
+    .PARAMETER TestName
+        The $allTests/$Script:ADTestFunctionRegistry key (e.g.
+        'DomainSecurity'), matching the value Main.ps1's live loop uses.
+    .PARAMETER Status
+        'Completed' (ran, regardless of whether it found anything),
+        'Failed' (threw an exception), or 'Excluded' (deliberately
+        skipped - via -ExcludeTests/-IncludeTests, or because it has no
+        -Snapshot support yet and -AllowLiveFallbackForUnsupportedTests
+        wasn't set; the ErrorMessage distinguishes which).
+    .PARAMETER FindingCount
+        Number of findings this test produced. 0 for Failed/Excluded.
+    .PARAMETER ErrorMessage
+        The exception message (Failed) or a short reason (Excluded).
+        $null for a plain Completed entry.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$TestName,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('Completed', 'Failed', 'Excluded')]
+        [string]$Status,
+
+        [Parameter()]
+        [int]$FindingCount = 0,
+
+        [Parameter()]
+        [string]$ErrorMessage = $null
+    )
+    if (-not $Script:ADTestCoverageTracker) {
+        # Defensive - a caller that forgot to Reset-ADTestCoverageTracker
+        # first still gets a working (if unreset) tracker rather than an
+        # error on first use.
+        $Script:ADTestCoverageTracker = [System.Collections.Generic.List[PSCustomObject]]::new()
+    }
+    $Script:ADTestCoverageTracker.Add([PSCustomObject]@{
+        TestName     = $TestName
+        Status       = $Status
+        FindingCount = $FindingCount
+        ErrorMessage = $ErrorMessage
+    })
+}
+
+function Get-ADTestCoverageTracker {
+    <#
+    .SYNOPSIS
+        Returns the test-coverage entries recorded so far in this run.
+    #>
+    [CmdletBinding()]
+    param()
+    return @($Script:ADTestCoverageTracker)
+}
+
 # --- Run-scope notes: "this check ran, but against a narrower/different
 # target than its normal assumption" ---
 #
@@ -1751,6 +1847,89 @@ function Set-ADFindingProperty {
         # would throw. Add it as a new note property instead.
         $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
     }
+}
+
+function Resolve-ADRebuiltReportOutputPath {
+    <#
+    .SYNOPSIS
+        Resolves an -OutputPath argument for the offline "rebuild from
+        JSON" functions (Export-ADSecurityReportHTMLFromJson,
+        Export-ADSecurityReportCSVFromJson) to a concrete file path,
+        accepting either an exact file path OR a folder.
+    .DESCRIPTION
+        Reported gap: -OutputPath required an exact file path - callers
+        who just wanted to point at "the reports folder" and get a
+        sensibly-named file had to construct the filename themselves,
+        duplicating this module's own naming convention. Mirrors
+        -FindingsPath/-BaselinePath/-RetestPath already accepting either
+        a file or a folder (Resolve-ADRetestReportFile) - this closes the
+        same file-or-folder flexibility on the output side.
+
+        Treated as a FOLDER (auto-named file created inside it) when
+        EITHER:
+          - -OutputPath already exists on disk as a directory, or
+          - -OutputPath has no file extension at all (a not-yet-created
+            path is ambiguous between "a folder to create" and "a file
+            path with no extension"; this module's own outputs always
+            have an extension, so "no extension" is treated as "this is
+            a folder path").
+        Otherwise treated as an exact file path, unchanged from prior
+        behavior - including when it has a DIFFERENT extension than
+        -Extension (the caller's explicit choice is respected, not
+        second-guessed).
+
+        The auto-generated filename is "AD_Security_Audit_<timestamp>-recreated.<ext>"
+        - deliberately NOT the same name Start-ADSecurityAudit's live
+        export would use for the same timestamp (which would silently
+        overwrite the original report if the rebuild is pointed at the
+        same folder the original JSON/HTML/CSV already lives in - a real
+        risk since "point it at the folder your reports are already in"
+        is exactly the convenient use case this is meant to support).
+    .PARAMETER OutputPath
+        The caller's -OutputPath argument - a file or a folder.
+    .PARAMETER FindingsFile
+        The resolved findings JSON FileInfo (from Resolve-ADRetestReportFile),
+        used to derive the auto-generated filename's timestamp so it's
+        traceable back to the export it was rebuilt from.
+    .PARAMETER Extension
+        File extension (without a dot) to use when auto-generating a
+        filename, e.g. 'html' or 'csv'.
+    .OUTPUTS
+        [string] the resolved, concrete file path to write to. The
+        containing directory is created if it doesn't exist yet (for
+        both the folder case and an exact file path in a new directory).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$OutputPath,
+
+        [Parameter(Mandatory)]
+        [System.IO.FileInfo]$FindingsFile,
+
+        [Parameter(Mandatory)]
+        [string]$Extension
+    )
+
+    $isFolder = (Test-Path -Path $OutputPath -PathType Container) -or
+        (-not (Test-Path -Path $OutputPath) -and [string]::IsNullOrEmpty([System.IO.Path]::GetExtension($OutputPath)))
+
+    if ($isFolder) {
+        $timestamp = $FindingsFile.Name -replace '^AD_Security_Audit_', '' -replace '\.json$', ''
+        $fileName = "AD_Security_Audit_$timestamp-recreated.$Extension"
+        $resolved = Join-Path -Path $OutputPath -ChildPath $fileName
+        Write-Verbose "Resolve-ADRebuiltReportOutputPath: -OutputPath '$OutputPath' is a folder; writing '$resolved'."
+    }
+    else {
+        $resolved = $OutputPath
+    }
+
+    $targetDir = Split-Path -Path $resolved -Parent
+    if ($targetDir -and -not (Test-Path -Path $targetDir)) {
+        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    }
+
+    return $resolved
 }
 
 function Get-ADTestCoverageSidecar {

@@ -95,6 +95,47 @@ Describe 'Export-ADSecurityReportHTMLFromJson' {
         Test-Path $outPath | Should -BeTrue
     }
 
+    It 'accepts an existing folder for -OutputPath and auto-names the file inside it' {
+        $folder = New-FindingsFixture -FolderName 'output-folder-existing' -Findings $script:Findings -Timestamp '2026-08-13_00-00-00'
+
+        { Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $folder } | Should -Not -Throw
+        $expected = Join-Path $folder 'AD_Security_Audit_2026-08-13_00-00-00-recreated.html'
+        Test-Path $expected | Should -BeTrue
+    }
+
+    It 'creates a not-yet-existing folder for -OutputPath and auto-names the file inside it' {
+        $folder = New-FindingsFixture -FolderName 'output-folder-new-source' -Findings $script:Findings -Timestamp '2026-08-14_00-00-00'
+        $newFolder = Join-Path $TestDrive 'brand-new-output-folder'
+        Test-Path $newFolder | Should -BeFalse
+
+        { Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $newFolder } | Should -Not -Throw
+        Test-Path $newFolder | Should -BeTrue
+        $expected = Join-Path $newFolder 'AD_Security_Audit_2026-08-14_00-00-00-recreated.html'
+        Test-Path $expected | Should -BeTrue
+    }
+
+    It 'does not overwrite an original same-timestamp HTML report when -OutputPath is that same folder' {
+        $folder = New-FindingsFixture -FolderName 'output-folder-no-overwrite' -Findings $script:Findings -Timestamp '2026-08-15_00-00-00'
+        $originalHtmlPath = Join-Path $folder 'AD_Security_Audit_2026-08-15_00-00-00.html'
+        'ORIGINAL - DO NOT OVERWRITE' | Out-File -FilePath $originalHtmlPath -Encoding UTF8
+
+        Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $folder
+
+        (Get-Content -Path $originalHtmlPath -Raw) | Should -Match 'DO NOT OVERWRITE'
+    }
+
+    It 'still treats a path with a .html extension as an exact file, even if it does not exist yet' {
+        $folder = New-FindingsFixture -FolderName 'output-exact-path-form' -Findings $script:Findings -Timestamp '2026-08-16_00-00-00'
+        $exactPath = Join-Path $TestDrive 'exact-path-does-not-exist-yet.html'
+        Test-Path $exactPath | Should -BeFalse
+
+        Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $exactPath
+
+        Test-Path $exactPath | Should -BeTrue
+        # Confirm it did NOT also create an auto-named file - the exact path was honored as given.
+        Test-Path (Join-Path $TestDrive 'AD_Security_Audit_2026-08-16_00-00-00-recreated.html') | Should -BeFalse
+    }
+
     It 'produces a report whose Executive Summary counts match the findings by severity' {
         $folder = New-FindingsFixture -FolderName 'summary-counts' -Findings $script:Findings -Timestamp '2026-08-03_00-00-00'
         $outPath = Join-Path $TestDrive 'recreated-summary.html'
@@ -236,6 +277,19 @@ Describe 'Export-ADSecurityReportHTMLFromJson - Test Coverage sidecar' {
         $content | Should -Match 'CertificateServices'
         $content | Should -Match 'Access is denied'
         $content | Should -Match 'EXCLUDED'
+    }
+
+    It 'renders the Test Coverage section as a collapsed-by-default <details> element, not an always-expanded box' {
+        $coverage = @([PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 1; ErrorMessage = $null })
+        $folder = New-FindingsFixture -FolderName 'collapsible-coverage' -Findings $script:Findings -Timestamp '2026-08-21_00-00-00' -TestCoverage $coverage
+        $outPath = Join-Path $TestDrive 'recreated-collapsible-coverage.html'
+        Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $outPath
+
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Match '<details class="warning-box"[^>]*id="test-coverage"'
+        # No "open" attribute on that specific <details> tag - collapsed by default.
+        $content | Should -Not -Match '<details[^>]*id="test-coverage"[^>]*\sopen'
+        $content | Should -Match '<summary[^>]*>.*TEST COVERAGE'
     }
 
     It 'renders a COMPLETED (not CLEAN) badge for a check with findings, and a CLEAN badge for a check with none - regression test for a switch $_ rebind bug that previously always showed CLEAN' {
