@@ -15,6 +15,7 @@ A PowerShell module that finds misconfigurations and security vulnerabilities in
 - [Installation](#installation)
 - [Usage](#usage)
 - [Scoring & Maturity](#scoring--maturity)
+- [Test Coverage](#test-coverage)
 - [Offline / Snapshot Mode](#offline--snapshot-mode)
 - [Multi-Domain / Forest Targeting](#multi-domain--forest-targeting)
 - [Forest Consolidation, Retesting & Trends](#forest-consolidation-retesting--trends)
@@ -135,7 +136,7 @@ Get-ADSnapshot -ToJson "C:\Snapshots\contoso.json"
 Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso.json" -ExportPath "C:\ADReports"
 ```
 
-**Output formats:** HTML (interactive, risk gauge, maturity panel, MITRE summary) · CSV (with `MitreTechnique`/`AnssiControl`/`Weight` columns) · JSON · a JSON score sidecar (`AD_Security_Score_<timestamp>.json`).
+**Output formats:** HTML (interactive, risk gauge, maturity panel, MITRE summary, Test Coverage section) · CSV (with `MitreTechnique`/`AnssiControl`/`Weight`/`TestName` columns) · JSON · a JSON score sidecar (`AD_Security_Score_<timestamp>.json`) · a test coverage sidecar (`AD_Security_TestCoverage_<timestamp>.json`/`.csv`) recording, for every registered check, whether it ran clean, ran and found something, failed, or was excluded.
 
 **Visual dashboard:** open `ui/index.html`, upload a generated JSON report (or click **Load sample report**) to browse findings by severity with remediation links.
 
@@ -149,6 +150,17 @@ Every run produces an executive roll-up via `Get-ADRiskScore`:
 - **MITRE ATT&CK tagging** — every finding maps to a technique (e.g. `T1558.001` Golden Ticket), with a frequency summary in the report.
 
 All three come from one mapping table in `src/Scoring.ps1` (`Issue → MITRE technique → ANSSI control → weight`) — extend coverage by adding one entry there. The output schema is additive-only.
+
+## Test Coverage
+
+Since v1.24.0, every run records not just what it *found*, but what it *checked*: for every registered check (`-IncludeTests`/`-ExcludeTests` in mind), the report shows whether it ran clean, ran and found something, failed, or was deliberately excluded. Previously a check that errored out only produced a console warning, and a check that ran and found nothing was indistinguishable from one that never ran at all — a "clean" report and an "incomplete" report looked identical.
+
+- **HTML** — a "Test Coverage" section with a per-check badge (`COMPLETED` / `CLEAN` / `FAILED` / `EXCLUDED`) and a summary line breaking out passed-clean vs. found-issues vs. untested (failed+excluded) as distinct counts.
+- **CSV/JSON sidecars** — `AD_Security_TestCoverage_<timestamp>.json`/`.csv`, alongside the existing findings/score exports.
+- **A fully clean run (zero findings) now exports a full report** — previously this was silently skipped, since export was gated on having at least one finding.
+- **`Export-ADSecurityReportCSVFromJson`** (new) — the CSV equivalent of `Export-ADSecurityReportHTMLFromJson`, rebuilding the findings CSV (and coverage CSV, if available) from an old JSON export offline.
+- An export that predates test coverage tracking gets an explicit note rather than a silently-missing section: the HTML rebuild path adds a "Test Coverage Not Available" note citing the version boundary, and the CSV rebuild path still writes a coverage CSV with a single explanatory row instead of omitting the file.
+- **Forest Consolidation, Retest Comparison, and Maturity Trend all cross-check against this data too** — see [Forest Consolidation, Retesting & Trends](#forest-consolidation-retesting--trends) for why this matters (a false "Resolved" claim, or a misleading score/domain comparison, can both result from under-testing rather than genuine improvement if this isn't accounted for).
 
 ## Offline / Snapshot Mode
 
@@ -230,7 +242,7 @@ Rolls up two or more prior per-domain JSON exports into one forest-wide view:
 
 - **Forest score rollup** — worst-domain (MAX) semantics, same as per-domain scoring.
 - **Per-category heatmap** — worst per-domain score per category.
-- **Domain comparison table** — finding counts by severity, worst-first.
+- **Domain comparison table** — finding counts by severity, worst-first, plus a **Coverage column** (since v1.24.0) flagging any domain with untested (failed/excluded) checks or no coverage data at all — a domain that looks "cleaner" purely from checking less is called out rather than mistaken for genuinely better posture.
 - **Cross-domain trust-risk enrichment** — annotates trust findings with the target domain's own score, when scanned.
 - **Newly-missing domains** — via `-PriorConsolidationPath`, flags domains scanned before but absent this run.
 
@@ -250,8 +262,8 @@ Compares a pre-remediation baseline against a post-remediation retest of the sam
 
 - **Score & maturity delta** — both runs recomputed under the *current* scoring table, so version drift doesn't distort the delta.
 - **Per-category delta**.
-- **New / Resolved / Still Open / Changed findings** — matched by Category+Issue+AffectedObject (not just Category+Issue, so partial remediation shows correctly).
-- **`Export-ADRetestComparisonHTML`** — togglable Current State / Delta View.
+- **New / Resolved / Unconfirmed / Still Open / Changed findings** — matched by Category+Issue+AffectedObject (not just Category+Issue, so partial remediation shows correctly). Since v1.24.0, a finding that disappears from the retest is only counted as **Resolved** if the check that would have found it is confirmed to have actually run; if that check failed or was excluded in the retest, the finding lands in a separate **Unconfirmed** bucket instead — its disappearance is not evidence of remediation, just of not being re-checked.
+- **`Export-ADRetestComparisonHTML`** — togglable Current State / Delta View, plus an Unconfirmed section and Coverage Caveats box when relevant.
 
 ```powershell
 Get-ADRetestComparison -BaselinePath "C:\Reports\Pre" -RetestPath "C:\Reports\Post" -Verbose |
@@ -269,7 +281,7 @@ Answers "what's the trajectory over N runs" rather than a two-point comparison:
 
 - **Score/maturity over time** — chronological series from every score sidecar under `-ReportPath`.
 - **Per-category trend** — Improving / Flat / Regressing per category.
-- **`Export-ADMaturityTrendHTML`** — inline-SVG line chart, per-category sparklines, and a table showing module version per run (so a score jump can be attributed to a tool change vs. real posture change).
+- **`Export-ADMaturityTrendHTML`** — inline-SVG line chart, per-category sparklines, and a table showing module version per run (so a score jump can be attributed to a tool change vs. real posture change), plus a **Coverage column** (since v1.24.0) flagging any run with untested (failed/excluded) checks or no coverage data at all — a score that looks like improvement purely from checking less is called out rather than read as genuine progress.
 
 Unlike Retest Comparison, this does **not** recompute scores under the current table — it shows the historical record exactly as originally scored.
 
@@ -283,9 +295,11 @@ With only one sidecar, no trend is computed (`RunCount = 1`, explanatory message
 </details>
 
 <details>
-<summary><strong>Recreating HTML reports from JSON, with no re-scan</strong></summary>
+<summary><strong>Recreating HTML/CSV reports from JSON, with no re-scan</strong></summary>
 
-- **`Export-ADSecurityReportHTMLFromJson`** — rebuilds the main audit HTML report from an `AD_Security_Audit_<timestamp>.json` export alone. Score/maturity/MITRE are recomputed fresh. Gaps it *can't* recover (never stored in that JSON): Domain, Duration, RunMode, Offline Mode Coverage Notes, and the Privileged Users section — pass what you know via parameters, or accept the placeholders.
+- **`Export-ADSecurityReportHTMLFromJson`** — rebuilds the main audit HTML report from an `AD_Security_Audit_<timestamp>.json` export alone. Score/maturity/MITRE are recomputed fresh. Gaps it *can't* recover (never stored in that JSON): Domain, Duration, RunMode, Offline Mode Coverage Notes, and the Privileged Users section — pass what you know via parameters, or accept the placeholders. Findings missing supporting information (`EstimatedEffort`/`KnownRisks`/`BackupRollback`/`OperationalNotes`, or MITRE/ANSSI/Weight metadata) because the export predates those fields are backfilled with current guidance where available (`Merge-ADFindingNarrativeGaps`), clearly labeled as such — never silently presented as if it were part of the original run.
+- **`Export-ADSecurityReportCSVFromJson`** (new in v1.24.0) — the CSV equivalent: rebuilds the findings CSV (and, if the sidecar exists, a coverage CSV) from the same JSON export, using the exact same column-construction function as the live export so the two can't drift apart.
+- Both rebuild paths pick up a sibling `AD_Security_TestCoverage_<timestamp>.json`, if present, to populate the Test Coverage section/CSV; an export that predates coverage tracking gets an explicit note instead of a silently-missing section.
 - **Retest comparison JSON** round-trips the same way: reload with `ConvertFrom-Json` and pipe straight into `Export-ADRetestComparisonHTML` — no need to re-run the comparison. The same idiom works for Forest Consolidation and Maturity Trend.
 
 </details>
@@ -489,6 +503,7 @@ Open `http://localhost:8000`, then upload a JSON file, paste JSON, load from a U
 
 Full details in [CHANGELOG.md](./CHANGELOG.md). Recent highlights:
 
+- **v1.24.0** — Added Test Coverage tracking: every report now shows which checks ran clean, found something, failed, or were excluded, instead of a clean run being indistinguishable from an incomplete one. New `Export-ADSecurityReportCSVFromJson` (CSV equivalent of the HTML JSON-rebuild path). Closed the same "under-testing looks like improvement" blind spot in `Get-ADRetestComparison` (a new `UnconfirmedFindings` bucket replaces false "Resolved" claims when the relevant check didn't actually run), `Get-ADMaturityTrend`, and `Get-ADForestConsolidation` (both flag incomplete/missing coverage rather than letting it silently skew a trend or cross-domain comparison). Also fixed a scoring bug where a JSON-recreated finding missing MITRE/ANSSI/Weight metadata silently scored 0 instead of its real weight, and a general PowerShell null-vs-empty-array bug affecting several offline analysis functions.
 - **v1.23.9** — Added a "Run Scope Information" report section (and console notice) for whenever `-Server` names a specific DC that isn't the domain's actual PDC Emulator, so "PDC-only" checks (Machine Account Quota, domain security settings) don't silently query a different DC than a reader might assume.
 - **v1.23.8** — Fixed "Insufficient Domain Controller Count" undercounting (and a related primaryGroupID false-positive) whenever `-Server` named one specific DC; both now use an always-unscoped DC inventory (`Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope`) independent of per-DC-probe scoping. Also fixed `Get-ADTargetDomainController` to deterministically prefer the domain's PDC rather than an arbitrary enumerated DC.
 - **v1.23.7** — Closed the four forest/forest-root coverage gaps: `Test-ADDomainSecurity` gained its own Outdated Forest Functional Level finding (previously only a `Details` sidecar under the domain-level check) and a Short Tombstone Lifetime check; `Test-ADDangerousPermissions` gained non-standard-permissions checks on the Schema and Configuration naming context head objects. All four are fully offline-capable.

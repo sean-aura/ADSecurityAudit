@@ -55,7 +55,8 @@ BeforeAll {
             [string]$FolderName,
             [array]$Findings,
             [string]$Timestamp,
-            [switch]$WithScoreSidecar
+            [switch]$WithScoreSidecar,
+            [array]$TestCoverage
         )
         $folder = Join-Path $TestDrive $FolderName
         New-Item -ItemType Directory -Path $folder -Force | Out-Null
@@ -66,6 +67,11 @@ BeforeAll {
             $riskScore = Get-ADRiskScore -Findings $Findings
             $scorePath = Join-Path $folder "AD_Security_Score_$Timestamp.json"
             $riskScore | ConvertTo-Json -Depth 6 | Out-File -FilePath $scorePath -Encoding UTF8
+        }
+
+        if ($PSBoundParameters.ContainsKey('TestCoverage')) {
+            $coveragePath = Join-Path $folder "AD_Security_TestCoverage_$Timestamp.json"
+            $TestCoverage | ConvertTo-Json -Depth 4 | Out-File -FilePath $coveragePath -Encoding UTF8
         }
         return $folder
     }
@@ -184,6 +190,92 @@ Describe 'Export-ADSecurityReportHTMLFromJson' {
             $content = Get-Content -Path $outPath -Raw
             $content | Should -Match 'user1 -&gt; GroupA -&gt; Domain Admins'
         }
+    }
+}
+
+Describe 'Export-ADSecurityReportHTMLFromJson - Test Coverage sidecar' {
+    <#
+        Regression coverage for the reported gap: neither the HTML nor CSV
+        report indicated which checks did NOT run (excluded/failed) or
+        which ran and found nothing. Main.ps1 now writes a sibling
+        AD_Security_TestCoverage_<timestamp>.json; this recovers it via
+        Get-ADTestCoverageSidecar (Common.ps1) when recreating the report.
+    #>
+    It 'summarizes passed-clean vs found-issues vs untested (failed+excluded) as distinct counts, not lumped into one "completed" figure' {
+        $coverage = @(
+            [PSCustomObject]@{ TestName = 'FoundSomething'; Status = 'Completed'; FindingCount = 2; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'RanClean1'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'RanClean2'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'ErroredOut'; Status = 'Failed'; FindingCount = 0; ErrorMessage = 'boom' }
+            [PSCustomObject]@{ TestName = 'SkippedCheck'; Status = 'Excluded'; FindingCount = 0; ErrorMessage = $null }
+        )
+        $folder = New-FindingsFixture -FolderName 'summary-counts' -Findings $script:Findings -Timestamp '2026-08-13_00-00-00' -TestCoverage $coverage
+        $outPath = Join-Path $TestDrive 'recreated-summary-counts.html'
+        Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $outPath
+
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Match '2 passed clean'
+        $content | Should -Match '1 found issue'
+        $content | Should -Match '2 untested'
+        $content | Should -Match '1 failed'
+        $content | Should -Match '1 excluded'
+    }
+
+    It 'renders a Test Coverage section when a coverage sidecar exists next to the findings JSON' {
+        $coverage = @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 1; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'CertificateServices'; Status = 'Failed'; FindingCount = 0; ErrorMessage = 'Access is denied' }
+            [PSCustomObject]@{ TestName = 'RodcSecurity'; Status = 'Excluded'; FindingCount = 0; ErrorMessage = $null }
+        )
+        $folder = New-FindingsFixture -FolderName 'with-coverage' -Findings $script:Findings -Timestamp '2026-08-10_00-00-00' -TestCoverage $coverage
+        $outPath = Join-Path $TestDrive 'recreated-with-coverage.html'
+        Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $outPath
+
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Match 'TEST COVERAGE'
+        $content | Should -Match 'CertificateServices'
+        $content | Should -Match 'Access is denied'
+        $content | Should -Match 'EXCLUDED'
+    }
+
+    It 'renders a COMPLETED (not CLEAN) badge for a check with findings, and a CLEAN badge for a check with none - regression test for a switch $_ rebind bug that previously always showed CLEAN' {
+        $coverage = @(
+            [PSCustomObject]@{ TestName = 'HasFindings'; Status = 'Completed'; FindingCount = 3; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'NoFindings'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+        )
+        $folder = New-FindingsFixture -FolderName 'badge-regression' -Findings $script:Findings -Timestamp '2026-08-11_00-00-00' -TestCoverage $coverage
+        $outPath = Join-Path $TestDrive 'recreated-badge-regression.html'
+        Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $outPath
+
+        $content = Get-Content -Path $outPath -Raw
+        # The HasFindings row must show COMPLETED (not CLEAN) despite both
+        # sharing the 'Completed' Status - only FindingCount distinguishes
+        # them, and reading FindingCount off the wrong object (the switch
+        # subject string, pre-fix) silently always took the "0" branch.
+        ($content -match '(?s)HasFindings.{0,200}?COMPLETED') | Should -BeTrue
+        ($content -match '(?s)NoFindings.{0,200}?CLEAN') | Should -BeTrue
+    }
+
+    It 'omits the real Test Coverage section (no throw) when no coverage sidecar exists, but adds a clear "not available" note citing the version boundary' {
+        $folder = New-FindingsFixture -FolderName 'no-coverage' -Findings $script:Findings -Timestamp '2026-08-12_00-00-00'
+        $outPath = Join-Path $TestDrive 'recreated-no-coverage.html'
+        { Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $outPath } | Should -Not -Throw
+
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Not -Match 'check\(s\) tracked for this run' -Because 'the real Test Coverage section (with counts) should not render when there is no data'
+        $content | Should -Match 'Test Coverage Not Available'
+        $content | Should -Match '1\.24\.0' -Because 'the note should name the version test coverage tracking was introduced in, so a reader can tell whether their export predates it'
+    }
+
+    It 'does NOT add the "not available" note when a real coverage sidecar exists' {
+        $coverage = @([PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 1; ErrorMessage = $null })
+        $folder = New-FindingsFixture -FolderName 'has-coverage-no-false-note' -Findings $script:Findings -Timestamp '2026-08-14_00-00-00' -TestCoverage $coverage
+        $outPath = Join-Path $TestDrive 'recreated-has-coverage-no-false-note.html'
+        Export-ADSecurityReportHTMLFromJson -FindingsPath $folder -OutputPath $outPath
+
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Not -Match 'Test Coverage Not Available'
+        $content | Should -Match 'check\(s\) tracked for this run'
     }
 }
 

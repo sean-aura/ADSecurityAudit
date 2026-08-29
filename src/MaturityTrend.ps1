@@ -131,9 +131,12 @@ function Get-ADMaturityTrend {
         module's other -ToJson features.
     .OUTPUTS
         PSCustomObject: GeneratedDate, RunCount, EstimatedDateCount,
-        DateRange, Series (each entry carries DateEstimated), CategoryTrends,
-        OverallDirection, Message (non-null when fewer than two usable runs
-        were found and/or one or more runs used an estimated date).
+        IncompleteCoverageCount, NoCoverageDataCount, DateRange, Series
+        (each entry carries DateEstimated/CoverageAvailable/UntestedCount),
+        CategoryTrends, OverallDirection, Message (non-null when fewer
+        than two usable runs were found, and/or one or more runs used an
+        estimated date, and/or one or more runs had incomplete/unavailable
+        coverage data).
     .EXAMPLE
         Get-ADMaturityTrend -ReportPath .\Reports\ -Verbose |
             Export-ADMaturityTrendHTML -OutputPath .\maturity-trend.html
@@ -191,15 +194,30 @@ function Get-ADMaturityTrend {
             Write-Warning "Score sidecar has no GeneratedDate field (predates v1.21.0) - using the file's last-write time as an ESTIMATED date instead: '$($f.FullName)'"
         }
 
+        # Reported gap: a run with several checks excluded/failed scores
+        # BETTER than a fully-tested run purely because fewer checks means
+        # fewer chances to find something - nothing here previously
+        # distinguished "genuinely improved" from "checked less this
+        # time". Same sibling-sidecar lookup Get-ADRetestComparison uses
+        # (Get-ADTestCoverageSidecar, generalized to also accept a Score
+        # sidecar - see its own docs), same "flag it on the run/series
+        # entry, don't hide it" pattern already established here for
+        # DateEstimated.
+        $coverage = @(Get-ADTestCoverageSidecar -FindingsFile $f)
+        $untestedCount = @($coverage | Where-Object { $_.Status -in @('Failed', 'Excluded') }).Count
+        $coverageAvailable = $coverage.Count -gt 0
+
         $runs += [PSCustomObject]@{
-            Path           = $f.FullName
-            GeneratedDate  = $generatedDate
-            DateEstimated  = $dateEstimated
-            ModuleVersion  = if ($sc.PSObject.Properties.Name -contains 'ModuleVersion') { $sc.ModuleVersion } else { $null }
-            TotalScore     = [int]$sc.TotalScore
-            MaturityLevel  = [int]$sc.MaturityLevel
-            MaturityLabel  = $sc.MaturityLabel
-            CategoryScores = @($sc.CategoryScores)
+            Path              = $f.FullName
+            GeneratedDate     = $generatedDate
+            DateEstimated     = $dateEstimated
+            ModuleVersion     = if ($sc.PSObject.Properties.Name -contains 'ModuleVersion') { $sc.ModuleVersion } else { $null }
+            TotalScore        = [int]$sc.TotalScore
+            MaturityLevel     = [int]$sc.MaturityLevel
+            MaturityLabel     = $sc.MaturityLabel
+            CategoryScores    = @($sc.CategoryScores)
+            CoverageAvailable = $coverageAvailable
+            UntestedCount     = $untestedCount
         }
     }
 
@@ -218,11 +236,13 @@ function Get-ADMaturityTrend {
             # $result (which this feeds) is round-tripped through -ToJson,
             # and a raw [datetime] would suffer the same ConvertTo-Json
             # expansion described in Scoring.ps1's GeneratedDate comment.
-            GeneratedDate = $r.GeneratedDate.ToString('o')
-            DateEstimated = $r.DateEstimated
-            ModuleVersion = $r.ModuleVersion
-            TotalScore    = $r.TotalScore
-            MaturityLevel = $r.MaturityLevel
+            GeneratedDate     = $r.GeneratedDate.ToString('o')
+            DateEstimated     = $r.DateEstimated
+            ModuleVersion     = $r.ModuleVersion
+            TotalScore        = $r.TotalScore
+            MaturityLevel     = $r.MaturityLevel
+            CoverageAvailable = $r.CoverageAvailable
+            UntestedCount     = $r.UntestedCount
         }
     }
 
@@ -255,15 +275,34 @@ function Get-ADMaturityTrend {
         $estimatedFileList = ($estimatedRuns | ForEach-Object { $_.Path }) -join '; '
         $messageParts += "$($estimatedRuns.Count) of $($runs.Count) score sidecar(s) had no GeneratedDate field (predates v1.21.0) - their date was ESTIMATED from the file's last-write time instead: $estimatedFileList"
     }
+    # Same reasoning as the DateEstimated caveat above, for a different
+    # kind of "this run's number isn't quite what it looks like": a run
+    # with untested (failed/excluded) checks scores BETTER than a fully-
+    # tested run purely from checking less, not from genuine improvement.
+    $incompleteCoverageRuns = @($runs | Where-Object { $_.CoverageAvailable -and $_.UntestedCount -gt 0 })
+    if ($incompleteCoverageRuns.Count -gt 0) {
+        $incompleteFileList = ($incompleteCoverageRuns | ForEach-Object { "$($_.Path) ($($_.UntestedCount) untested)" }) -join '; '
+        $messageParts += "$($incompleteCoverageRuns.Count) of $($runs.Count) run(s) had one or more untested (failed/excluded) checks - their score may look better than a fully-tested run purely because fewer checks had a chance to find something, not because posture genuinely improved: $incompleteFileList"
+    }
+    $noCoverageDataRuns = @($runs | Where-Object { -not $_.CoverageAvailable })
+    if ($noCoverageDataRuns.Count -gt 0 -and $noCoverageDataRuns.Count -lt $runs.Count) {
+        $messageParts += "$($noCoverageDataRuns.Count) of $($runs.Count) run(s) have no test coverage data available (predates module version 1.24.0, or the coverage sidecar was not kept alongside the score sidecar) - whether those specific runs had untested checks cannot be determined."
+    }
     $message = if ($messageParts.Count -gt 0) { $messageParts -join ' ' } else { $null }
     if ($message) { Write-Warning $message }
 
     $result = [PSCustomObject]@{
         # String, not a raw [datetime] - see Scoring.ps1's comment on why
         # (this object is itself written out via -ToJson below).
-        GeneratedDate       = (Get-Date).ToString('o')
-        RunCount            = $runs.Count
-        EstimatedDateCount  = $estimatedRuns.Count
+        GeneratedDate            = (Get-Date).ToString('o')
+        RunCount                 = $runs.Count
+        EstimatedDateCount       = $estimatedRuns.Count
+        # New in v1.24.0, additive - see the CoverageAvailable/UntestedCount
+        # comment above. IncompleteCoverageCount counts runs known (positive
+        # coverage data) to have had untested checks; NoCoverageDataCount
+        # counts runs where this couldn't be determined at all either way.
+        IncompleteCoverageCount = $incompleteCoverageRuns.Count
+        NoCoverageDataCount     = $noCoverageDataRuns.Count
         # Earliest/Latest stringified here too - $runs[].GeneratedDate is a
         # real [datetime] at this point (cast above), but this whole $result
         # object can be round-tripped through -ToJson, and a raw [datetime]
@@ -460,12 +499,22 @@ function Export-ADMaturityTrendHTML {
         if ($_.DateEstimated) {
             $dateCell = "$($_.GeneratedDate) <span class=`"estimated-flag`" title=`"No GeneratedDate field in this sidecar (predates v1.21.0) - date estimated from the file's last-write time.`">&#9888; estimated</span>"
         }
+        $coverageCell = if (-not $_.CoverageAvailable) {
+            '<span class="estimated-flag" title="No test coverage sidecar for this run (predates module v1.24.0, or the sidecar was not kept alongside it) - untested checks, if any, cannot be determined.">&#9888; no data</span>'
+        }
+        elseif ($_.UntestedCount -gt 0) {
+            "<span class=`"estimated-flag`" title=`"$($_.UntestedCount) check(s) failed or were excluded in this run - its score may look better than a fully-tested run purely from checking less, not genuine improvement.`">&#9888; $($_.UntestedCount) untested</span>"
+        }
+        else {
+            '<span style="color:#3f7d3f;">&#10003; full</span>'
+        }
         @"
                     <tr>
                         <td>$dateCell</td>
                         <td>$verText</td>
                         <td>$($_.TotalScore)</td>
                         <td>$($_.MaturityLevel)</td>
+                        <td>$coverageCell</td>
                     </tr>
 "@
     }) -join "`n"
@@ -539,7 +588,7 @@ $categoryRowsHtml
         <h2>Per-Run Detail</h2>
         <div style="overflow-x: auto;">
             <table>
-                <thead><tr><th>Generated</th><th>Module Version</th><th>Score</th><th>Maturity</th></tr></thead>
+                <thead><tr><th>Generated</th><th>Module Version</th><th>Score</th><th>Maturity</th><th>Coverage</th></tr></thead>
                 <tbody>
 $runRowsHtml
                 </tbody>

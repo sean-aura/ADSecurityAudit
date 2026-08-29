@@ -34,7 +34,8 @@ BeforeAll {
         param(
             [string]$FolderName,
             [array]$Findings,
-            [string]$Timestamp = '2026-07-01_00-00-00'
+            [string]$Timestamp = '2026-07-01_00-00-00',
+            [array]$TestCoverage
         )
         foreach ($finding in $Findings) { [void](Set-ADFindingMetadata -Finding $finding) }
         $riskScore = Get-ADRiskScore -Findings $Findings
@@ -45,8 +46,21 @@ BeforeAll {
         $findingsPath = Join-Path $domainFolder "AD_Security_Audit_$Timestamp.json"
         $scorePath    = Join-Path $domainFolder "AD_Security_Score_$Timestamp.json"
 
-        $Findings   | ConvertTo-Json -Depth 10 | Out-File -FilePath $findingsPath -Encoding UTF8
+        # See ConvertTo-ADFlatFindingsArray's own docs / Main.ps1's export
+        # fix - a plain "@() | ConvertTo-Json" pipes nothing through and
+        # writes an empty file rather than valid "[]" JSON.
+        if (@($Findings).Count -eq 0) {
+            '[]' | Out-File -FilePath $findingsPath -Encoding UTF8
+        }
+        else {
+            $Findings | ConvertTo-Json -Depth 10 | Out-File -FilePath $findingsPath -Encoding UTF8
+        }
         $riskScore  | ConvertTo-Json -Depth 6  | Out-File -FilePath $scorePath -Encoding UTF8
+
+        if ($PSBoundParameters.ContainsKey('TestCoverage')) {
+            $coveragePath = Join-Path $domainFolder "AD_Security_TestCoverage_$Timestamp.json"
+            $TestCoverage | ConvertTo-Json -Depth 4 | Out-File -FilePath $coveragePath -Encoding UTF8
+        }
 
         return $riskScore
     }
@@ -150,5 +164,65 @@ Describe 'Get-ADForestConsolidation (input validation)' {
         $emptyDir = Join-Path $TestDrive 'Empty'
         New-Item -ItemType Directory -Path $emptyDir -Force | Out-Null
         { Get-ADForestConsolidation -ReportPath $emptyDir } | Should -Throw
+    }
+}
+
+Describe 'Get-ADForestConsolidation - test coverage awareness' {
+    <#
+        Regression coverage for a reported gap: a domain with several
+        excluded/failed checks looks "cleaner" (lower score) than a
+        fully-tested domain purely from checking less, with nothing in
+        the forest-wide comparison distinguishing the two.
+    #>
+    BeforeAll {
+        # DomainX: fully covered, genuinely worse (score reflects a real finding).
+        New-DomainFixture -FolderName 'CoverageDomainX' -Findings @(
+            (New-TestFinding 'Inactive Enabled Account' 'User Account' 'Low' 1)
+        ) -Timestamp '2026-08-01_00-00-00' -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 1; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'RodcSecurity'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+        )
+        # DomainY: looks BETTER (zero findings) but RodcSecurity was excluded - misleading.
+        New-DomainFixture -FolderName 'CoverageDomainY' -Findings @() -Timestamp '2026-08-01_00-00-00' -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'RodcSecurity'; Status = 'Excluded'; FindingCount = 0; ErrorMessage = $null }
+        )
+        # DomainZ: no coverage sidecar at all.
+        New-DomainFixture -FolderName 'CoverageDomainZ' -Findings @() -Timestamp '2026-08-01_00-00-00'
+
+        $script:Consolidation = Get-ADForestConsolidation -ReportPath $TestDrive
+    }
+
+    It 'flags the domain with an excluded check as having incomplete coverage' {
+        $script:Consolidation.IncompleteCoverageDomains | Should -Contain 'CoverageDomainY'
+        $script:Consolidation.IncompleteCoverageDomains | Should -Not -Contain 'CoverageDomainX'
+    }
+
+    It 'flags the domain with no coverage sidecar distinctly from the incomplete one' {
+        $script:Consolidation.NoCoverageDataDomains | Should -Contain 'CoverageDomainZ'
+        $script:Consolidation.NoCoverageDataDomains | Should -Not -Contain 'CoverageDomainY'
+    }
+
+    It 'does not flag the fully-covered domain either way' {
+        $script:Consolidation.IncompleteCoverageDomains | Should -Not -Contain 'CoverageDomainX'
+        $script:Consolidation.NoCoverageDataDomains | Should -Not -Contain 'CoverageDomainX'
+    }
+
+    It 'DomainComparison rows carry CoverageAvailable/UntestedCount matching the domain-level flags' {
+        $rowY = $script:Consolidation.DomainComparison | Where-Object DomainName -eq 'CoverageDomainY'
+        $rowY.CoverageAvailable | Should -BeTrue
+        $rowY.UntestedCount | Should -Be 1
+
+        $rowZ = $script:Consolidation.DomainComparison | Where-Object DomainName -eq 'CoverageDomainZ'
+        $rowZ.CoverageAvailable | Should -BeFalse
+    }
+
+    It 'Export-ADForestConsolidationHTML renders the coverage column without throwing' {
+        $outPath = Join-Path $TestDrive 'forest-coverage.html'
+        { Export-ADForestConsolidationHTML -Consolidation $script:Consolidation -OutputPath $outPath } | Should -Not -Throw
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Match 'Coverage'
+        $content | Should -Match 'untested'
+        $content | Should -Match 'no data'
     }
 }
