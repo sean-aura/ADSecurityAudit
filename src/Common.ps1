@@ -1932,6 +1932,106 @@ function Resolve-ADRebuiltReportOutputPath {
     return $resolved
 }
 
+function ConvertTo-ADNormalizedTestCoverage {
+    <#
+    .SYNOPSIS
+        Defensively repairs test-coverage data found in a "columnar"
+        shape (one object whose TestName/Status/FindingCount/ErrorMessage
+        properties are each an array of N values) back into the intended
+        shape (N separate objects, each with scalar properties).
+    .DESCRIPTION
+        Reported bug: a real AD_Security_TestCoverage_<timestamp>.json,
+        round-tripped through Get-ADTestCoverageSidecar, came back as a
+        SINGLE entry whose 4 properties were each N-element arrays
+        instead of N separate entries - visible as "1 check(s) tracked"
+        in the summary line while the per-check table showed every test
+        name/finding-count crammed into one row, and the CSV rebuild
+        wrote literal "System.Object[]" into every column.
+
+        Confirmed mechanism for the visual symptom (regardless of how the
+        columnar shape itself arises - not reproducible from a clean
+        Main.ps1-style construction + ConvertTo-Json/ConvertFrom-Json
+        round-trip in this module's tested PowerShell version, so it may
+        be specific to Windows PowerShell 5.1's JSON handling or another
+        environment difference): with $entry.TestName/.FindingCount as
+        arrays, string interpolation ("$($entry.TestName)") space-joins
+        every element into one string - explaining "all N test names/
+        finding counts crammed into one cell". With $entry.Status as an
+        array, PowerShell's `switch` statement - given a COLLECTION
+        rather than a scalar as its test value - evaluates every element
+        independently and accumulates every match's output, so a
+        27-element array of "Completed" made the 'Completed' case body
+        run 27 times, producing 27 separately-styled badge <span>
+        elements all crammed into that same one cell. Export-Csv calling
+        .ToString() on each still-array-valued property explains the
+        literal "System.Object[]" in the CSV rebuild.
+
+        This function detects that columnar shape (any entry whose
+        TestName is a collection rather than a scalar string) and
+        un-transposes it back into one object per check, index-aligned
+        across all four properties. A no-op (returns the input unchanged)
+        for the normal, correctly-shaped case.
+    .PARAMETER Coverage
+        Array of coverage entries, in either shape.
+    .OUTPUTS
+        [array] of coverage entries, guaranteed one object per check with
+        scalar properties.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowNull()]
+        [array]$Coverage
+    )
+
+    if (-not $Coverage -or $Coverage.Count -eq 0) { return @() }
+
+    $isColumnar = $false
+    foreach ($item in $Coverage) {
+        # Check all four properties, not just TestName - broadens the
+        # safety net in case a future/different malformation only affects
+        # some of them (e.g. TestName stayed scalar but Status/FindingCount
+        # came back as arrays).
+        foreach ($propName in @('TestName', 'Status', 'FindingCount', 'ErrorMessage')) {
+            $propValue = $item.$propName
+            if ($null -ne $propValue -and $propValue -isnot [string] -and $propValue -is [System.Collections.IEnumerable]) {
+                $isColumnar = $true
+                break
+            }
+        }
+        if ($isColumnar) { break }
+    }
+    if (-not $isColumnar) {
+        return @($Coverage)
+    }
+
+    Write-Warning "ConvertTo-ADNormalizedTestCoverage: this run's test-coverage data was in an unexpected (columnar) shape - repaired it into one entry per check for display. If this recurs, please keep the raw AD_Security_TestCoverage_*.json so the cause can be tracked down (this has not been reproduced from a normal write/read round-trip in this module's tested PowerShell version)."
+
+    $normalized = [System.Collections.Generic.List[PSCustomObject]]::new()
+    foreach ($item in $Coverage) {
+        $names     = @($item.TestName)
+        $statuses  = @($item.Status)
+        $counts    = @($item.FindingCount)
+        $errors    = @($item.ErrorMessage)
+        # Row count from the LONGEST of the four, not just TestName's -
+        # the broadened detection above can now catch a malformation where
+        # some OTHER property is the array while TestName stayed scalar;
+        # keying off TestName alone would silently drop every row past
+        # its own (shorter) length in that case.
+        $rowCount = ($names.Count, $statuses.Count, $counts.Count, $errors.Count | Measure-Object -Maximum).Maximum
+        for ($i = 0; $i -lt $rowCount; $i++) {
+            $normalized.Add([PSCustomObject]@{
+                TestName     = if ($i -lt $names.Count) { $names[$i] } else { "(unknown check $i)" }
+                Status       = if ($i -lt $statuses.Count) { $statuses[$i] } else { $null }
+                FindingCount = if ($i -lt $counts.Count) { $counts[$i] } else { 0 }
+                ErrorMessage = if ($i -lt $errors.Count) { $errors[$i] } else { $null }
+            })
+        }
+    }
+    return @($normalized)
+}
+
 function Get-ADTestCoverageSidecar {
     <#
     .SYNOPSIS
@@ -1983,6 +2083,7 @@ function Get-ADTestCoverageSidecar {
 
     try {
         $coverage = @(Get-Content -Path $coveragePath -Raw | ConvertFrom-Json)
+        $coverage = ConvertTo-ADNormalizedTestCoverage -Coverage $coverage
         Write-Verbose "Get-ADTestCoverageSidecar: loaded $($coverage.Count) coverage entry(ies) from '$coveragePath'."
         return $coverage
     }

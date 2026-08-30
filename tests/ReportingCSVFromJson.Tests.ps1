@@ -219,5 +219,82 @@ Describe 'Export-ADSecurityReportCSVFromJson' {
             $covRows[0].Status | Should -Be 'NotAvailable'
             $covRows[0].ErrorMessage | Should -Match '1\.24\.0'
         }
+
+        It 'repairs a malformed "columnar" coverage sidecar (System.Object[] regression) instead of writing garbage rows' {
+            <#
+                Regression coverage for a reported bug: a real coverage
+                sidecar came back from Get-ADTestCoverageSidecar as ONE
+                entry whose TestName/Status/FindingCount/ErrorMessage were
+                each arrays (not the intended one-entry-per-check shape).
+                Export-Csv then called .ToString() on each still-array
+                property, writing the literal string "System.Object[]"
+                into every column. See ConvertTo-ADNormalizedTestCoverage's
+                own docs (Common.ps1) for the confirmed rendering mechanism
+                and why the columnar shape itself wasn't reproducible from
+                a normal write/read round-trip.
+            #>
+            $folder = New-FindingsFixture -FolderName 'columnar-coverage' -Findings $script:Findings -Timestamp '2026-08-22_00-00-00'
+            $columnarCoveragePath = Join-Path $folder 'AD_Security_TestCoverage_2026-08-22_00-00-00.json'
+            @{
+                TestName     = @('ADCSChaseFallback', 'ADCSExtended', 'AdminSDHolder')
+                Status       = @('Completed', 'Completed', 'Failed')
+                FindingCount = @(1, 14, 0)
+                ErrorMessage = @($null, $null, 'Access is denied')
+            } | ConvertTo-Json -Depth 4 | Out-File -FilePath $columnarCoveragePath -Encoding UTF8
+
+            $outPath = Join-Path $TestDrive 'recreated-columnar.csv'
+            Export-ADSecurityReportCSVFromJson -FindingsPath $folder -OutputPath $outPath -WarningAction SilentlyContinue
+
+            $coveragePath = Join-Path $TestDrive 'recreated-columnar-coverage.csv'
+            $covRows = Import-Csv -Path $coveragePath
+            $covRows.Count | Should -Be 3
+            $covRows | Where-Object { $_.TestName -eq 'System.Object[]' } | Should -BeNullOrEmpty
+            ($covRows | Where-Object TestName -eq 'AdminSDHolder').Status | Should -Be 'Failed'
+            ($covRows | Where-Object TestName -eq 'AdminSDHolder').ErrorMessage | Should -Be 'Access is denied'
+        }
+    }
+}
+
+Describe 'ConvertTo-ADNormalizedTestCoverage' {
+    It 'un-transposes a columnar shape into one entry per check' {
+        $columnar = @([PSCustomObject]@{
+            TestName     = @('A', 'B', 'C')
+            Status       = @('Completed', 'Completed', 'Failed')
+            FindingCount = @(1, 0, 0)
+            ErrorMessage = @($null, $null, 'boom')
+        })
+        $fixed = @(ConvertTo-ADNormalizedTestCoverage -Coverage $columnar -WarningAction SilentlyContinue)
+        $fixed.Count | Should -Be 3
+        $fixed[0].TestName | Should -Be 'A'
+        $fixed[2].Status | Should -Be 'Failed'
+        $fixed[2].ErrorMessage | Should -Be 'boom'
+    }
+
+    It 'leaves an already-correctly-shaped array unchanged' {
+        $normal = @(
+            [PSCustomObject]@{ TestName = 'A'; Status = 'Completed'; FindingCount = 1; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'B'; Status = 'Failed'; FindingCount = 0; ErrorMessage = 'err' }
+        )
+        $result = @(ConvertTo-ADNormalizedTestCoverage -Coverage $normal)
+        $result.Count | Should -Be 2
+        $result[0].TestName | Should -Be 'A'
+        $result[1].TestName | Should -Be 'B'
+    }
+
+    It 'returns an empty array (no throw) for empty input' {
+        { ConvertTo-ADNormalizedTestCoverage -Coverage @() } | Should -Not -Throw
+        @(ConvertTo-ADNormalizedTestCoverage -Coverage @()).Count | Should -Be 0
+    }
+
+    It 'detects a malformation on a property OTHER than TestName (broadened detection)' {
+        $columnar = @([PSCustomObject]@{
+            TestName     = 'ThisStaysScalarSomehow'
+            Status       = @('Completed', 'Failed')
+            FindingCount = @(1, 0)
+            ErrorMessage = @($null, 'boom')
+        })
+        $fixed = @(ConvertTo-ADNormalizedTestCoverage -Coverage $columnar -WarningAction SilentlyContinue)
+        $fixed.Count | Should -Be 2
+        $fixed[1].Status | Should -Be 'Failed'
     }
 }

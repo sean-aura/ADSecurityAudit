@@ -474,6 +474,13 @@ function Export-ADSecurityReportHTML {
         [array]$TestCoverage = @()
     )
     
+    # Second layer of defense (see ConvertTo-ADNormalizedTestCoverage's
+    # own docs, Common.ps1) in case -TestCoverage is ever passed directly
+    # with a malformed "columnar" shape - e.g. a future caller that
+    # doesn't go through Get-ADTestCoverageSidecar, which already applies
+    # this same repair for the JSON-rebuild paths.
+    $TestCoverage = ConvertTo-ADNormalizedTestCoverage -Coverage $TestCoverage
+
     $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $isOfflineRun = ($RunMode -eq 'Offline (Snapshot)')
     $runModeBadgeColor = if ($isOfflineRun) { '#c8590b' } else { '#1a7f4e' }
@@ -759,6 +766,23 @@ $(($RunScopeNotes | Sort-Object Category | ForEach-Object {
 })
 $(if (@($TestCoverage).Count -gt 0) {
     $tcSorted = @($TestCoverage | Sort-Object TestName)
+    if ($tcSorted.Count -eq 0) {
+        # Safety net: $TestCoverage had entries, but Sort-Object somehow
+        # produced none (e.g. every entry's TestName came back $null,
+        # which Sort-Object -Property silently drops rather than erroring
+        # on). Rendering nothing here would otherwise look identical to
+        # the intentional "Test Coverage Not Available" note elsewhere -
+        # this is a DIFFERENT, unexpected case (coverage data existed but
+        # something about its shape broke rendering), so it gets its own
+        # explicit, honest message instead of a table with a header row
+        # and no data, or silently vanishing.
+@"
+        <div class="warning-box" style="background:#fdf8ec; border-color:#8a6200;" id="test-coverage">
+            <p><strong>TEST COVERAGE</strong> - $(@($TestCoverage).Count) coverage entry(ies) were present for this run, but could not be rendered as a per-check list (their data did not match the expected shape even after automatic repair). This is unexpected - if you can, please keep the raw AD_Security_TestCoverage_*.json for this run so the cause can be investigated.</p>
+        </div>
+"@
+    }
+    else {
     $tcCompleted = @($tcSorted | Where-Object { $_.Status -eq 'Completed' })
     $tcPassed = @($tcCompleted | Where-Object { $_.FindingCount -eq 0 })
     $tcWithFindings = @($tcCompleted | Where-Object { $_.FindingCount -gt 0 })
@@ -802,6 +826,7 @@ $(($tcSorted | ForEach-Object {
             <p style="margin-top:10px; font-size:0.9em; color:#5b6472;">"Excluded" checks were deliberately left out of this run's scope; "Failed" checks were attempted but errored before producing a result (see Detail) and contributed zero findings either way - neither should be read as "checked and clean".</p>
         </details>
 "@
+    }
 })
         
         <div class="header-info">
