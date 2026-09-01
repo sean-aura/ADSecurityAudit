@@ -155,7 +155,7 @@ All three come from one mapping table in `src/Scoring.ps1` (`Issue → MITRE tec
 
 Since v1.24.0, every run records not just what it *found*, but what it *checked*: for every registered check (`-IncludeTests`/`-ExcludeTests` in mind), the report shows whether it ran clean, ran and found something, failed, or was deliberately excluded. Previously a check that errored out only produced a console warning, and a check that ran and found nothing was indistinguishable from one that never ran at all — a "clean" report and an "incomplete" report looked identical.
 
-- **HTML** — a "Test Coverage" section with a per-check badge (`COMPLETED` / `CLEAN` / `FAILED` / `EXCLUDED`) and a summary line breaking out passed-clean vs. found-issues vs. untested (failed+excluded) as distinct counts.
+- **HTML** — a "Test Coverage" section (collapsed by default; click to expand the full per-check list — it's a large table when every check is listed) with a per-check badge (`COMPLETED` / `CLEAN` / `FAILED` / `EXCLUDED`) and a summary line, visible either way, breaking out passed-clean vs. found-issues vs. untested (failed+excluded) as distinct counts.
 - **CSV/JSON sidecars** — `AD_Security_TestCoverage_<timestamp>.json`/`.csv`, alongside the existing findings/score exports.
 - **A fully clean run (zero findings) now exports a full report** — previously this was silently skipped, since export was gated on having at least one finding.
 - **`Export-ADSecurityReportCSVFromJson`** (new) — the CSV equivalent of `Export-ADSecurityReportHTMLFromJson`, rebuilding the findings CSV (and coverage CSV, if available) from an old JSON export offline.
@@ -406,7 +406,7 @@ An `AcceptedRisk` finding still counts toward the risk score — this is a repor
 
 ## Report Interpretation
 
-**HTML report structure:** Executive Summary (clickable severity cards) → Risk Score & Maturity (gauge, ANSSI ladder, category bars, MITRE summary) → Critical Issues → Detailed Findings (collapsed by default, one entry per Category+Issue with every affected object listed underneath) → Affected Objects. When applicable, a **Run Scope Information** box appears near the top (e.g. `-Server` named a specific DC that isn't the domain's PDC Emulator) alongside the offline-mode boxes for `-FromSnapshot` runs.
+**HTML report structure:** Executive Summary (clickable severity cards) → Risk Score & Maturity (gauge, ANSSI ladder, category bars, MITRE summary) → Critical Issues → Detailed Findings (collapsed by default, one entry per Category+Issue with every affected object listed underneath) → Affected Objects. When applicable, a **Run Scope Information** box appears near the top (e.g. `-Server` named a specific DC that isn't the domain's PDC Emulator) alongside the offline-mode boxes for `-FromSnapshot` runs, and a **Test Coverage** box (collapsed by default, click to expand the full per-check list — see [Test Coverage](#test-coverage)) when coverage data is available for the run.
 
 **Each finding includes:** Description, Impact, Affected Objects, and step-by-step Remediation.
 

@@ -681,6 +681,18 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Hard/Limited - a password can only be reset again, not restored to its previous (already known/old) value.'
         OperationalNotes = ''
     }
+    'Privileged Account with SPN (Kerberoasting Risk)' = @{
+        EstimatedEffort  = 'Medium - same as the non-privileged version, but the higher blast radius (a privileged account) makes coordinating the gMSA migration or password rotation with the service owner more urgent.'
+        KnownRisks       = 'A privileged service account with an SPN and a weak/crackable password is a high-value Kerberoasting target, since cracking it yields privileged access directly; migrating to a gMSA is the standard fix but requires the hosting application to support it.'
+        BackupRollback   = 'Easy - if gMSA migration isn''t viable, revert to the original account with a long/complex manually-set password; no data loss, though any ticket captured before the change remains crackable until the old password is retired.'
+        OperationalNotes = ''
+    }
+    'User Account with SPN (Kerberoasting Risk)' = @{
+        EstimatedEffort  = 'Medium - the real fix (migrating to a gMSA, or ensuring a long random password) is a bigger step than removing the SPN, since the SPN is what makes the service reachable via Kerberos; needs coordination with whoever manages the service.'
+        KnownRisks       = 'A service account with an SPN and a weak/crackable password is vulnerable to Kerberoasting; migrating to a gMSA (which manages its own long, automatically-rotated password) is the standard fix but requires the hosting application to support gMSA authentication.'
+        BackupRollback   = 'Easy - if gMSA migration isn''t viable for the application, revert to the original account with a manually-set long/complex password; no data loss, though any ticket captured before the change remains crackable until the old password is retired.'
+        OperationalNotes = ''
+    }
     'Privileged Account Not in Protected Users Group' = @{
         EstimatedEffort  = 'Medium - Protected Users enforces several non-configurable protections (no NTLM, no DES/RC4, no delegation, no long-lived TGT renewal) that can break dependent legitimate functionality, so Microsoft''s own guidance is to pilot it on a test group first.'
         KnownRisks       = 'Protected Users membership blocks NTLM authentication and Kerberos delegation for that account outright; any legitimate use of the account that relies on NTLM or delegation will break the moment it''s added.'

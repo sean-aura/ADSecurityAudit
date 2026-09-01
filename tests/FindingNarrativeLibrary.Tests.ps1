@@ -82,4 +82,34 @@ Describe 'FindingNarrativeLibrary.ps1 is in sync with its source' {
 
         $orphaned | Should -BeNullOrEmpty -Because "these library entries no longer match any Issue string in src/*.ps1 - the check was likely renamed or removed; re-run tools/Build-ADFindingNarrativeLibrary.ps1: $($orphaned -join ', ')"
     }
+
+    It 'captures both variants of a conditionally-named Issue (e.g. "$finding.Issue = if (...) { ... } else { ... }"), each with its own distinct paired text' {
+        <#
+            Regression coverage for a reported gap: "User Account with SPN
+            (Kerberoasting Risk)" / "Privileged Account with SPN
+            (Kerberoasting Risk)" (UserAudits.ps1) sets Issue AND
+            EstimatedEffort/KnownRisks/BackupRollback all via
+            "if ($isPrivileged) { 'A' } else { 'B' }" - a pattern the
+            plain-literal extractor (Get-ADQuotedFieldValue) doesn't
+            match at all, so this Issue previously had NO library entry,
+            leaving those fields permanently blank when recreating a
+            report from an export that predates them. Fixed via
+            Get-ADConditionalFieldBranches in the build script, pairing
+            each field's if/else branches positionally with Issue's own.
+        #>
+        . $libraryPath
+        $priv = $Script:ADFindingNarrativeLibrary['Privileged Account with SPN (Kerberoasting Risk)']
+        $nonPriv = $Script:ADFindingNarrativeLibrary['User Account with SPN (Kerberoasting Risk)']
+
+        $priv | Should -Not -BeNullOrEmpty
+        $nonPriv | Should -Not -BeNullOrEmpty
+        $priv.EstimatedEffort | Should -Not -BeNullOrEmpty
+        $nonPriv.EstimatedEffort | Should -Not -BeNullOrEmpty
+        # The two variants must have genuinely DIFFERENT text (proves the
+        # branches were paired correctly, not both accidentally getting
+        # the same branch's text).
+        $priv.KnownRisks | Should -Not -Be $nonPriv.KnownRisks
+        $priv.KnownRisks | Should -Match 'privileged'
+        $nonPriv.KnownRisks | Should -Not -Match 'privileged access directly'
+    }
 }
