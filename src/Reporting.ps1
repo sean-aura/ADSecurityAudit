@@ -491,6 +491,22 @@ function Export-ADSecurityReportHTML {
     $highFindings = $Findings | Where-Object { $_.Severity -eq 'High' } | Sort-Object Category
     $mediumFindings = $Findings | Where-Object { $_.Severity -eq 'Medium' } | Sort-Object Category
     $lowFindings = $Findings | Where-Object { $_.Severity -eq 'Low' } | Sort-Object Category
+    # Defensive catch-all: every check in this module currently only ever
+    # assigns Critical/High/Medium/Low (confirmed by a full source audit),
+    # but Get-ADRiskScore already has its own silent fallback for anything
+    # else (Scoring.ps1's "default { $sevCounts.Info++ }") - a finding
+    # with an unexpected Severity value (a typo, a future check, or a
+    # custom finding fed in from outside this module) would still be
+    # scored and still appear in the JSON/CSV exports (neither of which
+    # filter by severity at all), but would have been completely INVISIBLE
+    # in the HTML report - no section anywhere would ever render it, with
+    # no warning that anything was missing. Route it into its own section
+    # instead of letting it silently disappear, and warn so this is loud
+    # rather than silent if it's ever hit.
+    $otherFindings = @($Findings | Where-Object { $_.Severity -notin @('Critical', 'High', 'Medium', 'Low') } | Sort-Object Category)
+    if ($otherFindings.Count -gt 0) {
+        Write-Warning "Export-ADSecurityReportHTML: $($otherFindings.Count) finding(s) have an unexpected Severity value (not Critical/High/Medium/Low) and would have been invisible in the HTML report's severity sections - rendering them in a separate 'Other / Unclassified Severity' section instead. Affected Issue(s): $(($otherFindings | Select-Object -ExpandProperty Issue -Unique) -join '; ')"
+    }
 
     # Computed early (rather than where it's rendered, further down) so the
     # v1.20.1 sticky nav bar can know up front whether a Control Paths link
@@ -516,6 +532,7 @@ function Export-ADSecurityReportHTML {
     if ($highFindings) { [void]$navLinks.Add(@{ Href = '#high-findings'; Label = 'High' }) }
     if ($mediumFindings) { [void]$navLinks.Add(@{ Href = '#medium-findings'; Label = 'Medium' }) }
     if ($lowFindings) { [void]$navLinks.Add(@{ Href = '#low-findings'; Label = 'Low' }) }
+    if ($otherFindings.Count -gt 0) { [void]$navLinks.Add(@{ Href = '#other-findings'; Label = 'Other' }) }
     $navLinksHtml = ($navLinks | ForEach-Object { "<a href=`"$($_.Href)`">$($_.Label)</a>" }) -join "`n            "
 
     $html = @"
@@ -1138,6 +1155,23 @@ $diagramSvg
     <div id="low-findings-body">
 "@
         $groups = @($lowFindings | Group-Object -Property Category, Issue)
+        foreach ($group in $groups) {
+            $html += Get-FindingHTML -FindingGroup $group.Group
+        }
+        $html += "    </div>"
+    }
+
+    if ($otherFindings.Count -gt 0) {
+        $html += @"
+    <h2 id="other-findings"><span class="sev-dot" style="background:#5b6472;"></span>Other / Unclassified Severity Findings</h2>
+    <p style="color:#5b6472; font-size:0.9em; margin-top:-8px;">These findings have a Severity value other than Critical/High/Medium/Low - see the console warning from this run for which check(s) produced them. They are NOT missing findings; they are shown here specifically so an unexpected severity value can never make a finding disappear from this report.</p>
+    <div class="section-toolbar">
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('other-findings', true)">Expand All</button>
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('other-findings', false)">Collapse All</button>
+    </div>
+    <div id="other-findings-body">
+"@
+        $groups = @($otherFindings | Group-Object -Property Category, Issue)
         foreach ($group in $groups) {
             $html += Get-FindingHTML -FindingGroup $group.Group
         }

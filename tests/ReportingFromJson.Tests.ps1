@@ -333,6 +333,64 @@ Describe 'Export-ADSecurityReportHTMLFromJson - Test Coverage sidecar' {
     }
 }
 
+Describe 'Export-ADSecurityReportHTML - unexpected Severity values are never silently dropped' {
+    <#
+        Regression coverage from a full-codebase audit: every current check
+        only ever assigns Severity = Critical/High/Medium/Low, but the
+        HTML report's severity-bucketing only ever created sections for
+        those four values. A finding with any OTHER Severity (a future
+        check, a typo, or an externally-supplied finding) would still be
+        scored (Scoring.ps1 has its own "Info" catch-all bucket) and still
+        appear in JSON/CSV (neither filters by severity), but would never
+        have rendered ANYWHERE in the HTML report - completely invisible,
+        with no warning. Fixed with a catch-all "Other / Unclassified
+        Severity" section plus a Write-Warning naming the affected Issue(s).
+    #>
+    It 'renders a finding with an unexpected Severity value in a dedicated "Other" section instead of dropping it' {
+        $normalFinding = New-TestFinding -Issue 'Inactive Enabled Account' -Category 'User Account' -Severity 'Low' -SeverityLevel 1 -AffectedObject 'user1'
+        $weirdFinding = New-TestFinding -Issue 'Something With Unexpected Severity' -Category 'Custom Check' -Severity 'Informational' -SeverityLevel 1 -AffectedObject 'obj1'
+        $findings = @($normalFinding, $weirdFinding)
+
+        $outPath = Join-Path $TestDrive 'other-severity.html'
+        $riskScore = Get-ADRiskScore -Findings $findings
+        Export-ADSecurityReportHTML -Findings $findings -OutputPath $outPath -Domain 'contoso.com' `
+            -Summary @{ Critical = 0; High = 0; Medium = 0; Low = 1 } -Duration ([timespan]::Zero) `
+            -RiskScore $riskScore -RunMode 'Live' -WarningAction SilentlyContinue
+
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Match 'Something With Unexpected Severity'
+        $content | Should -Match 'Other / Unclassified Severity Findings'
+        $content | Should -Match 'Inactive Enabled Account'
+        $content | Should -Match 'other-findings'
+    }
+
+    It 'warns naming the affected Issue(s) when this happens' {
+        $weirdFinding = New-TestFinding -Issue 'Weird' -Category 'X' -Severity 'Bogus' -SeverityLevel 1 -AffectedObject 'o'
+        $outPath = Join-Path $TestDrive 'other-severity-warn.html'
+        $riskScore = Get-ADRiskScore -Findings @($weirdFinding)
+
+        $warnings = @()
+        Export-ADSecurityReportHTML -Findings @($weirdFinding) -OutputPath $outPath -Domain 'x' `
+            -Summary @{ Critical = 0; High = 0; Medium = 0; Low = 0 } -Duration ([timespan]::Zero) `
+            -RiskScore $riskScore -RunMode 'Live' -WarningVariable warnings -WarningAction SilentlyContinue
+
+        $warnings.Count | Should -BeGreaterThan 0
+        ($warnings -join ' ') | Should -Match 'Weird'
+    }
+
+    It 'does not create an Other section (or nav link) when every finding has a canonical severity' {
+        $normalFinding = New-TestFinding -Issue 'Inactive Enabled Account' -Category 'User Account' -Severity 'Low' -SeverityLevel 1 -AffectedObject 'user1'
+        $outPath = Join-Path $TestDrive 'no-other-section.html'
+        $riskScore = Get-ADRiskScore -Findings @($normalFinding)
+        Export-ADSecurityReportHTML -Findings @($normalFinding) -OutputPath $outPath -Domain 'contoso.com' `
+            -Summary @{ Critical = 0; High = 0; Medium = 0; Low = 1 } -Duration ([timespan]::Zero) `
+            -RiskScore $riskScore -RunMode 'Live'
+
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Not -Match 'Other / Unclassified Severity Findings'
+    }
+}
+
 Describe 'Test-ADFindingDetailsKey' {
     It 'finds a key on a real Hashtable' {
         Test-ADFindingDetailsKey -Details @{ Foo = 'bar' } -Key 'Foo' | Should -BeTrue
