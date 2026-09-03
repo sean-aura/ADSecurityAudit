@@ -58,6 +58,15 @@ function Test-AdminSDHolder {
         if ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('AdminSDHolder')) {
             $adminSDHolderAcl = $Snapshot.ACLs['AdminSDHolder']
 
+            # Real AD ACLs commonly carry more than one ACE for the same
+            # trustee (separate ACEs per property set/object type even when
+            # the summarized ActiveDirectoryRights flag is identical), which
+            # used to produce one fully-duplicate finding per ACE. Dedupe on
+            # (identity, rights, access type) so a trustee with N
+            # functionally-identical ACEs is reported once, not N times.
+            $__seenNonStdAce = @{}
+            $__seenDenyAce = @{}
+
             foreach ($ace in @($adminSDHolderAcl.Access)) {
                 $identityReference = $ace.IdentityReference
 
@@ -76,6 +85,10 @@ function Test-AdminSDHolder {
                     }
 
                     if ($hasRiskyPermission -or $ace.ActiveDirectoryRights -match 'ExtendedRight') {
+                        $__nonStdKey = "$identityReference|$($ace.ActiveDirectoryRights)"
+                        if ($__seenNonStdAce.ContainsKey($__nonStdKey)) { continue }
+                        $__seenNonStdAce[$__nonStdKey] = $true
+
                         $severity = 'Critical'
                         $severityLevel = 4
                         if ($identityReference -match 'BUILTIN\\' -or $identityReference -match 'NT AUTHORITY\\') {
@@ -108,23 +121,28 @@ function Test-AdminSDHolder {
                 }
 
                 if ($ace.AccessControlType -eq 'Deny') {
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'AdminSDHolder'
-                    $finding.Issue = 'Deny ACE on AdminSDHolder'
-                    $finding.Severity = 'High'
-                    $finding.SeverityLevel = 3
-                    $finding.AffectedObject = "AdminSDHolder - $identityReference"
-                    $finding.Description = "Deny ACE found on AdminSDHolder for '$identityReference'."
-                    $finding.Impact = "Deny ACEs on AdminSDHolder are unusual and may cause unexpected permission issues for protected accounts."
-                    $finding.Remediation = "Review the deny ACE and determine if it's intentional. Remove if unnecessary."
-                    $finding.EstimatedEffort = 'Low - removing a single unexpected Deny ACE from one object.'
-                    $finding.KnownRisks = 'Low technical risk removing an unexpected deny entry, but confirm it wasn''t intentionally placed to block a specific known-compromised or decommissioned account before removing it, since that would re-permit whatever it was blocking.'
-                    $finding.BackupRollback = 'Moderate - export the AdminSDHolder ACL before changing it; the removal only reaches every protected object after SDProp''s next propagation cycle.'
-                    $finding.Details = @{
-                        Identity = $identityReference
-                        ActiveDirectoryRights = $ace.ActiveDirectoryRights
+                    $__denyKey = "$identityReference|$($ace.ActiveDirectoryRights)"
+                    if (-not $__seenDenyAce.ContainsKey($__denyKey)) {
+                        $__seenDenyAce[$__denyKey] = $true
+
+                        $finding = [ADSecurityFinding]::new()
+                        $finding.Category = 'AdminSDHolder'
+                        $finding.Issue = 'Deny ACE on AdminSDHolder'
+                        $finding.Severity = 'High'
+                        $finding.SeverityLevel = 3
+                        $finding.AffectedObject = "AdminSDHolder - $identityReference"
+                        $finding.Description = "Deny ACE found on AdminSDHolder for '$identityReference'."
+                        $finding.Impact = "Deny ACEs on AdminSDHolder are unusual and may cause unexpected permission issues for protected accounts."
+                        $finding.Remediation = "Review the deny ACE and determine if it's intentional. Remove if unnecessary."
+                        $finding.EstimatedEffort = 'Low - removing a single unexpected Deny ACE from one object.'
+                        $finding.KnownRisks = 'Low technical risk removing an unexpected deny entry, but confirm it wasn''t intentionally placed to block a specific known-compromised or decommissioned account before removing it, since that would re-permit whatever it was blocking.'
+                        $finding.BackupRollback = 'Moderate - export the AdminSDHolder ACL before changing it; the removal only reaches every protected object after SDProp''s next propagation cycle.'
+                        $finding.Details = @{
+                            Identity = $identityReference
+                            ActiveDirectoryRights = $ace.ActiveDirectoryRights
+                        }
+                        $findings += $finding
                     }
-                    $findings += $finding
                 }
             }
         }
@@ -206,6 +224,15 @@ function Test-AdminSDHolder {
             'NT AUTHORITY\SELF'
         )
         
+        # Real AD ACLs commonly carry more than one ACE for the same trustee
+        # (separate ACEs per property set/object type even when the
+        # summarized ActiveDirectoryRights flag is identical), which used to
+        # produce one fully-duplicate finding per ACE. Dedupe on (identity,
+        # rights, access type) so a trustee with N functionally-identical
+        # ACEs is reported once, not N times.
+        $__seenNonStdAce = @{}
+        $__seenDenyAce = @{}
+
         # Check each ACE
         foreach ($ace in $acl.Access) {
             $identityReference = $ace.IdentityReference.Value
@@ -230,6 +257,10 @@ function Test-AdminSDHolder {
                 }
                 
                 if ($hasRiskyPermission -or $ace.ActiveDirectoryRights -match 'ExtendedRight') {
+                    $__nonStdKey = "$identityReference|$($ace.ActiveDirectoryRights)"
+                    if ($__seenNonStdAce.ContainsKey($__nonStdKey)) { continue }
+                    $__seenNonStdAce[$__nonStdKey] = $true
+
                     $severity = 'Critical'
                     $severityLevel = 4
                     
@@ -266,23 +297,28 @@ function Test-AdminSDHolder {
             
             # Check for Deny ACEs (unusual and potentially problematic)
             if ($ace.AccessControlType -eq 'Deny') {
-                $finding = [ADSecurityFinding]::new()
-                $finding.Category = 'AdminSDHolder'
-                $finding.Issue = 'Deny ACE on AdminSDHolder'
-                $finding.Severity = 'High'
-                $finding.SeverityLevel = 3
-                $finding.AffectedObject = "AdminSDHolder - $identityReference"
-                $finding.Description = "Deny ACE found on AdminSDHolder for '$identityReference'."
-                $finding.Impact = "Deny ACEs on AdminSDHolder are unusual and may cause unexpected permission issues for protected accounts."
-                $finding.Remediation = "Review the deny ACE and determine if it's intentional. Remove if unnecessary."
-                $finding.EstimatedEffort = 'Low - removing a single unexpected Deny ACE from one object.'
-                $finding.KnownRisks = 'Low technical risk removing an unexpected deny entry, but confirm it wasn''t intentionally placed to block a specific known-compromised or decommissioned account before removing it, since that would re-permit whatever it was blocking.'
-                $finding.BackupRollback = 'Moderate - export the AdminSDHolder ACL before changing it; the removal only reaches every protected object after SDProp''s next propagation cycle.'
-                $finding.Details = @{
-                    Identity = $identityReference
-                    ActiveDirectoryRights = $ace.ActiveDirectoryRights.ToString()
+                $__denyKey = "$identityReference|$($ace.ActiveDirectoryRights)"
+                if (-not $__seenDenyAce.ContainsKey($__denyKey)) {
+                    $__seenDenyAce[$__denyKey] = $true
+
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'AdminSDHolder'
+                    $finding.Issue = 'Deny ACE on AdminSDHolder'
+                    $finding.Severity = 'High'
+                    $finding.SeverityLevel = 3
+                    $finding.AffectedObject = "AdminSDHolder - $identityReference"
+                    $finding.Description = "Deny ACE found on AdminSDHolder for '$identityReference'."
+                    $finding.Impact = "Deny ACEs on AdminSDHolder are unusual and may cause unexpected permission issues for protected accounts."
+                    $finding.Remediation = "Review the deny ACE and determine if it's intentional. Remove if unnecessary."
+                    $finding.EstimatedEffort = 'Low - removing a single unexpected Deny ACE from one object.'
+                    $finding.KnownRisks = 'Low technical risk removing an unexpected deny entry, but confirm it wasn''t intentionally placed to block a specific known-compromised or decommissioned account before removing it, since that would re-permit whatever it was blocking.'
+                    $finding.BackupRollback = 'Moderate - export the AdminSDHolder ACL before changing it; the removal only reaches every protected object after SDProp''s next propagation cycle.'
+                    $finding.Details = @{
+                        Identity = $identityReference
+                        ActiveDirectoryRights = $ace.ActiveDirectoryRights.ToString()
+                    }
+                    $findings += $finding
                 }
-                $findings += $finding
             }
         }
         

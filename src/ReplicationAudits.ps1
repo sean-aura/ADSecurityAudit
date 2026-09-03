@@ -64,6 +64,10 @@ function Test-ADReplicationSecurity {
         }
 
         if ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('DomainRoot')) {
+            # A trustee can hold multiple ACEs granting the same replication
+            # right (one per object type) - dedupe on (identity, rights
+            # found) so each is reported once rather than once per raw ACE.
+            $__seenDcSyncHit = @{}
             foreach ($ace in @($Snapshot.ACLs['DomainRoot'].Access)) {
                 $identityReference = $ace.IdentityReference
 
@@ -95,6 +99,10 @@ function Test-ADReplicationSecurity {
                     elseif ($bySam.ContainsKey($bareIdentity)) {
                         $principalClass = $bySam[$bareIdentity]
                     }
+
+                    $__dcSyncKey = "$identityReference|$($rightsFound -join ',')"
+                    if ($__seenDcSyncHit.ContainsKey($__dcSyncKey)) { continue }
+                    $__seenDcSyncHit[$__dcSyncKey] = $true
 
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Replication Security'
@@ -187,6 +195,11 @@ function Test-ADReplicationSecurity {
             'DS-Replication-Get-Changes-In-Filtered-Set' = '89e95b76-444d-4c62-991a-0facbeda640c'
         }
         
+        # A trustee can hold multiple ACEs granting the same replication
+        # right (one per object type) - dedupe on (identity, rights found)
+        # so each is reported once rather than once per raw ACE.
+        $__seenDcSyncHit = @{}
+
         # Check each ACE for dangerous replication rights
         foreach ($ace in $acl.Access) {
             $identityReference = $ace.IdentityReference.Value
@@ -258,6 +271,10 @@ function Test-ADReplicationSecurity {
                     Write-Verbose "Could not resolve principal: $identityReference - $_"
                 }
                 
+                $__dcSyncKey = "$identityReference|$($rightsFound -join ',')"
+                if ($__seenDcSyncHit.ContainsKey($__dcSyncKey)) { continue }
+                $__seenDcSyncHit[$__dcSyncKey] = $true
+
                 $finding = [ADSecurityFinding]::new()
                 $finding.Category = 'Replication Security'
                 $finding.Issue = 'Unauthorized DCSync Permissions'

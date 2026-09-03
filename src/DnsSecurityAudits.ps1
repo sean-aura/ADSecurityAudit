@@ -541,6 +541,17 @@ function Test-ADDnsSecurity {
                         continue
                     }
 
+                    # DNS cmdlet output can return an FQDN with a trailing
+                    # root dot (e.g. '_msdcs.ad.local.'). Left unstripped,
+                    # that trailing dot breaks the "already fully-qualified"
+                    # regex match below (it no longer ends in exactly
+                    # ".$zoneName") and the code falls through to appending
+                    # $zoneName again, producing a malformed doubled name
+                    # like '_msdcs.ad.local..ad.local'. Trim it first so
+                    # both the match and the fallback concatenation operate
+                    # on a normalized name.
+                    $childZoneName = $childZoneName.TrimEnd('.')
+
                     $fullChildZoneName = if ($childZoneName -match ('\.' + [regex]::Escape($zoneName) + '$') -or $childZoneName -eq $zoneName) {
                         $childZoneName
                     }

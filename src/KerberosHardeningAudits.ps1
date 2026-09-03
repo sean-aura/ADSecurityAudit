@@ -192,7 +192,17 @@ function Test-ADKerberosHardening {
                 $watchIdentities = @($tier0 | Where-Object { $_.SID -or $_.DistinguishedName })
                 foreach ($principal in $watchIdentities) {
                     try {
-                        $identity = if ($principal.SID) { $principal.SID } else { $principal.DistinguishedName }
+                        # Prefer DistinguishedName over SID: Get-ADObject
+                        # -Identity accepts either, but in some environments
+                        # (verified during v1.24 lab testing - 8/8 Tier-0
+                        # principals failed with "Cannot find an object with
+                        # identity" when queried by SID, while the same
+                        # objects resolved fine by DN elsewhere in the same
+                        # run) SID-based lookup fails while DN-based lookup
+                        # succeeds. DN is always unambiguous for a specific
+                        # object, so prefer it and fall back to SID only
+                        # when no DN is available.
+                        $identity = if ($principal.DistinguishedName) { $principal.DistinguishedName } else { $principal.SID }
                         $adObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject $identity (kerberos hardening)" -Query {
                             if ($__adServer) { Get-ADObject -Identity $identity -Server $__adServer -Properties 'msDS-SupportedEncryptionTypes', 'objectClass' -ErrorAction Stop } else { Get-ADObject -Identity $identity -Properties 'msDS-SupportedEncryptionTypes', 'objectClass' -ErrorAction Stop }
                         }

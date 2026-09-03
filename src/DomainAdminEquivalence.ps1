@@ -334,10 +334,19 @@ function Test-ADDomainAdminEquivalence {
         # 8. AdminSDHolder ACL analysis (dedicated finding, mirrors live's separate check)
         Write-Verbose "Test-ADDomainAdminEquivalence: performing AdminSDHolder ACL analysis..."
         if ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('AdminSDHolder')) {
+            # A trustee can hold multiple ACEs on AdminSDHolder (one per
+            # property set/object type) even when ActiveDirectoryRights is
+            # identical - dedupe on (principal, rights) so each is reported
+            # once rather than once per ACE.
+            $__seenAdminSdCompromise = @{}
             foreach ($ace in @($Snapshot.ACLs['AdminSDHolder'].Access)) {
                 $principal = $ace.IdentityReference
                 if ($ace.IsInherited -or $principal -in $legitimatePrincipals) { continue }
                 if ($ace.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite') {
+                    $__compromiseKey = "$principal|$($ace.ActiveDirectoryRights)"
+                    if ($__seenAdminSdCompromise.ContainsKey($__compromiseKey)) { continue }
+                    $__seenAdminSdCompromise[$__compromiseKey] = $true
+
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Admin Equivalence'
                     $finding.Issue = 'AdminSDHolder ACL Compromise'
@@ -994,11 +1003,20 @@ Review and remove the excessive permissions listed in the evidence:
             Write-Verbose "Failed to get AdminSDHolder: $_"
         }
         if ($adminSdHolder -and $adminSdHolder.nTSecurityDescriptor) {
+            # A trustee can hold multiple ACEs on AdminSDHolder (one per
+            # property set/object type) even when ActiveDirectoryRights is
+            # identical - dedupe on (principal, rights) so each is reported
+            # once rather than once per ACE.
+            $__seenAdminSdCompromise = @{}
             foreach ($ace in $adminSdHolder.nTSecurityDescriptor.Access) {
                 $principal = $ace.IdentityReference.Value
                 if ($ace.IsInherited -or $principal -in $legitimatePrincipals) { continue }
                 
                 if ($ace.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite') {
+                    $__compromiseKey = "$principal|$($ace.ActiveDirectoryRights)"
+                    if ($__seenAdminSdCompromise.ContainsKey($__compromiseKey)) { continue }
+                    $__seenAdminSdCompromise[$__compromiseKey] = $true
+
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Admin Equivalence'
                     $finding.Issue = 'AdminSDHolder ACL Compromise'
