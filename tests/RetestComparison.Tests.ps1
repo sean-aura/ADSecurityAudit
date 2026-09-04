@@ -23,7 +23,8 @@ BeforeAll {
             [string]$Category,
             [string]$Severity,
             [int]$SeverityLevel,
-            [string]$AffectedObject = ''
+            [string]$AffectedObject = '',
+            [string]$TestName = ''
         )
         $f = [ADSecurityFinding]::new()
         $f.Issue = $Issue
@@ -31,6 +32,7 @@ BeforeAll {
         $f.Severity = $Severity
         $f.SeverityLevel = $SeverityLevel
         $f.AffectedObject = $AffectedObject
+        $f.TestName = $TestName
         return $f
     }
 
@@ -39,18 +41,37 @@ BeforeAll {
             [string]$FolderName,
             [array]$Findings,
             [string]$Timestamp,
-            [switch]$NoScoreSidecar
+            [switch]$NoScoreSidecar,
+            [array]$TestCoverage
         )
         foreach ($finding in $Findings) { [void](Set-ADFindingMetadata -Finding $finding) }
         $folder = Join-Path $TestDrive $FolderName
         New-Item -ItemType Directory -Path $folder -Force | Out-Null
         $findingsPath = Join-Path $folder "AD_Security_Audit_$Timestamp.json"
-        $Findings | ConvertTo-Json -Depth 6 | Out-File -FilePath $findingsPath -Encoding UTF8
+        # A plain "$Findings | ConvertTo-Json" pipes NOTHING through when
+        # $Findings is an empty array (PowerShell pipeline semantics -
+        # see ConvertTo-ADFlatFindingsArray's own docs for the general
+        # form of this), producing an empty FILE rather than valid "[]"
+        # JSON - not what a real current-version Start-ADSecurityAudit
+        # run now writes for a zero-finding run (see Main.ps1's own fix
+        # for this exact issue). Special-case it here so this fixture
+        # matches real output instead of accidentally exercising a
+        # different, already-fixed bug.
+        if (@($Findings).Count -eq 0) {
+            '[]' | Out-File -FilePath $findingsPath -Encoding UTF8
+        }
+        else {
+            $Findings | ConvertTo-Json -Depth 6 | Out-File -FilePath $findingsPath -Encoding UTF8
+        }
 
         if (-not $NoScoreSidecar) {
             $riskScore = Get-ADRiskScore -Findings $Findings
             $scorePath = Join-Path $folder "AD_Security_Score_$Timestamp.json"
             $riskScore | ConvertTo-Json -Depth 6 | Out-File -FilePath $scorePath -Encoding UTF8
+        }
+        if ($PSBoundParameters.ContainsKey('TestCoverage')) {
+            $coveragePath = Join-Path $folder "AD_Security_TestCoverage_$Timestamp.json"
+            $TestCoverage | ConvertTo-Json -Depth 4 | Out-File -FilePath $coveragePath -Encoding UTF8
         }
         return $folder
     }
@@ -230,6 +251,92 @@ Describe 'Get-ADRetestComparison - jagged/nested findings export (regression)' {
         $cmp = Get-ADRetestComparison -BaselinePath $path -RetestPath $path
         $cmp.StillOpenFindings.Count | Should -Be 3
         $cmp.ScoreDelta | Should -Be 0
+    }
+}
+
+Describe 'Get-ADRetestComparison - test coverage awareness (UnconfirmedFindings)' {
+    <#
+        Regression coverage for a reported gap: a finding that disappeared
+        between baseline and retest was ALWAYS classified as Resolved,
+        with no consideration of whether the check that would have
+        produced it actually ran in the retest. A check excluded via
+        -ExcludeTests or one that failed (an exception) during the retest
+        makes every finding it would have reported disappear too -
+        identically to genuine remediation as far as a key-based diff can
+        tell, producing a false "Resolved" claim.
+    #>
+    BeforeAll {
+        $script:RodcFinding = New-TestFinding -Issue 'RODC Password Replication Policy Misconfigured' -Category 'RODC Security' -Severity 'High' -SeverityLevel 3 -AffectedObject 'RODC01' -TestName 'RodcSecurity'
+        $script:UserFinding = New-TestFinding -Issue 'Inactive Enabled Account' -Category 'User Account' -Severity 'Low' -SeverityLevel 1 -AffectedObject 'user1' -TestName 'UserAccounts'
+    }
+
+    It 'reclassifies a disappeared finding as Unconfirmed (not Resolved) when its check was Excluded in the retest' {
+        $baselineFolder = New-RunFixture -FolderName 'coverage-baseline-excluded' -Findings @($script:RodcFinding, $script:UserFinding) -Timestamp '2026-07-01_00-00-00'
+        $retestFolder = New-RunFixture -FolderName 'coverage-retest-excluded' -Findings @() -Timestamp '2026-07-02_00-00-00' -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'RodcSecurity'; Status = 'Excluded'; FindingCount = 0; ErrorMessage = $null }
+        )
+
+        $cmp = Get-ADRetestComparison -BaselinePath $baselineFolder -RetestPath $retestFolder
+
+        @($cmp.ResolvedFindings).Count | Should -Be 1
+        ($cmp.ResolvedFindings | Where-Object Issue -eq 'Inactive Enabled Account') | Should -Not -BeNullOrEmpty
+        @($cmp.UnconfirmedFindings).Count | Should -Be 1
+        $cmp.UnconfirmedFindings[0].Finding.Issue | Should -Be 'RODC Password Replication Policy Misconfigured'
+        $cmp.UnconfirmedFindings[0].Reason | Should -Match 'excluded'
+        @($cmp.CoverageCaveats).Count | Should -BeGreaterThan 0
+    }
+
+    It 'reclassifies a disappeared finding as Unconfirmed (not Resolved) when its check Failed in the retest' {
+        $baselineFolder = New-RunFixture -FolderName 'coverage-baseline-failed' -Findings @($script:RodcFinding) -Timestamp '2026-07-03_00-00-00'
+        $retestFolder = New-RunFixture -FolderName 'coverage-retest-failed' -Findings @() -Timestamp '2026-07-04_00-00-00' -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'RodcSecurity'; Status = 'Failed'; FindingCount = 0; ErrorMessage = 'Access is denied' }
+        )
+
+        $cmp = Get-ADRetestComparison -BaselinePath $baselineFolder -RetestPath $retestFolder
+
+        @($cmp.ResolvedFindings).Count | Should -Be 0
+        @($cmp.UnconfirmedFindings).Count | Should -Be 1
+        $cmp.UnconfirmedFindings[0].Reason | Should -Match 'Access is denied'
+    }
+
+    It 'keeps a disappeared finding as genuinely Resolved when its check ran Completed in the retest' {
+        $baselineFolder = New-RunFixture -FolderName 'coverage-baseline-clean' -Findings @($script:RodcFinding) -Timestamp '2026-07-05_00-00-00'
+        $retestFolder = New-RunFixture -FolderName 'coverage-retest-clean' -Findings @() -Timestamp '2026-07-06_00-00-00' -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'RodcSecurity'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+        )
+
+        $cmp = Get-ADRetestComparison -BaselinePath $baselineFolder -RetestPath $retestFolder
+
+        @($cmp.ResolvedFindings).Count | Should -Be 1
+        @($cmp.UnconfirmedFindings).Count | Should -Be 0
+    }
+
+    It 'does not reclassify (benefit of the doubt) when neither run has any coverage data at all - old exports predating tracking' {
+        $baselineFolder = New-RunFixture -FolderName 'coverage-baseline-none' -Findings @($script:RodcFinding) -Timestamp '2026-07-07_00-00-00'
+        $retestFolder = New-RunFixture -FolderName 'coverage-retest-none' -Findings @() -Timestamp '2026-07-08_00-00-00'
+
+        $cmp = Get-ADRetestComparison -BaselinePath $baselineFolder -RetestPath $retestFolder
+
+        @($cmp.ResolvedFindings).Count | Should -Be 1
+        @($cmp.UnconfirmedFindings).Count | Should -Be 0
+        @($cmp.CoverageCaveats).Count | Should -BeGreaterThan 0 -Because 'a caveat should still note coverage data was unavailable, even though nothing could be reclassified'
+    }
+
+    It 'Export-ADRetestComparisonHTML renders the Unconfirmed section and coverage caveats without throwing' {
+        $baselineFolder = New-RunFixture -FolderName 'coverage-html-baseline' -Findings @($script:RodcFinding, $script:UserFinding) -Timestamp '2026-07-09_00-00-00'
+        $retestFolder = New-RunFixture -FolderName 'coverage-html-retest' -Findings @() -Timestamp '2026-07-10_00-00-00' -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'RodcSecurity'; Status = 'Excluded'; FindingCount = 0; ErrorMessage = $null }
+        )
+        $cmp = Get-ADRetestComparison -BaselinePath $baselineFolder -RetestPath $retestFolder
+        $outPath = Join-Path $TestDrive 'coverage-comparison.html'
+
+        { Export-ADRetestComparisonHTML -Comparison $cmp -OutputPath $outPath } | Should -Not -Throw
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Match 'Unconfirmed'
+        $content | Should -Match 'COVERAGE CAVEATS'
+        $content | Should -Match 'RODC Password Replication Policy Misconfigured'
     }
 }
 

@@ -1237,7 +1237,12 @@ function Invoke-ADRuleSet {
         AD access unless explicitly opted into.
     .OUTPUTS
         [ADSecurityFinding[]] - the same finding objects the live audit
-        produces; the output/finding schema is unchanged.
+        produces; the output/finding schema is unchanged. Also records
+        per-test outcomes (Completed/Failed/Excluded) via
+        Add-ADTestCoverageEntry (Common.ps1) as a side effect, readable
+        afterward via Get-ADTestCoverageTracker - a caller that doesn't
+        need this (most direct callers) can simply ignore it, same as
+        Get-ADOfflineSkipNotes.
     #>
     [CmdletBinding()]
     param(
@@ -1272,6 +1277,22 @@ function Invoke-ADRuleSet {
     }
     $testKeys = $testKeys | Where-Object { $_ -notin $ExcludeTests }
     $testKeys = @($testKeys)
+
+    # Same "record every registered test, not just the ones that ran"
+    # coverage tracking as Main.ps1's live test loop - see
+    # Add-ADTestCoverageEntry's own docs (Common.ps1) for why this exists
+    # here at all (Invoke-ADRuleSet is a separate dispatch path from that
+    # loop, so $testCoverage was never populated for -FromSnapshot runs
+    # without this). Tests filtered out by -IncludeTests/-ExcludeTests
+    # before ever being attempted are recorded here; Completed/Failed/the
+    # "no -Snapshot support" Excluded case are recorded per-test in the
+    # loop below as each outcome becomes known.
+    foreach ($registryKey in ($Script:ADTestFunctionRegistry.Keys | Sort-Object)) {
+        if ($registryKey -notin $testKeys) {
+            Add-ADTestCoverageEntry -TestName $registryKey -Status 'Excluded' `
+                -ErrorMessage 'Not run for this scan (see -IncludeTests/-ExcludeTests used for this run).'
+        }
+    }
 
     $allFindings = @()
     $skippedTests = [System.Collections.ArrayList]::new()
@@ -1314,12 +1335,16 @@ function Invoke-ADRuleSet {
             Write-Warning "Invoke-ADRuleSet: '$testKey' ($functionName) has no -Snapshot parameter yet; skipping (no live AD access performed). Pass -AllowLiveFallbackForUnsupportedTests to run it live instead."
             Add-ADOfflineSkipNote -Test $testKey -Check "Entire test: $functionName" `
                 -Reason 'This test has not yet been retrofitted with -Snapshot support. Pass -AllowLiveFallbackForUnsupportedTests to run it live instead.'
+            Add-ADTestCoverageEntry -TestName $testKey -Status 'Excluded' `
+                -ErrorMessage 'Not run: no -Snapshot support yet for this test (see Offline Mode Coverage Notes). Pass -AllowLiveFallbackForUnsupportedTests to run it live instead.'
             [void]$skippedTests.Add($testKey)
             continue
         }
 
         try {
             $results = & $functionName @callParams
+            $resultCount = @($results | Where-Object { $_ }).Count
+            Add-ADTestCoverageEntry -TestName $testKey -Status 'Completed' -FindingCount $resultCount
 
             foreach ($result in @($results)) {
                 if (-not $result) { continue }
@@ -1362,6 +1387,7 @@ function Invoke-ADRuleSet {
         }
         catch {
             Write-Warning "Invoke-ADRuleSet: test '$testKey' ($functionName) failed: $_"
+            Add-ADTestCoverageEntry -TestName $testKey -Status 'Failed' -ErrorMessage "$_"
         }
     }
 

@@ -53,6 +53,11 @@ function Test-ADCertificateServices {
                     }
                 }
             }
+            # A template can grant the same low-priv principal enrollment
+            # via more than one ACE (e.g. separate Enroll and AutoEnroll
+            # extended-right ACEs) - dedupe so the same name doesn't appear
+            # twice in one finding's principal list.
+            $enrollmentPrincipals = @($enrollmentPrincipals | Select-Object -Unique)
 
             $enrollmentFlag = $template.'msPKI-Enrollment-Flag'
             $certNameFlag = $template.'msPKI-Certificate-Name-Flag'
@@ -179,34 +184,49 @@ function Test-ADCertificateServices {
 
         $certAuthorities = @($Snapshot.ADCS.CertificateAuthorities)
         foreach ($ca in $certAuthorities) {
+            # A CA's ACL can grant the same principal the same dangerous
+            # right via more than one ACE (one per object type) - dedupe
+            # per check so a repeated ACE doesn't produce a repeated
+            # finding.
+            $__seenEsc7Hit = @{}
+            $__seenLowPrivCaHit = @{}
             foreach ($access in @($ca.Access)) {
                 if ($access.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner' -and
                     $access.IdentityReference -notmatch 'Enterprise Admins|Domain Admins|SYSTEM|Administrators') {
 
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'Certificate Services'
-                    $finding.Issue = 'Overly Permissive CA Permissions (ESC7)'
-                    $finding.Severity = 'Critical'
-                    $finding.SeverityLevel = 4
-                    $finding.AffectedObject = $ca.Name
-                    $finding.Description = "Certificate Authority '$($ca.Name)' has overly permissive access granted to $($access.IdentityReference)."
-                    $finding.Impact = "Unauthorized users could modify CA configuration, enable vulnerable templates, issue fraudulent certificates, or compromise the entire PKI infrastructure."
-                    $finding.Remediation = "Remove excessive permissions and ensure only Enterprise Admins and CA administrators have full control."
-                    $finding.EstimatedEffort = 'Medium - removing Manage CA / Manage Certificates rights from an unexpected principal on the CA object''s own ACL; confirm with the PKI team it isn''t a legitimate delegated administrator.'
-                    $finding.KnownRisks = 'Procedural - confirm the principal isn''t an active, legitimate delegated CA administrator before removing their rights.'
-                    $finding.BackupRollback = 'Easy - re-add the removed permission via the CA console''s Security tab; effective immediately, no data loss.'
-                    $finding.Details = @{
-                        DistinguishedName = $ca.DistinguishedName
-                        Identity = $access.IdentityReference
-                        Rights = $access.ActiveDirectoryRights
-                        ESCType = 'ESC7'
+                    $__esc7Key = "$($access.IdentityReference)|$($access.ActiveDirectoryRights)"
+                    if (-not $__seenEsc7Hit.ContainsKey($__esc7Key)) {
+                        $__seenEsc7Hit[$__esc7Key] = $true
+
+                        $finding = [ADSecurityFinding]::new()
+                        $finding.Category = 'Certificate Services'
+                        $finding.Issue = 'Overly Permissive CA Permissions (ESC7)'
+                        $finding.Severity = 'Critical'
+                        $finding.SeverityLevel = 4
+                        $finding.AffectedObject = $ca.Name
+                        $finding.Description = "Certificate Authority '$($ca.Name)' has overly permissive access granted to $($access.IdentityReference)."
+                        $finding.Impact = "Unauthorized users could modify CA configuration, enable vulnerable templates, issue fraudulent certificates, or compromise the entire PKI infrastructure."
+                        $finding.Remediation = "Remove excessive permissions and ensure only Enterprise Admins and CA administrators have full control."
+                        $finding.EstimatedEffort = 'Medium - removing Manage CA / Manage Certificates rights from an unexpected principal on the CA object''s own ACL; confirm with the PKI team it isn''t a legitimate delegated administrator.'
+                        $finding.KnownRisks = 'Procedural - confirm the principal isn''t an active, legitimate delegated CA administrator before removing their rights.'
+                        $finding.BackupRollback = 'Easy - re-add the removed permission via the CA console''s Security tab; effective immediately, no data loss.'
+                        $finding.Details = @{
+                            DistinguishedName = $ca.DistinguishedName
+                            Identity = $access.IdentityReference
+                            Rights = $access.ActiveDirectoryRights
+                            ESCType = 'ESC7'
+                        }
+                        $findings += $finding
                     }
-                    $findings += $finding
                 }
 
                 if ($access.ActiveDirectoryRights -match 'ExtendedRight') {
                     foreach ($lowPriv in $lowPrivilegedPrincipals) {
                         if ($access.IdentityReference -match [regex]::Escape($lowPriv)) {
+                            $__lowPrivCaKey = "$($access.IdentityReference)|$($access.ActiveDirectoryRights)"
+                            if ($__seenLowPrivCaHit.ContainsKey($__lowPrivCaKey)) { break }
+                            $__seenLowPrivCaHit[$__lowPrivCaKey] = $true
+
                             $finding = [ADSecurityFinding]::new()
                             $finding.Category = 'Certificate Services'
                             $finding.Issue = 'Low-Privilege CA Management Rights'
@@ -317,6 +337,11 @@ function Test-ADCertificateServices {
                     }
                 }
             }
+            # A template can grant the same low-priv principal enrollment
+            # via more than one ACE (e.g. separate Enroll and AutoEnroll
+            # extended-right ACEs) - dedupe so the same name doesn't appear
+            # twice in one finding's principal list.
+            $enrollmentPrincipals = @($enrollmentPrincipals | Select-Object -Unique)
             
             # ESC1: Template allows SAN AND has overly permissive enrollment rights
             $enrollmentFlag = $template.'msPKI-Enrollment-Flag'
@@ -477,30 +502,41 @@ function Test-ADCertificateServices {
                 }
 
                 if ($acl) {
+                    # A CA's ACL can grant the same principal the same
+                    # dangerous right via more than one ACE (one per object
+                    # type) - dedupe per check so a repeated ACE doesn't
+                    # produce a repeated finding.
+                    $__seenEsc7Hit = @{}
+                    $__seenLowPrivCaHit = @{}
                     foreach ($access in $acl.Access) {
                         # Check for dangerous permissions on CA
                         if ($access.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner' -and 
                             $access.IdentityReference -notmatch 'Enterprise Admins|Domain Admins|SYSTEM|Administrators') {
                             
-                            $finding = [ADSecurityFinding]::new()
-                            $finding.Category = 'Certificate Services'
-                            $finding.Issue = 'Overly Permissive CA Permissions (ESC7)'
-                            $finding.Severity = 'Critical'
-                            $finding.SeverityLevel = 4
-                            $finding.AffectedObject = $ca.Name
-                            $finding.Description = "Certificate Authority '$($ca.Name)' has overly permissive access granted to $($access.IdentityReference)."
-                            $finding.Impact = "Unauthorized users could modify CA configuration, enable vulnerable templates, issue fraudulent certificates, or compromise the entire PKI infrastructure."
-                            $finding.Remediation = "Remove excessive permissions and ensure only Enterprise Admins and CA administrators have full control."
-                            $finding.EstimatedEffort = 'Medium - removing Manage CA / Manage Certificates rights from an unexpected principal on the CA object''s own ACL; confirm with the PKI team it isn''t a legitimate delegated administrator.'
-                            $finding.KnownRisks = 'Procedural - confirm the principal isn''t an active, legitimate delegated CA administrator before removing their rights.'
-                            $finding.BackupRollback = 'Easy - re-add the removed permission via the CA console''s Security tab; effective immediately, no data loss.'
-                            $finding.Details = @{
-                                DistinguishedName = $ca.DistinguishedName
-                                Identity = $access.IdentityReference.Value
-                                Rights = $access.ActiveDirectoryRights.ToString()
-                                ESCType = 'ESC7'
+                            $__esc7Key = "$($access.IdentityReference)|$($access.ActiveDirectoryRights)"
+                            if (-not $__seenEsc7Hit.ContainsKey($__esc7Key)) {
+                                $__seenEsc7Hit[$__esc7Key] = $true
+
+                                $finding = [ADSecurityFinding]::new()
+                                $finding.Category = 'Certificate Services'
+                                $finding.Issue = 'Overly Permissive CA Permissions (ESC7)'
+                                $finding.Severity = 'Critical'
+                                $finding.SeverityLevel = 4
+                                $finding.AffectedObject = $ca.Name
+                                $finding.Description = "Certificate Authority '$($ca.Name)' has overly permissive access granted to $($access.IdentityReference)."
+                                $finding.Impact = "Unauthorized users could modify CA configuration, enable vulnerable templates, issue fraudulent certificates, or compromise the entire PKI infrastructure."
+                                $finding.Remediation = "Remove excessive permissions and ensure only Enterprise Admins and CA administrators have full control."
+                                $finding.EstimatedEffort = 'Medium - removing Manage CA / Manage Certificates rights from an unexpected principal on the CA object''s own ACL; confirm with the PKI team it isn''t a legitimate delegated administrator.'
+                                $finding.KnownRisks = 'Procedural - confirm the principal isn''t an active, legitimate delegated CA administrator before removing their rights.'
+                                $finding.BackupRollback = 'Easy - re-add the removed permission via the CA console''s Security tab; effective immediately, no data loss.'
+                                $finding.Details = @{
+                                    DistinguishedName = $ca.DistinguishedName
+                                    Identity = $access.IdentityReference.Value
+                                    Rights = $access.ActiveDirectoryRights.ToString()
+                                    ESCType = 'ESC7'
+                                }
+                                $findings += $finding
                             }
-                            $findings += $finding
                         }
                         
                         # Check for ManageCA or ManageCertificates permissions
@@ -509,6 +545,10 @@ function Test-ADCertificateServices {
                             # ManageCertificates: a05b8cc2-17bc-4802-a710-e7c15ab866a2
                             foreach ($lowPriv in $lowPrivilegedPrincipals) {
                                 if ($access.IdentityReference.Value -match [regex]::Escape($lowPriv)) {
+                                    $__lowPrivCaKey = "$($access.IdentityReference)|$($access.ActiveDirectoryRights)"
+                                    if ($__seenLowPrivCaHit.ContainsKey($__lowPrivCaKey)) { break }
+                                    $__seenLowPrivCaHit[$__lowPrivCaKey] = $true
+
                                     $finding = [ADSecurityFinding]::new()
                                     $finding.Category = 'Certificate Services'
                                     $finding.Issue = 'Low-Privilege CA Management Rights'

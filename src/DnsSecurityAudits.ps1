@@ -541,6 +541,17 @@ function Test-ADDnsSecurity {
                         continue
                     }
 
+                    # DNS cmdlet output can return an FQDN with a trailing
+                    # root dot (e.g. '_msdcs.ad.local.'). Left unstripped,
+                    # that trailing dot breaks the "already fully-qualified"
+                    # regex match below (it no longer ends in exactly
+                    # ".$zoneName") and the code falls through to appending
+                    # $zoneName again, producing a malformed doubled name
+                    # like '_msdcs.ad.local..ad.local'. Trim it first so
+                    # both the match and the fallback concatenation operate
+                    # on a normalized name.
+                    $childZoneName = $childZoneName.TrimEnd('.')
+
                     $fullChildZoneName = if ($childZoneName -match ('\.' + [regex]::Escape($zoneName) + '$') -or $childZoneName -eq $zoneName) {
                         $childZoneName
                     }
@@ -713,7 +724,21 @@ function Test-ADDnsSecurity {
             $finding.Severity = if ($anyPublicGlue) { 'High' } else { 'Medium' }
             $finding.SeverityLevel = if ($anyPublicGlue) { 3 } else { 2 }
             $finding.AffectedObject = ($affectedChildZones -join ', ')
-            $finding.Description = "$($staleDelegations.Count) DNS delegation name-server record(s) across $($affectedChildZones.Count) delegated child zone(s) point at glue IP addresses that no longer answer authoritatively for the delegated zone: $($affectedChildZones -join ', ')."
+            # BUGFIX (v1.24.0): the per-delegation detail (which specific
+            # NameServer/glue IP is actually stale - the thing someone
+            # needs to go act on) previously lived ONLY in
+            # Details.StaleDelegations, which the HTML report never
+            # renders (Details is otherwise JSON/CSV-only). A reader of
+            # the HTML report saw a zone-name list and a count with no way
+            # to find the actual stale record without opening the JSON.
+            # Enumerated as bullets here, same convention already used for
+            # Domain Admin Equivalence's evidence list and the ESC4
+            # weak-ACL finding.
+            $delegationBullets = ($staleDelegations | ForEach-Object {
+                $glueLabel = if ($_.IsPublicIpAddress) { "$($_.GlueIpAddress) (public IP)" } else { "$($_.GlueIpAddress)" }
+                "- $($_.ChildZone): NS '$($_.NameServer)' at $glueLabel did not answer"
+            }) -join "`n"
+            $finding.Description = "$($staleDelegations.Count) DNS delegation name-server record(s) across $($affectedChildZones.Count) delegated child zone(s) point at glue IP addresses that no longer answer authoritatively for the delegated zone:`n$delegationBullets"
             $finding.Impact = "A delegation whose glue nameservers no longer respond is stale/dangling: the parent zone's NS/glue records still hand authority for the sub-zone to infrastructure that appears retired or reassigned. Whoever can now claim that hostname or reclaim that IP address can serve authoritative-looking answers for the sub-zone - a well-documented DNS delegation/subdomain-takeover risk."
             $finding.Remediation = "Confirm whether each delegated child zone is still in use. If it is not, remove the stale NS/glue records from the parent zone (`Remove-DnsServerZoneDelegation`). If the child zone is still needed, repoint the delegation at the nameservers actually serving it today."
             $finding.EstimatedEffort = 'Low - removing a delegation (NS/glue) record pointing at a decommissioned name server.'

@@ -212,10 +212,20 @@ function Test-ADExchangeEscalation {
     # -------------------------------------------------------------------
     # Finding: Exchange Group Holds WriteDACL on Domain Object
     # -------------------------------------------------------------------
+    # A trustee can hold multiple ACEs on the same object (one per property
+    # set/object type) even when Identity+Rights are identical - dedupe so
+    # each combination is reported once rather than once per raw ACE.
     $domainHits = [System.Collections.ArrayList]::new()
+    $__seenDomainHit = @{}
     foreach ($ace in $domainAces) {
         $hit = Test-ExchangeDangerousAce -Ace $ace
-        if ($hit) { [void]$domainHits.Add($hit) }
+        if ($hit) {
+            $__hitKey = "$($hit.Identity)|$($hit.Rights)"
+            if (-not $__seenDomainHit.ContainsKey($__hitKey)) {
+                $__seenDomainHit[$__hitKey] = $true
+                [void]$domainHits.Add($hit)
+            }
+        }
     }
 
     if ($domainHits.Count -gt 0) {
@@ -254,9 +264,16 @@ function Test-ADExchangeEscalation {
     # Finding: Exchange-Related AdminSDHolder ACE
     # -------------------------------------------------------------------
     $adminSDHolderHits = [System.Collections.ArrayList]::new()
+    $__seenAdminSDHolderHit = @{}
     foreach ($ace in $adminSDHolderAces) {
         $hit = Test-ExchangeDangerousAce -Ace $ace
-        if ($hit) { [void]$adminSDHolderHits.Add($hit) }
+        if ($hit) {
+            $__hitKey = "$($hit.Identity)|$($hit.Rights)"
+            if (-not $__seenAdminSDHolderHit.ContainsKey($__hitKey)) {
+                $__seenAdminSDHolderHit[$__hitKey] = $true
+                [void]$adminSDHolderHits.Add($hit)
+            }
+        }
     }
 
     if ($adminSDHolderHits.Count -gt 0) {

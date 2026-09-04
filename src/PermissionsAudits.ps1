@@ -55,10 +55,18 @@ function Test-ADDangerousPermissions {
             if ($ekaGroup -and $Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('DomainRoot')) {
                 Write-Verbose "Test-ADDangerousPermissions: found Enterprise Key Admins group in snapshot, checking ACEs..."
                 $keyCredentialLinkGuid = '5b47d60f-6090-40b2-9f37-2a4de88f3063'
+                # Multiple ACEs can grant the same over-broad right (one per
+                # property set/object type) - dedupe per sub-check so a
+                # repeated ACE doesn't produce a repeated finding.
+                $__seenEkaFinding = @{}
 
                 foreach ($ace in @($Snapshot.ACLs['DomainRoot'].Access)) {
                     if ($ace.IdentityReference -match 'Enterprise Key Admins') {
                         if ($ace.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite') {
+                            $__ekaKey = "overprivileged|$($ace.ActiveDirectoryRights)"
+                            if ($__seenEkaFinding.ContainsKey($__ekaKey)) { continue }
+                            $__seenEkaFinding[$__ekaKey] = $true
+
                             $finding = [ADSecurityFinding]::new()
                             $finding.Category = 'Dangerous Permissions'
                             $finding.Issue = 'Enterprise Key Admins Over-Privileged (Misconfiguration Bug)'
@@ -90,6 +98,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                         }
                         elseif ($ace.ObjectType -eq '00000000-0000-0000-0000-000000000000' -or
                                 ($ace.ObjectType -ne $keyCredentialLinkGuid -and $ace.ActiveDirectoryRights -match 'WriteProperty')) {
+                            $__ekaKey = "notscoped|$($ace.ActiveDirectoryRights)|$($ace.ObjectType)"
+                            if ($__seenEkaFinding.ContainsKey($__ekaKey)) { continue }
+                            $__seenEkaFinding[$__ekaKey] = $true
+
                             $finding = [ADSecurityFinding]::new()
                             $finding.Category = 'Dangerous Permissions'
                             $finding.Issue = 'Enterprise Key Admins Permissions Not Scoped to msDS-KeyCredentialLink'
@@ -130,6 +142,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                 continue
             }
             $ouAcl = $Snapshot.ACLs[$aclKey]
+            # Multiple ACEs can grant the same trustee the same dangerous
+            # right (one per property set/object type) - dedupe so a
+            # repeated ACE doesn't produce a repeated finding.
+            $__seenOuHit = @{}
             foreach ($ace in @($ouAcl.Access)) {
                 if ($ace.IsInherited -or
                     $ace.IdentityReference -match 'SYSTEM' -or
@@ -148,6 +164,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                 }
 
                 if ($hasDangerousRight) {
+                    $__ouHitKey = "$($ace.IdentityReference)|$($ace.ActiveDirectoryRights)"
+                    if ($__seenOuHit.ContainsKey($__ouHitKey)) { continue }
+                    $__seenOuHit[$__ouHitKey] = $true
+
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Dangerous Permissions'
                     $finding.Issue = 'Dangerous Rights on Critical OU'
@@ -198,6 +218,10 @@ Remove the over-privileged ACE and grant only the required permissions:
             $ncConfig = $ncAclTargets[$ncKey]
             $ncAcl = $Snapshot.ACLs[$ncKey]
 
+            # Multiple ACEs can grant the same trustee the same dangerous
+            # right (one per property set/object type) - dedupe so a
+            # repeated ACE doesn't produce a repeated finding.
+            $__seenNcHit = @{}
             foreach ($ace in @($ncAcl.Access)) {
                 if ($ace.IsInherited) { continue }
 
@@ -219,6 +243,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                 }
 
                 if ($hasDangerousRight) {
+                    $__ncHitKey = "$identityReference|$($ace.ActiveDirectoryRights)"
+                    if ($__seenNcHit.ContainsKey($__ncHitKey)) { continue }
+                    $__seenNcHit[$__ncHitKey] = $true
+
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Permissions'
                     $finding.Issue = $ncConfig.Issue
@@ -313,7 +341,12 @@ Remove the over-privileged ACE and grant only the required permissions:
                 
                 # msDS-KeyCredentialLink attribute GUID
                 $keyCredentialLinkGuid = '5b47d60f-6090-40b2-9f37-2a4de88f3063'
-                
+
+                # Multiple ACEs can grant the same over-broad right (one per
+                # property set/object type) - dedupe per sub-check so a
+                # repeated ACE doesn't produce a repeated finding.
+                $__seenEkaFinding = @{}
+
                 foreach ($ace in $domainAcl.Access) {
                     # Check if this ACE is for Enterprise Key Admins
                     if ($ace.IdentityReference.Value -match 'Enterprise Key Admins') {
@@ -321,6 +354,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                         # EKA should only have ReadProperty and WriteProperty for msDS-KeyCredentialLink
                         # If it has GenericAll, WriteDacl, or other excessive rights, that's a vulnerability
                         if ($ace.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite') {
+                            $__ekaKey = "overprivileged|$($ace.ActiveDirectoryRights)"
+                            if ($__seenEkaFinding.ContainsKey($__ekaKey)) { continue }
+                            $__seenEkaFinding[$__ekaKey] = $true
+
                             $finding = [ADSecurityFinding]::new()
                             $finding.Category = 'Dangerous Permissions'
                             $finding.Issue = 'Enterprise Key Admins Over-Privileged (Misconfiguration Bug)'
@@ -356,7 +393,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                         elseif ($ace.ObjectType -eq '00000000-0000-0000-0000-000000000000' -or 
                                 ($ace.ObjectType.ToString() -ne $keyCredentialLinkGuid -and 
                                  $ace.ActiveDirectoryRights -match 'WriteProperty')) {
-                            
+                            $__ekaKey = "notscoped|$($ace.ActiveDirectoryRights)|$($ace.ObjectType)"
+                            if ($__seenEkaFinding.ContainsKey($__ekaKey)) { continue }
+                            $__seenEkaFinding[$__ekaKey] = $true
+
                             $finding = [ADSecurityFinding]::new()
                             $finding.Category = 'Dangerous Permissions'
                             $finding.Issue = 'Enterprise Key Admins Permissions Not Scoped to msDS-KeyCredentialLink'
@@ -415,6 +455,11 @@ Remove the over-privileged ACE and grant only the required permissions:
                 
                 $acl = $ou.nTSecurityDescriptor
                 
+                # Multiple ACEs can grant the same trustee the same
+                # dangerous right (one per property set/object type) -
+                # dedupe so a repeated ACE doesn't produce a repeated
+                # finding.
+                $__seenOuHit = @{}
                 foreach ($ace in $acl.Access) {
                     # Skip inherited and SYSTEM/Administrators
                     if ($ace.IsInherited -or 
@@ -436,6 +481,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                     }
                     
                     if ($hasDangerousRight) {
+                        $__ouHitKey = "$($ace.IdentityReference)|$($ace.ActiveDirectoryRights)"
+                        if ($__seenOuHit.ContainsKey($__ouHitKey)) { continue }
+                        $__seenOuHit[$__ouHitKey] = $true
+
                         $finding = [ADSecurityFinding]::new()
                         $finding.Category = 'Dangerous Permissions'
                         $finding.Issue = 'Dangerous Rights on Critical OU'
@@ -506,6 +555,11 @@ Remove the over-privileged ACE and grant only the required permissions:
                 if (-not $ncObject) { continue }
                 $ncAcl = $ncObject.nTSecurityDescriptor
 
+                # Multiple ACEs can grant the same trustee the same
+                # dangerous right (one per property set/object type) -
+                # dedupe so a repeated ACE doesn't produce a repeated
+                # finding.
+                $__seenNcHit = @{}
                 foreach ($ace in @($ncAcl.Access)) {
                     if ($ace.IsInherited) { continue }
 
@@ -527,6 +581,10 @@ Remove the over-privileged ACE and grant only the required permissions:
                     }
 
                     if ($hasDangerousRight) {
+                        $__ncHitKey = "$identityReference|$($ace.ActiveDirectoryRights)"
+                        if ($__seenNcHit.ContainsKey($__ncHitKey)) { continue }
+                        $__seenNcHit[$__ncHitKey] = $true
+
                         $finding = [ADSecurityFinding]::new()
                         $finding.Category = 'Permissions'
                         $finding.Issue = $ncConfig.Issue

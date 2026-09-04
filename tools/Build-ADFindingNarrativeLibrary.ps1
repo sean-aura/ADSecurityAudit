@@ -92,6 +92,39 @@ function Get-ADQuotedFieldValue {
     return $null
 }
 
+function Get-ADConditionalFieldBranches {
+    <#
+    Extracts the two branches of "$finding.<Field> = if (COND) { 'X' }
+    else { 'Y' }" - a pattern Get-ADQuotedFieldValue intentionally does
+    not handle (it only extracts plain literal assignments). Used when a
+    single finding block conditionally sets its Issue name (e.g.
+    "Privileged Account with X" vs "Account with X" depending on a
+    boolean), since that block's EstimatedEffort/KnownRisks/
+    BackupRollback/OperationalNotes are typically ALSO conditional on the
+    same variable, with each Issue variant needing its own paired
+    library entry - reported gap: this pattern was silently invisible to
+    the plain-literal extractor, so any Issue using it (found so far:
+    UserAudits.ps1's SPN/Kerberoasting finding) never got a narrative
+    library entry at all, leaving those fields blank forever when
+    recreating a report from an export that predates them.
+
+    Returns $null if the field isn't assigned via this exact if/else-one-
+    literal-each-branch shape in this block. Pairing with a conditional
+    Issue's own branches is purely POSITIONAL (if-branch with if-branch,
+    else-branch with else-branch) - this does not verify the conditions
+    use the same variable, since within one finding-generation block
+    there is only ever one such governing condition in practice.
+    #>
+    param([string]$Block, [string]$Field)
+
+    $m = [regex]::Match($Block, "\`$finding\.$Field\s*=\s*if\s*\([^)]*\)\s*\{\s*'((?:[^']|'')*)'\s*\}\s*else\s*\{\s*'((?:[^']|'')*)'\s*\}", [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if (-not $m.Success) { return $null }
+    return [PSCustomObject]@{
+        IfValue   = $m.Groups[1].Value -replace "''", "'"
+        ElseValue = $m.Groups[2].Value -replace "''", "'"
+    }
+}
+
 $blockPattern = [regex]::new('\$finding\s*=\s*\[ADSecurityFinding\]::new\(\)(.*?)\$findings\s*\+=\s*\$finding', [System.Text.RegularExpressions.RegexOptions]::Singleline)
 
 $library = [ordered]@{}
@@ -106,7 +139,44 @@ Get-ChildItem -Path $srcDir -Filter '*.ps1' -File | Sort-Object Name | ForEach-O
         $blocksScanned++
         $block = $match.Groups[1].Value
         $issue = Get-ADQuotedFieldValue -Block $block -Field 'Issue'
-        if (-not $issue) { continue }
+
+        if (-not $issue) {
+            # Not a plain literal - check for the "conditional Issue name"
+            # shape (see Get-ADConditionalFieldBranches) before giving up
+            # on this block entirely. Each field's branches are paired
+            # POSITIONALLY with Issue's branches (if-with-if, else-with-
+            # else); a field with no conditional match of its own (e.g.
+            # OperationalNotes, which many findings leave out) is simply
+            # $null for both variants, same as the plain-literal path.
+            $issueBranches = Get-ADConditionalFieldBranches -Block $block -Field 'Issue'
+            if (-not $issueBranches) { continue }
+
+            $effortBranches   = Get-ADConditionalFieldBranches -Block $block -Field 'EstimatedEffort'
+            $risksBranches    = Get-ADConditionalFieldBranches -Block $block -Field 'KnownRisks'
+            $rollbackBranches = Get-ADConditionalFieldBranches -Block $block -Field 'BackupRollback'
+            $opNotesBranches  = Get-ADConditionalFieldBranches -Block $block -Field 'OperationalNotes'
+
+            $variants = @(
+                @{ Issue = $issueBranches.IfValue;   Effort = $effortBranches.IfValue;   Risks = $risksBranches.IfValue;   Rollback = $rollbackBranches.IfValue;   OpNotes = $opNotesBranches.IfValue }
+                @{ Issue = $issueBranches.ElseValue; Effort = $effortBranches.ElseValue; Risks = $risksBranches.ElseValue; Rollback = $rollbackBranches.ElseValue; OpNotes = $opNotesBranches.ElseValue }
+            )
+            foreach ($variant in $variants) {
+                if (-not $variant.Issue) { continue }
+                if (-not ($variant.Effort -or $variant.Risks -or $variant.Rollback -or $variant.OpNotes)) { continue }
+                $blocksWithEnrichment++
+                if ($library.Contains($variant.Issue)) {
+                    continue
+                }
+                $library[$variant.Issue] = [PSCustomObject]@{
+                    EstimatedEffort  = $variant.Effort
+                    KnownRisks       = $variant.Risks
+                    BackupRollback   = $variant.Rollback
+                    OperationalNotes = $variant.OpNotes
+                }
+                $order.Add($variant.Issue)
+            }
+            continue
+        }
 
         $effort   = Get-ADQuotedFieldValue -Block $block -Field 'EstimatedEffort'
         $risks    = Get-ADQuotedFieldValue -Block $block -Field 'KnownRisks'

@@ -40,7 +40,8 @@ BeforeAll {
             [array]$Findings,
             [string]$Timestamp,
             [string]$ModuleVersion = '1.21.0',
-            [datetime]$GeneratedDate
+            [datetime]$GeneratedDate,
+            [array]$TestCoverage
         )
         foreach ($finding in $Findings) { [void](Set-ADFindingMetadata -Finding $finding) }
         $script:ModuleVersion = $ModuleVersion
@@ -48,6 +49,10 @@ BeforeAll {
         $riskScore.GeneratedDate = $GeneratedDate
         $path = Join-Path $Folder "AD_Security_Score_$Timestamp.json"
         $riskScore | ConvertTo-Json -Depth 6 | Out-File -FilePath $path -Encoding UTF8
+        if ($PSBoundParameters.ContainsKey('TestCoverage')) {
+            $coveragePath = Join-Path $Folder "AD_Security_TestCoverage_$Timestamp.json"
+            $TestCoverage | ConvertTo-Json -Depth 4 | Out-File -FilePath $coveragePath -Encoding UTF8
+        }
         return $path
     }
 }
@@ -257,6 +262,95 @@ Describe 'Get-ADMaturityTrend - estimated-date fallback for pre-v1.21.0 sidecars
         $trend.EstimatedDateCount | Should -Be 0
         ($trend.Series | Where-Object { $_.DateEstimated }).Count | Should -Be 0
         $trend.Message | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-ADMaturityTrend - test coverage awareness' {
+    <#
+        Regression coverage for a reported gap: a run with several
+        excluded/failed checks scores BETTER than a fully-tested run
+        purely from checking less, with nothing distinguishing "genuine
+        improvement" from "checked less this time" in the trend.
+    #>
+    It 'flags a run with untested (failed/excluded) checks and surfaces it in the Message' {
+        $folder = Join-Path $TestDrive 'incomplete-coverage'
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'full' -GeneratedDate ([datetime]'2026-01-01') -Findings @() -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+        )
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'partial' -GeneratedDate ([datetime]'2026-02-01') -Findings @() -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'RodcSecurity'; Status = 'Excluded'; FindingCount = 0; ErrorMessage = $null }
+        )
+
+        $trend = Get-ADMaturityTrend -ReportPath $folder -WarningAction SilentlyContinue
+
+        $trend.IncompleteCoverageCount | Should -Be 1
+        $trend.NoCoverageDataCount | Should -Be 0
+        $fullRun = $trend.Series | Where-Object { $_.GeneratedDate -match '2026-01-01' }
+        $fullRun.CoverageAvailable | Should -BeTrue
+        $fullRun.UntestedCount | Should -Be 0
+        $partialRun = $trend.Series | Where-Object { $_.GeneratedDate -match '2026-02-01' }
+        $partialRun.CoverageAvailable | Should -BeTrue
+        $partialRun.UntestedCount | Should -Be 1
+        $trend.Message | Should -Match 'untested'
+    }
+
+    It 'flags a run with no coverage sidecar at all, distinctly from an incomplete-but-present one' {
+        $folder = Join-Path $TestDrive 'no-coverage-data'
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'nodatarun' -GeneratedDate ([datetime]'2026-03-01') -Findings @()
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'seconddate' -GeneratedDate ([datetime]'2026-04-01') -Findings @() -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+        )
+
+        $trend = Get-ADMaturityTrend -ReportPath $folder -WarningAction SilentlyContinue
+
+        $trend.NoCoverageDataCount | Should -Be 1
+        $trend.IncompleteCoverageCount | Should -Be 0
+        $noDataRun = $trend.Series | Where-Object { $_.GeneratedDate -match '2026-03-01' }
+        $noDataRun.CoverageAvailable | Should -BeFalse
+        $trend.Message | Should -Match 'no test coverage data'
+    }
+
+    It 'does not flag anything when every run has full coverage' {
+        $folder = Join-Path $TestDrive 'all-full-coverage'
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'a' -GeneratedDate ([datetime]'2026-01-01') -Findings @() -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+        )
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'b' -GeneratedDate ([datetime]'2026-02-01') -Findings @() -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+        )
+
+        $trend = Get-ADMaturityTrend -ReportPath $folder
+        $trend.IncompleteCoverageCount | Should -Be 0
+        $trend.NoCoverageDataCount | Should -Be 0
+        $trend.Message | Should -BeNullOrEmpty
+    }
+
+    It 'Export-ADMaturityTrendHTML renders the coverage column without throwing' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src/Reporting.ps1')
+        $folder = Join-Path $TestDrive 'html-coverage'
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'a' -GeneratedDate ([datetime]'2026-01-01') -Findings @() -TestCoverage @(
+            [PSCustomObject]@{ TestName = 'UserAccounts'; Status = 'Completed'; FindingCount = 0; ErrorMessage = $null }
+            [PSCustomObject]@{ TestName = 'RodcSecurity'; Status = 'Excluded'; FindingCount = 0; ErrorMessage = $null }
+        )
+        New-ScoreSidecarFixture -Folder $folder -Timestamp 'b' -GeneratedDate ([datetime]'2026-02-01') -Findings @()
+
+        $trend = Get-ADMaturityTrend -ReportPath $folder -WarningAction SilentlyContinue
+        $outPath = Join-Path $TestDrive 'trend-coverage.html'
+
+        { Export-ADMaturityTrendHTML -Trend $trend -OutputPath $outPath } | Should -Not -Throw
+        $content = Get-Content -Path $outPath -Raw
+        $content | Should -Match 'Coverage'
+        $content | Should -Match 'untested'
+        $content | Should -Match 'no data'
     }
 }
 

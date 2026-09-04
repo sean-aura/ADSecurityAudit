@@ -76,7 +76,8 @@ function Get-ADForestConsolidation {
     .OUTPUTS
         PSCustomObject: GeneratedDate, DomainCount, ForestScore,
         ForestMaturityLevel, ForestMaturityLabel, WorstDomain, Domains,
-        CategoryHeatmap, DomainComparison, TrustRiskEnrichment, MissingDomains.
+        CategoryHeatmap, DomainComparison, TrustRiskEnrichment, MissingDomains,
+        IncompleteCoverageDomains, NoCoverageDataDomains.
         Additive-friendly shape - a later feature can extend it without
         breaking this one.
     .EXAMPLE
@@ -179,17 +180,29 @@ function Get-ADForestConsolidation {
 
         $findingsArray = @($findingsRaw)
 
+        # Reported gap: a domain with several excluded/failed checks looks
+        # "cleaner" (lower score) than a fully-tested domain purely from
+        # checking less, not from genuinely better posture - the forest
+        # heatmap and domain comparison table had no way to distinguish
+        # the two. Same sibling-sidecar lookup used by
+        # Get-ADRetestComparison/Get-ADMaturityTrend.
+        $domainCoverage = @(Get-ADTestCoverageSidecar -FindingsFile (Get-Item -Path $pair.FindingsPath))
+        $domainUntestedCount = @($domainCoverage | Where-Object { $_.Status -in @('Failed', 'Excluded') }).Count
+        $domainCoverageAvailable = $domainCoverage.Count -gt 0
+
         $domains += [PSCustomObject]@{
-            DomainName     = $pair.DomainName
-            TotalScore     = [int]$scoreRaw.TotalScore
-            MaturityLevel  = [int]$scoreRaw.MaturityLevel
-            MaturityLabel  = $scoreRaw.MaturityLabel
-            FindingCount   = if ($scoreRaw.PSObject.Properties.Name -contains 'FindingCount') { [int]$scoreRaw.FindingCount } else { $findingsArray.Count }
-            SeverityCounts = $scoreRaw.SeverityCounts
-            CategoryScores = @($scoreRaw.CategoryScores)
-            Findings       = $findingsArray
-            FindingsPath   = $pair.FindingsPath
-            ScorePath      = $pair.ScorePath
+            DomainName        = $pair.DomainName
+            TotalScore        = [int]$scoreRaw.TotalScore
+            MaturityLevel     = [int]$scoreRaw.MaturityLevel
+            MaturityLabel     = $scoreRaw.MaturityLabel
+            FindingCount      = if ($scoreRaw.PSObject.Properties.Name -contains 'FindingCount') { [int]$scoreRaw.FindingCount } else { $findingsArray.Count }
+            SeverityCounts    = $scoreRaw.SeverityCounts
+            CategoryScores    = @($scoreRaw.CategoryScores)
+            Findings          = $findingsArray
+            FindingsPath      = $pair.FindingsPath
+            ScorePath         = $pair.ScorePath
+            CoverageAvailable = $domainCoverageAvailable
+            UntestedCount     = $domainUntestedCount
         }
     }
 
@@ -234,14 +247,16 @@ function Get-ADForestConsolidation {
     $comparison = foreach ($d in $domains) {
         $sev = $d.SeverityCounts
         [PSCustomObject]@{
-            DomainName    = $d.DomainName
-            TotalScore    = $d.TotalScore
-            MaturityLevel = $d.MaturityLevel
-            Critical      = if ($sev -and $sev.PSObject.Properties.Name -contains 'Critical') { $sev.Critical } else { 0 }
-            High          = if ($sev -and $sev.PSObject.Properties.Name -contains 'High') { $sev.High } else { 0 }
-            Medium        = if ($sev -and $sev.PSObject.Properties.Name -contains 'Medium') { $sev.Medium } else { 0 }
-            Low           = if ($sev -and $sev.PSObject.Properties.Name -contains 'Low') { $sev.Low } else { 0 }
-            FindingCount  = $d.FindingCount
+            DomainName        = $d.DomainName
+            TotalScore        = $d.TotalScore
+            MaturityLevel     = $d.MaturityLevel
+            Critical          = if ($sev -and $sev.PSObject.Properties.Name -contains 'Critical') { $sev.Critical } else { 0 }
+            High              = if ($sev -and $sev.PSObject.Properties.Name -contains 'High') { $sev.High } else { 0 }
+            Medium            = if ($sev -and $sev.PSObject.Properties.Name -contains 'Medium') { $sev.Medium } else { 0 }
+            Low               = if ($sev -and $sev.PSObject.Properties.Name -contains 'Low') { $sev.Low } else { 0 }
+            FindingCount      = $d.FindingCount
+            CoverageAvailable = $d.CoverageAvailable
+            UntestedCount     = $d.UntestedCount
         }
     }
     $comparison = @($comparison | Sort-Object -Property TotalScore, Critical, High -Descending)
@@ -339,19 +354,40 @@ function Get-ADForestConsolidation {
         }
     }
 
+    # Same "flag it, don't hide it" reasoning as Get-ADMaturityTrend's
+    # IncompleteCoverageCount/NoCoverageDataCount - a domain with untested
+    # checks can look "cleaner" than a fully-tested one purely from
+    # checking less, which would be a misleading signal in a forest-wide
+    # comparison meant to find the WORST domain.
+    $incompleteCoverageDomains = @($domains | Where-Object { $_.CoverageAvailable -and $_.UntestedCount -gt 0 })
+    $noCoverageDataDomains = @($domains | Where-Object { -not $_.CoverageAvailable })
+
     $result = [PSCustomObject]@{
         # String, not a raw [datetime] - see Scoring.ps1's comment on why.
-        GeneratedDate       = (Get-Date).ToString('o')
-        DomainCount         = $domains.Count
-        ForestScore         = [int]$forestScore
-        ForestMaturityLevel = [int]$forestMaturityLevel
-        ForestMaturityLabel = $maturityLabels[[int]$forestMaturityLevel]
-        WorstDomain         = $worstDomain.DomainName
-        Domains             = $domains
-        CategoryHeatmap     = $heatmap
-        DomainComparison    = $comparison
-        TrustRiskEnrichment = @($trustEnrichment)
-        MissingDomains      = @($missingDomains)
+        GeneratedDate           = (Get-Date).ToString('o')
+        DomainCount             = $domains.Count
+        ForestScore             = [int]$forestScore
+        ForestMaturityLevel     = [int]$forestMaturityLevel
+        ForestMaturityLabel     = $maturityLabels[[int]$forestMaturityLevel]
+        WorstDomain             = $worstDomain.DomainName
+        Domains                 = $domains
+        CategoryHeatmap         = $heatmap
+        DomainComparison        = $comparison
+        TrustRiskEnrichment     = @($trustEnrichment)
+        MissingDomains          = @($missingDomains)
+        # New in v1.24.0, additive - domain names (not counts, since a
+        # forest is typically a much smaller N than a maturity trend's
+        # run history, so naming them directly is more useful here) with
+        # incomplete or unavailable test coverage data.
+        # IncompleteCoverageDomains: coverage data exists and positively
+        # shows one or more failed/excluded checks for that domain.
+        # NoCoverageDataDomains: no coverage sidecar at all for that
+        # domain (predates module v1.24.0, or the sidecar wasn't kept
+        # alongside the export) - whether it had untested checks cannot
+        # be determined either way. Both empty when every domain has
+        # full, confirmed coverage.
+        IncompleteCoverageDomains = @($incompleteCoverageDomains.DomainName)
+        NoCoverageDataDomains     = @($noCoverageDataDomains.DomainName)
     }
 
     if ($ToJson) {
@@ -499,11 +535,20 @@ function Export-ADForestConsolidationHTML {
         <h2>&#128202; Domain Comparison (worst first)</h2>
         <div style="overflow-x: auto;">
             <table class="privileged-users-table">
-                <thead><tr><th>Domain</th><th>Score</th><th>Maturity</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>Findings</th></tr></thead>
+                <thead><tr><th>Domain</th><th>Score</th><th>Maturity</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>Findings</th><th>Coverage</th></tr></thead>
                 <tbody>
 "@
 
     foreach ($row in $Consolidation.DomainComparison) {
+        $coverageCell = if (-not $row.CoverageAvailable) {
+            '<span style="color:#a05a00; font-size:0.85em;" title="No test coverage sidecar for this domain (predates module v1.24.0, or the sidecar was not kept alongside its export) - untested checks, if any, cannot be determined.">&#9888; no data</span>'
+        }
+        elseif ($row.UntestedCount -gt 0) {
+            "<span style=`"color:#a05a00; font-size:0.85em;`" title=`"$($row.UntestedCount) check(s) failed or were excluded for this domain - its score may look better than a fully-tested domain purely from checking less, not genuinely better posture.`">&#9888; $($row.UntestedCount) untested</span>"
+        }
+        else {
+            '<span style="color:#3f7d3f; font-size:0.85em;">&#10003; full</span>'
+        }
         $html += @"
                     <tr>
                         <td><strong>$(HtmlEncode $row.DomainName)</strong></td>
@@ -514,6 +559,7 @@ function Export-ADForestConsolidationHTML {
                         <td>$($row.Medium)</td>
                         <td>$($row.Low)</td>
                         <td>$($row.FindingCount)</td>
+                        <td>$coverageCell</td>
                     </tr>
 "@
     }

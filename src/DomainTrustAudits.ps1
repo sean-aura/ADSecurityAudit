@@ -106,7 +106,24 @@ function Test-ADDomainTrusts {
             }
 
             if ($trust.Modified) {
-                $trustAge = (Get-Date) - $trust.Modified
+                # Modified may come back as a [string] after a JSON
+                # round-trip (-ToJson / -FromSnapshot); coerce explicitly so
+                # the subtraction below is always DateTime - DateTime, the
+                # same defensive pattern already used for
+                # PasswordLastSet/LastLogonDate in UserAudits.ps1 and
+                # KrbtgtAudits.ps1's snapshot branches.
+                $trustModified = if ($trust.Modified -is [datetime]) {
+                    $trust.Modified
+                }
+                else {
+                    try { [datetime]$trust.Modified }
+                    catch {
+                        Write-Verbose "Test-ADDomainTrusts: could not parse Modified '$($trust.Modified)' for trust '$($trust.Target)'; skipping trust-age check for this trust."
+                        $null
+                    }
+                }
+                if ($trustModified) {
+                $trustAge = (Get-Date) - $trustModified
                 if ($trustAge.Days -gt 30) {
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Domain Trusts'
@@ -126,6 +143,7 @@ function Test-ADDomainTrusts {
                         DaysSinceModified = $trustAge.Days
                     }
                     $findings += $finding
+                }
                 }
             }
         }

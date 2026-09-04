@@ -197,12 +197,18 @@ function Get-ADRetestComparison {
     # jagged (see ConvertTo-ADFlatFindingsArray in Common.ps1). Every
     # consumer below (Get-ADRiskScore, the key-building map) then only ever
     # sees real, individual finding objects - a no-op for a normal, already-
-    # flat export.
-    $baselineFindings = ConvertTo-ADFlatFindingsArray -Findings $baselineFindings
-    $retestFindings   = ConvertTo-ADFlatFindingsArray -Findings $retestFindings
+    # flat export. @() wrap is load-bearing for a genuinely empty (all
+    # findings resolved) export - see ConvertTo-ADFlatFindingsArray's own
+    # docs for why a plain assignment would otherwise silently produce a
+    # real $null here, which then fails Get-ADRiskScore's Mandatory
+    # -Findings parameter a few lines down with a binding error - confirmed
+    # the hard way while testing the fully-resolved-retest scenario below.
+    $baselineFindings = @(ConvertTo-ADFlatFindingsArray -Findings $baselineFindings)
+    $retestFindings   = @(ConvertTo-ADFlatFindingsArray -Findings $retestFindings)
 
     $baselineMeta = Get-ADRetestSidecarMeta -FindingsFile $baselineFile
     $retestMeta   = Get-ADRetestSidecarMeta -FindingsFile $retestFile
+    $baselineCoverage = @(Get-ADTestCoverageSidecar -FindingsFile $baselineFile)
 
     # Recompute BOTH runs through the current mapping table - see the
     # module-level header comment on why stored sidecar scores are never
@@ -228,8 +234,35 @@ function Get-ADRetestComparison {
     $baselineMap = ConvertTo-ADRetestKeyedMap -Findings $baselineFindings
     $retestMap   = ConvertTo-ADRetestKeyedMap -Findings $retestFindings
 
+    # Reported gap: a finding present in the baseline but absent from the
+    # retest was ALWAYS classified as "Resolved" - with no consideration
+    # of whether the check that would have produced it actually ran in
+    # the retest. If that check was excluded (-ExcludeTests) or failed
+    # (an exception, e.g. a permissions/connectivity error) during the
+    # retest, every finding that check would have reported also
+    # disappears from $retestMap - identically to genuine remediation, as
+    # far as the key-based diff above can tell. That silently produces a
+    # false "Resolved" claim for something that was simply never re-
+    # checked - the one thing a retest comparison exists to verify.
+    #
+    # $retestCoverage is loaded to cross-reference: a "disappeared"
+    # finding is only trusted as genuinely Resolved if its originating
+    # check (Finding.TestName) is EITHER absent from coverage data
+    # entirely (an old export predating TestName/coverage tracking, or a
+    # custom/manually-added finding with no registered check - benefit of
+    # the doubt, since there's no positive evidence of a problem) OR was
+    # positively confirmed to have run (Status 'Completed') in the
+    # retest. A TestName with a 'Failed' or 'Excluded' status in the
+    # retest coverage moves that finding out of ResolvedFindings and into
+    # the new UnconfirmedFindings bucket instead - disappeared, but for a
+    # reason that has nothing to do with remediation.
+    $retestCoverage = @(Get-ADTestCoverageSidecar -FindingsFile $retestFile)
+    $retestCoverageByTestName = @{}
+    foreach ($c in $retestCoverage) { $retestCoverageByTestName[$c.TestName] = $c }
+
     $newFindings      = @()
     $resolvedFindings = @()
+    $unconfirmed      = @()
     $stillOpen        = @()
     $changed          = @()
 
@@ -241,7 +274,25 @@ function Get-ADRetestComparison {
 
     foreach ($key in $baselineMap.Keys) {
         if (-not $retestMap.Contains($key)) {
-            $resolvedFindings += $baselineMap[$key]
+            $b = $baselineMap[$key]
+            $testName = $b.TestName
+            $coverageEntry = if ($testName) { $retestCoverageByTestName[$testName] } else { $null }
+            if ($coverageEntry -and $coverageEntry.Status -in @('Failed', 'Excluded')) {
+                $unconfirmed += [PSCustomObject]@{
+                    Key      = $key
+                    Finding  = $b
+                    TestName = $testName
+                    Reason   = if ($coverageEntry.Status -eq 'Failed') {
+                        "The '$testName' check failed during the retest ($($coverageEntry.ErrorMessage)) - this finding's disappearance from the retest is NOT confirmed remediation, it simply was not re-checked."
+                    }
+                    else {
+                        "The '$testName' check was excluded from the retest run (-ExcludeTests/-IncludeTests) - this finding's disappearance from the retest is NOT confirmed remediation, it simply was not re-checked."
+                    }
+                }
+            }
+            else {
+                $resolvedFindings += $b
+            }
             continue
         }
 
@@ -285,6 +336,10 @@ function Get-ADRetestComparison {
 
         foreach ($f in $stillOpen) { Add-ADRemediationStateAnnotation -Finding $f -ByKey $remediationByKey }
         foreach ($c in $changed) { Add-ADRemediationStateAnnotation -Finding $c.RetestFinding -ByKey $remediationByKey }
+        # Unconfirmed findings are, functionally, still-open-but-uncertain -
+        # a human's prior AcceptedRisk/InProgress decision on one is just as
+        # relevant here as for StillOpenFindings.
+        foreach ($u in $unconfirmed) { Add-ADRemediationStateAnnotation -Finding $u.Finding -ByKey $remediationByKey }
     }
 
     # Per-category deltas across every category present in either run.
@@ -314,22 +369,57 @@ function Get-ADRetestComparison {
         Info     = [int]$retestScore.SeverityCounts.Info     - [int]$baselineScore.SeverityCounts.Info
     }
 
+    # General coverage-availability caveats - distinct from the specific
+    # per-finding UnconfirmedFindings reclassification above, which only
+    # fires when there IS coverage data and it POSITIVELY shows a
+    # Failed/Excluded check. These cover the case where the cross-check
+    # couldn't even be attempted: an export (either side) that predates
+    # test coverage tracking (module v1.24.0) or is simply missing its
+    # sidecar has NO data to catch a false "Resolved" claim with -
+    # ResolvedFindings for that run falls back to the old, unverified
+    # behavior, and a reader should know that, not assume the absence of
+    # an UnconfirmedFindings entry means everything was cross-checked.
+    $coverageCaveats = [System.Collections.Generic.List[string]]::new()
+    if ($retestCoverage.Count -eq 0) {
+        $coverageCaveats.Add("No test coverage data is available for the RETEST run - ResolvedFindings could not be cross-checked against which checks actually ran. A 'Resolved' finding in this comparison may reflect genuine remediation, or may simply mean the relevant check was not re-run; this cannot be distinguished without test coverage tracking (introduced in module version 1.24.0).")
+    }
+    if ($baselineCoverage.Count -eq 0) {
+        $coverageCaveats.Add("No test coverage data is available for the BASELINE run. NewFindings in this comparison may be genuinely new, or may simply reflect a check that ran for the first time in the retest; this cannot be distinguished without test coverage tracking (introduced in module version 1.24.0).")
+    }
+    if ($unconfirmed.Count -gt 0) {
+        $coverageCaveats.Add("$($unconfirmed.Count) finding(s) that disappeared between baseline and retest were reclassified from Resolved to UnconfirmedFindings, because the check that would have found them failed or was excluded during the retest - see UnconfirmedFindings for detail on each.")
+    }
+
     $result = [PSCustomObject]@{
         # String, not a raw [datetime] - see the Scoring.ps1 comment on why;
         # this object can itself be written out via -ToJson below.
-        GeneratedDate      = (Get-Date).ToString('o')
-        BaselineMeta       = $baselineMeta
-        RetestMeta         = $retestMeta
-        BaselineScore      = $baselineScore
-        RetestScore        = $retestScore
-        ScoreDelta         = [int]$retestScore.TotalScore - [int]$baselineScore.TotalScore
-        MaturityDelta      = [int]$retestScore.MaturityLevel - [int]$baselineScore.MaturityLevel
-        CategoryDeltas     = $categoryDeltas
-        SeverityCountDelta = $sevDelta
-        NewFindings        = @($newFindings)
-        ResolvedFindings   = @($resolvedFindings)
-        StillOpenFindings  = @($stillOpen)
-        ChangedFindings    = @($changed)
+        GeneratedDate       = (Get-Date).ToString('o')
+        BaselineMeta        = $baselineMeta
+        RetestMeta          = $retestMeta
+        BaselineScore       = $baselineScore
+        RetestScore         = $retestScore
+        ScoreDelta          = [int]$retestScore.TotalScore - [int]$baselineScore.TotalScore
+        MaturityDelta       = [int]$retestScore.MaturityLevel - [int]$baselineScore.MaturityLevel
+        CategoryDeltas      = $categoryDeltas
+        SeverityCountDelta  = $sevDelta
+        NewFindings         = @($newFindings)
+        ResolvedFindings    = @($resolvedFindings)
+        # New in v1.24.0, additive - findings that disappeared from the
+        # retest but could NOT be trusted as resolved because their
+        # originating check failed or was excluded during the retest (see
+        # the classification loop above and each entry's own .Reason).
+        # Older code that only reads ResolvedFindings/StillOpenFindings/
+        # ChangedFindings/NewFindings is unaffected; it simply won't see
+        # this bucket, the same as any other additive field in this
+        # module's established contract.
+        UnconfirmedFindings = @($unconfirmed)
+        StillOpenFindings   = @($stillOpen)
+        ChangedFindings     = @($changed)
+        # New in v1.24.0, additive - general, comparison-level caveats
+        # about what could and couldn't be cross-checked against test
+        # coverage data. Empty array when both runs have full coverage
+        # data and nothing needed reclassifying.
+        CoverageCaveats     = @($coverageCaveats)
     }
 
     if ($ToJson) {
@@ -683,6 +773,48 @@ function Export-ADRetestComparisonHTML {
 "@
     }) -join "`n"
 
+    # --- Unconfirmed findings: disappeared from the retest, but their
+    # originating check failed/was excluded so absence is NOT confirmed
+    # remediation. Custom-rendered (not Get-GroupedFindingsHtml) so each
+    # card can show WHY it's unconfirmed, same reasoning as the custom
+    # $changedHtml block above.
+    $unconfirmedHtml = (@($Comparison.UnconfirmedFindings) | ForEach-Object {
+        $f = $_.Finding
+        @"
+        <details class="finding $($f.Severity.ToLower())">
+            <summary>
+                <div class="finding-header">
+                    <div class="finding-title">$(HtmlEncode $f.Issue)</div>
+                    <span class="severity-badge severity-$($f.Severity.ToLower())">$(HtmlEncode $f.Severity)</span>
+                    <span style="margin-left:8px; background:#5b6472; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.8em;">UNCONFIRMED</span>
+                </div>
+            </summary>
+            <div class="finding-body">
+                <div class="finding-meta">
+                    <span><strong>Category:</strong> $(HtmlEncode $f.Category)</span>
+                    <span><strong>Affected Object:</strong> <span class="meta-code">$(HtmlEncode $f.AffectedObject)</span></span>
+                </div>
+                <div class="finding-section">
+                    <h4>Why This Isn't Confirmed Resolved</h4>
+                    <p>$(HtmlEncode $_.Reason)</p>
+                </div>
+            </div>
+        </details>
+"@
+    }) -join "`n"
+
+    $coverageCaveatsHtml = ''
+    if (@($Comparison.CoverageCaveats).Count -gt 0) {
+        $coverageCaveatsHtml = @"
+        <div class="warning-box" style="background:#f2f7ee; border-color:#3f7d3f;">
+            <p><strong>COVERAGE CAVEATS</strong> - $(@($Comparison.CoverageCaveats).Count) note(s) about test coverage that affect how to read this comparison.</p>
+            <ul>
+$((@($Comparison.CoverageCaveats) | ForEach-Object { "                <li>$(HtmlEncode $_)</li>" }) -join "`n")
+            </ul>
+        </div>
+"@
+    }
+
     $html = @"
 <!DOCTYPE html>
 <html lang="en">
@@ -856,11 +988,17 @@ function Export-ADRetestComparisonHTML {
             <h2>Per-Category Delta (baseline vs retest)</h2>
             <div style="max-width:700px;">$categoryDeltaBarsSvg</div>
 
+            $coverageCaveatsHtml
+
             <h2>New ($(@($Comparison.NewFindings).Count))</h2>
             $(if ($newHtml) { $newHtml } else { '<p class="section-empty">No new findings since the baseline.</p>' })
 
             <h2 style="border-left-color: var(--good);">Resolved ($(@($Comparison.ResolvedFindings).Count))</h2>
             $(if ($resolvedHtml) { $resolvedHtml } else { '<p class="section-empty">No findings were resolved between the baseline and the retest.</p>' })
+
+            <h2 style="border-left-color: #5b6472;">Unconfirmed ($(@($Comparison.UnconfirmedFindings).Count))</h2>
+            <p style="color:var(--ink-muted); font-size:0.9em; margin-top:-8px;">Disappeared from the retest, but the check that would have found them failed or was excluded - NOT confirmed as remediated.</p>
+            $(if ($unconfirmedHtml) { $unconfirmedHtml } else { '<p class="section-empty">No findings were reclassified as unconfirmed - either every relevant check ran cleanly in the retest, or no coverage data was available to cross-check against (see Coverage Caveats above, if present).</p>' })
 
             <h2>Still Open ($(@($Comparison.StillOpenFindings).Count))</h2>
             $(if ($stillOpenHtml) { $stillOpenHtml } else { '<p class="section-empty">No unchanged still-open findings.</p>' })

@@ -183,6 +183,12 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - re-enable protocol transition and restore the msDS-AllowedToDelegateTo list on the computer object; effective at next Kerberos ticket request, no data loss.'
         OperationalNotes = ''
     }
+    'Computer Account with Unconstrained Delegation' = @{
+        EstimatedEffort  = 'Medium - requires discovering what the host actually delegates to and reconfiguring it with an equivalent constrained/RBCD replacement before disabling the flag, not just flipping it off.'
+        KnownRisks       = 'Unconstrained delegation is one of the most consequential AD misconfigurations; disabling it without configuring an equivalent constrained/RBCD replacement first will break whatever legitimate multi-hop authentication currently depends on it.'
+        BackupRollback   = 'Easy - revert the TRUSTED_FOR_DELEGATION flag; effective at next Kerberos ticket request, no data loss.'
+        OperationalNotes = ''
+    }
     'Resource-Based Constrained Delegation Configured' = @{
         EstimatedEffort  = 'Medium - a single-attribute change on the resource object, but confirm with the resource owner whether the delegation is an intentional, still-needed configuration.'
         KnownRisks       = 'RBCD is commonly used intentionally for modern constrained delegation without protocol transition, so removing it can break a legitimate service-to-service delegation scenario it was set up for.'
@@ -679,6 +685,18 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Low - a single password reset/expiration action per account, though service accounts may need coordinated rotation everywhere the password is configured.'
         KnownRisks       = 'Forcing a password change requires the account owner to set a new password at next logon, a routine (if sometimes disruptive for service accounts) operational step; for service accounts, the manual rotation must be coordinated everywhere that account is configured.'
         BackupRollback   = 'Hard/Limited - a password can only be reset again, not restored to its previous (already known/old) value.'
+        OperationalNotes = ''
+    }
+    'Privileged Account with SPN (Kerberoasting Risk)' = @{
+        EstimatedEffort  = 'Medium - same as the non-privileged version, but the higher blast radius (a privileged account) makes coordinating the gMSA migration or password rotation with the service owner more urgent.'
+        KnownRisks       = 'A privileged service account with an SPN and a weak/crackable password is a high-value Kerberoasting target, since cracking it yields privileged access directly; migrating to a gMSA is the standard fix but requires the hosting application to support it.'
+        BackupRollback   = 'Easy - if gMSA migration isn''t viable, revert to the original account with a long/complex manually-set password; no data loss, though any ticket captured before the change remains crackable until the old password is retired.'
+        OperationalNotes = ''
+    }
+    'User Account with SPN (Kerberoasting Risk)' = @{
+        EstimatedEffort  = 'Medium - the real fix (migrating to a gMSA, or ensuring a long random password) is a bigger step than removing the SPN, since the SPN is what makes the service reachable via Kerberos; needs coordination with whoever manages the service.'
+        KnownRisks       = 'A service account with an SPN and a weak/crackable password is vulnerable to Kerberoasting; migrating to a gMSA (which manages its own long, automatically-rotated password) is the standard fix but requires the hosting application to support gMSA authentication.'
+        BackupRollback   = 'Easy - if gMSA migration isn''t viable for the application, revert to the original account with a manually-set long/complex password; no data loss, though any ticket captured before the change remains crackable until the old password is retired.'
         OperationalNotes = ''
     }
     'Privileged Account Not in Protected Users Group' = @{

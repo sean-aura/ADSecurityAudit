@@ -438,6 +438,11 @@ function Test-ADCSExtended {
                 }
             }
         }
+        # A template can grant the same low-priv principal the same
+        # dangerous right via more than one ACE (one per property
+        # set/object type) - dedupe so the same "principal (rights)" line
+        # doesn't appear twice in one finding's bullet list.
+        $dangerousAces = @($dangerousAces | Select-Object -Unique)
 
         if ($dangerousAces.Count -gt 0) {
             $finding = [ADSecurityFinding]::new()

@@ -111,6 +111,26 @@ class ADSecurityFinding {
     [string]$BackupRollback   # Easy/Moderate/Hard-Limited + one-sentence undo summary
     [string]$OperationalNotes # Optional; omitted when there's nothing additive to say
 
+    # --- Additive coverage-linkage field (introduced in v1.24.0, alongside
+    #     Test Coverage tracking) ---
+    # The $allTests key (Main.ps1) of the check that produced this finding,
+    # e.g. 'DomainSecurity', 'DangerousPermissions'. Set by Main.ps1's test
+    # loop, NOT by individual check functions (a check has no way to know
+    # its own registered name in $allTests - Main.ps1 is the one place that
+    # already has both the finding and the key it came from in hand).
+    #
+    # Exists so a finding can be cross-referenced against a Test Coverage
+    # sidecar (AD_Security_TestCoverage_<timestamp>.json) after the fact -
+    # critically, so Get-ADRetestComparison can tell "this finding is
+    # absent from the retest because the underlying issue was fixed" apart
+    # from "this finding is absent from the retest because the check that
+    # would have found it failed or was excluded this time" (see that
+    # function's own docs for the false-negative this closes). A finding
+    # from an export that predates this field is simply blank here -
+    # treated the same as "unknown/can't cross-reference", never assumed
+    # to mean any particular test.
+    [string]$TestName
+
     ADSecurityFinding() {
         $this.DetectedDate = Get-Date
         $this.Details = @{}
@@ -121,6 +141,7 @@ class ADSecurityFinding {
         $this.KnownRisks = ''
         $this.BackupRollback = ''
         $this.OperationalNotes = ''
+        $this.TestName = ''
     }
 }
 
@@ -1539,6 +1560,102 @@ function Get-ADOfflineSkipNotes {
     return @($Script:ADOfflineSkipNotes)
 }
 
+# --- Test coverage tracking: "which checks ran clean, found something,
+# failed, or were excluded" - see Main.ps1's live-mode test loop for the
+# original (live-only) implementation, and Invoke-ADRuleSet for why
+# -FromSnapshot needed this same tracker rather than reusing that loop
+# directly. ---
+#
+# Reported gap: -FromSnapshot mode dispatches tests through
+# Invoke-ADRuleSet, a completely different code path from Main.ps1's live
+# test loop that Add-ADTestCoverageEntry calls below were built for -
+# $testCoverage was simply never assigned for -FromSnapshot runs, so the
+# shared HTML-export call at the end of Start-ADSecurityAudit referenced
+# an undefined variable (silently $null when read). That $null then hit
+# the exact "@($null) has Count 1" quirk documented on
+# ConvertTo-ADFlatFindingsArray, making Export-ADSecurityReportHTML's
+# Test Coverage section gate TRUE (Count -gt 0) while its actual per-row
+# data (built via Sort-Object, which silently drops a $null element)
+# came out empty - rendering a nonsensical "0 check(s) tracked: 0 passed
+# clean, 0 found issue(s), and 0 untested" box on every single
+# -FromSnapshot report, looking like a real (if empty) tracked run rather
+# than "coverage wasn't tracked for this run at all".
+#
+# Mirrors the Offline-Skip-Notes tracker immediately above: a
+# script-scoped list, reset once per Start-ADSecurityAudit call (both
+# live and -FromSnapshot - see Main.ps1), added to as each test
+# completes/fails/is excluded, and read back at export time.
+function Reset-ADTestCoverageTracker {
+    <#
+    .SYNOPSIS
+        Clears the test-coverage tracker. Called once at the start of
+        every Start-ADSecurityAudit run (both live and -FromSnapshot) so
+        entries never leak between runs in the same PowerShell session.
+    #>
+    [CmdletBinding()]
+    param()
+    $Script:ADTestCoverageTracker = [System.Collections.Generic.List[PSCustomObject]]::new()
+}
+
+function Add-ADTestCoverageEntry {
+    <#
+    .SYNOPSIS
+        Records one test's outcome for the current run's Test Coverage
+        section/sidecar.
+    .PARAMETER TestName
+        The $allTests/$Script:ADTestFunctionRegistry key (e.g.
+        'DomainSecurity'), matching the value Main.ps1's live loop uses.
+    .PARAMETER Status
+        'Completed' (ran, regardless of whether it found anything),
+        'Failed' (threw an exception), or 'Excluded' (deliberately
+        skipped - via -ExcludeTests/-IncludeTests, or because it has no
+        -Snapshot support yet and -AllowLiveFallbackForUnsupportedTests
+        wasn't set; the ErrorMessage distinguishes which).
+    .PARAMETER FindingCount
+        Number of findings this test produced. 0 for Failed/Excluded.
+    .PARAMETER ErrorMessage
+        The exception message (Failed) or a short reason (Excluded).
+        $null for a plain Completed entry.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$TestName,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('Completed', 'Failed', 'Excluded')]
+        [string]$Status,
+
+        [Parameter()]
+        [int]$FindingCount = 0,
+
+        [Parameter()]
+        [string]$ErrorMessage = $null
+    )
+    if (-not $Script:ADTestCoverageTracker) {
+        # Defensive - a caller that forgot to Reset-ADTestCoverageTracker
+        # first still gets a working (if unreset) tracker rather than an
+        # error on first use.
+        $Script:ADTestCoverageTracker = [System.Collections.Generic.List[PSCustomObject]]::new()
+    }
+    $Script:ADTestCoverageTracker.Add([PSCustomObject]@{
+        TestName     = $TestName
+        Status       = $Status
+        FindingCount = $FindingCount
+        ErrorMessage = $ErrorMessage
+    })
+}
+
+function Get-ADTestCoverageTracker {
+    <#
+    .SYNOPSIS
+        Returns the test-coverage entries recorded so far in this run.
+    #>
+    [CmdletBinding()]
+    param()
+    return @($Script:ADTestCoverageTracker)
+}
+
 # --- Run-scope notes: "this check ran, but against a narrower/different
 # target than its normal assumption" ---
 #
@@ -1647,6 +1764,21 @@ function ConvertTo-ADFlatFindingsArray {
         already-flat array is a safe no-op).
     .OUTPUTS
         A flat array where every element is a single finding-like object.
+
+        CALLERS MUST WRAP THIS CALL IN @(...): "$x = ConvertTo-ADFlatFindingsArray -Findings $y"
+        silently sets $x to a real $null (not an empty array) whenever the
+        result is empty - a fundamental PowerShell behavior (a function
+        that outputs zero objects produces "nothing" on the pipeline,
+        which a plain variable assignment sees as $null), not something
+        fixable inside this function itself. That real $null can then
+        fail a DOWNSTREAM Mandatory+[AllowEmptyCollection()] parameter
+        (e.g. Get-ADRiskScore's -Findings) with "Cannot bind argument...
+        because it is null" - confirmed the hard way: a genuinely-empty
+        (all findings resolved) retest export reliably hit this in
+        Get-ADRetestComparison. "$x = @(ConvertTo-ADFlatFindingsArray -Findings $y)"
+        avoids it - @() around the whole call forces a real (possibly
+        empty) array through the assignment regardless of how many
+        objects the function actually output.
     #>
     [CmdletBinding()]
     param(
@@ -1714,6 +1846,251 @@ function Set-ADFindingProperty {
         # before this property existed in the schema) - plain assignment
         # would throw. Add it as a new note property instead.
         $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+    }
+}
+
+function Resolve-ADRebuiltReportOutputPath {
+    <#
+    .SYNOPSIS
+        Resolves an -OutputPath argument for the offline "rebuild from
+        JSON" functions (Export-ADSecurityReportHTMLFromJson,
+        Export-ADSecurityReportCSVFromJson) to a concrete file path,
+        accepting either an exact file path OR a folder.
+    .DESCRIPTION
+        Reported gap: -OutputPath required an exact file path - callers
+        who just wanted to point at "the reports folder" and get a
+        sensibly-named file had to construct the filename themselves,
+        duplicating this module's own naming convention. Mirrors
+        -FindingsPath/-BaselinePath/-RetestPath already accepting either
+        a file or a folder (Resolve-ADRetestReportFile) - this closes the
+        same file-or-folder flexibility on the output side.
+
+        Treated as a FOLDER (auto-named file created inside it) when
+        EITHER:
+          - -OutputPath already exists on disk as a directory, or
+          - -OutputPath has no file extension at all (a not-yet-created
+            path is ambiguous between "a folder to create" and "a file
+            path with no extension"; this module's own outputs always
+            have an extension, so "no extension" is treated as "this is
+            a folder path").
+        Otherwise treated as an exact file path, unchanged from prior
+        behavior - including when it has a DIFFERENT extension than
+        -Extension (the caller's explicit choice is respected, not
+        second-guessed).
+
+        The auto-generated filename is "AD_Security_Audit_<timestamp>-recreated.<ext>"
+        - deliberately NOT the same name Start-ADSecurityAudit's live
+        export would use for the same timestamp (which would silently
+        overwrite the original report if the rebuild is pointed at the
+        same folder the original JSON/HTML/CSV already lives in - a real
+        risk since "point it at the folder your reports are already in"
+        is exactly the convenient use case this is meant to support).
+    .PARAMETER OutputPath
+        The caller's -OutputPath argument - a file or a folder.
+    .PARAMETER FindingsFile
+        The resolved findings JSON FileInfo (from Resolve-ADRetestReportFile),
+        used to derive the auto-generated filename's timestamp so it's
+        traceable back to the export it was rebuilt from.
+    .PARAMETER Extension
+        File extension (without a dot) to use when auto-generating a
+        filename, e.g. 'html' or 'csv'.
+    .OUTPUTS
+        [string] the resolved, concrete file path to write to. The
+        containing directory is created if it doesn't exist yet (for
+        both the folder case and an exact file path in a new directory).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$OutputPath,
+
+        [Parameter(Mandatory)]
+        [System.IO.FileInfo]$FindingsFile,
+
+        [Parameter(Mandatory)]
+        [string]$Extension
+    )
+
+    $isFolder = (Test-Path -Path $OutputPath -PathType Container) -or
+        (-not (Test-Path -Path $OutputPath) -and [string]::IsNullOrEmpty([System.IO.Path]::GetExtension($OutputPath)))
+
+    if ($isFolder) {
+        $timestamp = $FindingsFile.Name -replace '^AD_Security_Audit_', '' -replace '\.json$', ''
+        $fileName = "AD_Security_Audit_$timestamp-recreated.$Extension"
+        $resolved = Join-Path -Path $OutputPath -ChildPath $fileName
+        Write-Verbose "Resolve-ADRebuiltReportOutputPath: -OutputPath '$OutputPath' is a folder; writing '$resolved'."
+    }
+    else {
+        $resolved = $OutputPath
+    }
+
+    $targetDir = Split-Path -Path $resolved -Parent
+    if ($targetDir -and -not (Test-Path -Path $targetDir)) {
+        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    }
+
+    return $resolved
+}
+
+function ConvertTo-ADNormalizedTestCoverage {
+    <#
+    .SYNOPSIS
+        Defensively repairs test-coverage data found in a "columnar"
+        shape (one object whose TestName/Status/FindingCount/ErrorMessage
+        properties are each an array of N values) back into the intended
+        shape (N separate objects, each with scalar properties).
+    .DESCRIPTION
+        Reported bug: a real AD_Security_TestCoverage_<timestamp>.json,
+        round-tripped through Get-ADTestCoverageSidecar, came back as a
+        SINGLE entry whose 4 properties were each N-element arrays
+        instead of N separate entries - visible as "1 check(s) tracked"
+        in the summary line while the per-check table showed every test
+        name/finding-count crammed into one row, and the CSV rebuild
+        wrote literal "System.Object[]" into every column.
+
+        Confirmed mechanism for the visual symptom (regardless of how the
+        columnar shape itself arises - not reproducible from a clean
+        Main.ps1-style construction + ConvertTo-Json/ConvertFrom-Json
+        round-trip in this module's tested PowerShell version, so it may
+        be specific to Windows PowerShell 5.1's JSON handling or another
+        environment difference): with $entry.TestName/.FindingCount as
+        arrays, string interpolation ("$($entry.TestName)") space-joins
+        every element into one string - explaining "all N test names/
+        finding counts crammed into one cell". With $entry.Status as an
+        array, PowerShell's `switch` statement - given a COLLECTION
+        rather than a scalar as its test value - evaluates every element
+        independently and accumulates every match's output, so a
+        27-element array of "Completed" made the 'Completed' case body
+        run 27 times, producing 27 separately-styled badge <span>
+        elements all crammed into that same one cell. Export-Csv calling
+        .ToString() on each still-array-valued property explains the
+        literal "System.Object[]" in the CSV rebuild.
+
+        This function detects that columnar shape (any entry whose
+        TestName is a collection rather than a scalar string) and
+        un-transposes it back into one object per check, index-aligned
+        across all four properties. A no-op (returns the input unchanged)
+        for the normal, correctly-shaped case.
+    .PARAMETER Coverage
+        Array of coverage entries, in either shape.
+    .OUTPUTS
+        [array] of coverage entries, guaranteed one object per check with
+        scalar properties.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowNull()]
+        [array]$Coverage
+    )
+
+    if (-not $Coverage -or $Coverage.Count -eq 0) { return @() }
+
+    $isColumnar = $false
+    foreach ($item in $Coverage) {
+        # Check all four properties, not just TestName - broadens the
+        # safety net in case a future/different malformation only affects
+        # some of them (e.g. TestName stayed scalar but Status/FindingCount
+        # came back as arrays).
+        foreach ($propName in @('TestName', 'Status', 'FindingCount', 'ErrorMessage')) {
+            $propValue = $item.$propName
+            if ($null -ne $propValue -and $propValue -isnot [string] -and $propValue -is [System.Collections.IEnumerable]) {
+                $isColumnar = $true
+                break
+            }
+        }
+        if ($isColumnar) { break }
+    }
+    if (-not $isColumnar) {
+        return @($Coverage)
+    }
+
+    Write-Warning "ConvertTo-ADNormalizedTestCoverage: this run's test-coverage data was in an unexpected (columnar) shape - repaired it into one entry per check for display. If this recurs, please keep the raw AD_Security_TestCoverage_*.json so the cause can be tracked down (this has not been reproduced from a normal write/read round-trip in this module's tested PowerShell version)."
+
+    $normalized = [System.Collections.Generic.List[PSCustomObject]]::new()
+    foreach ($item in $Coverage) {
+        $names     = @($item.TestName)
+        $statuses  = @($item.Status)
+        $counts    = @($item.FindingCount)
+        $errors    = @($item.ErrorMessage)
+        # Row count from the LONGEST of the four, not just TestName's -
+        # the broadened detection above can now catch a malformation where
+        # some OTHER property is the array while TestName stayed scalar;
+        # keying off TestName alone would silently drop every row past
+        # its own (shorter) length in that case.
+        $rowCount = ($names.Count, $statuses.Count, $counts.Count, $errors.Count | Measure-Object -Maximum).Maximum
+        for ($i = 0; $i -lt $rowCount; $i++) {
+            $normalized.Add([PSCustomObject]@{
+                TestName     = if ($i -lt $names.Count) { $names[$i] } else { "(unknown check $i)" }
+                Status       = if ($i -lt $statuses.Count) { $statuses[$i] } else { $null }
+                FindingCount = if ($i -lt $counts.Count) { $counts[$i] } else { 0 }
+                ErrorMessage = if ($i -lt $errors.Count) { $errors[$i] } else { $null }
+            })
+        }
+    }
+    return @($normalized)
+}
+
+function Get-ADTestCoverageSidecar {
+    <#
+    .SYNOPSIS
+        Reads a sibling AD_Security_TestCoverage_*.json sidecar, if
+        present, given ANY of this module's other same-run sidecar files
+        (the findings JSON or the score JSON) that shares its timestamp.
+    .DESCRIPTION
+        Same sibling-file idiom as Get-ADRetestSidecarMeta
+        (RetestComparison.ps1) for the Score sidecar: derives the expected
+        coverage sidecar name from the given file's own name (swapping
+        its "AD_Security_Audit_"/"AD_Security_Score_" prefix for
+        "AD_Security_TestCoverage_", preserving the shared "<timestamp>.json"
+        suffix) and looks for it next to it. Returns an empty array (not
+        $null, not a throw) when the sidecar doesn't exist - an export
+        from before test-coverage tracking was added, or one where the
+        sidecar was deleted/not copied alongside the other file, simply
+        has no coverage section to show. The caller is expected to handle
+        "no coverage data available" as a normal, unremarkable case, not
+        an error.
+
+        Accepting either sidecar kind (not just the findings JSON) means
+        Get-ADMaturityTrend - which only ever has the SCORE sidecar in
+        hand, having discovered runs by scanning for
+        AD_Security_Score_*.json rather than the findings JSON - can use
+        this same lookup instead of duplicating the naming-convention
+        substitution itself.
+    .PARAMETER FindingsFile
+        A resolved AD_Security_Audit_<timestamp>.json OR
+        AD_Security_Score_<timestamp>.json FileInfo for the same run
+        (from Resolve-ADRetestReportFile / Resolve-ADMaturityTrendScoreFiles).
+    .OUTPUTS
+        [array] of coverage entries (TestName/Status/FindingCount/
+        ErrorMessage), or an empty array if no sidecar was found or it
+        could not be parsed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.IO.FileInfo]$FindingsFile
+    )
+
+    $coverageName = $FindingsFile.Name -replace '^AD_Security_(Audit|Score)_', 'AD_Security_TestCoverage_'
+    $coveragePath = Join-Path -Path $FindingsFile.DirectoryName -ChildPath $coverageName
+
+    if (-not (Test-Path -Path $coveragePath)) {
+        Write-Verbose "Get-ADTestCoverageSidecar: no coverage sidecar '$coveragePath' next to '$($FindingsFile.Name)' - this export predates test-coverage tracking, or the sidecar wasn't kept alongside it. Proceeding with no Test Coverage section."
+        return @()
+    }
+
+    try {
+        $coverage = @(Get-Content -Path $coveragePath -Raw | ConvertFrom-Json)
+        $coverage = ConvertTo-ADNormalizedTestCoverage -Coverage $coverage
+        Write-Verbose "Get-ADTestCoverageSidecar: loaded $($coverage.Count) coverage entry(ies) from '$coveragePath'."
+        return $coverage
+    }
+    catch {
+
+        Write-Warning "Could not parse test coverage sidecar '$coveragePath' (this does not block report recreation, it just means no Test Coverage section): $_"
+        return @()
     }
 }
 
@@ -1898,6 +2275,73 @@ function ConvertTo-SafeCsvValue {
 
         return $Value
     }
+}
+
+function ConvertTo-ADFindingsCsvRows {
+    <#
+    .SYNOPSIS
+        Converts an array of findings into the flat, CSV-safe row shape
+        used for the AD_Security_Audit_<timestamp>.csv export.
+    .DESCRIPTION
+        SINGLE SOURCE OF TRUTH for the findings CSV column list. Both
+        Start-ADSecurityAudit's live export (Main.ps1) and
+        Export-ADSecurityReportCSVFromJson (Reporting.ps1 - the "rebuild
+        the CSV from an old JSON export" recovery path) call this instead
+        of each maintaining their own Select-Object/column list, so the
+        two can never drift out of sync with each other the way the CSV
+        and JSON exports previously drifted from EACH OTHER before this
+        function existed (SeverityLevel/Details, then later
+        EstimatedEffort/KnownRisks/BackupRollback/OperationalNotes, were
+        each added to the ADSecurityFinding class and the JSON export
+        long before anyone remembered to add them to the CSV's
+        hand-maintained column list - see the comment above the CSV
+        export call in Main.ps1 for that history). Adding a new column
+        now only means editing it here, and both export paths pick it up
+        automatically.
+    .PARAMETER Findings
+        Array of findings (live [ADSecurityFinding] objects, or
+        PSCustomObject from ConvertFrom-Json - either works, since this
+        only reads properties, never calls a typed method on them).
+    .OUTPUTS
+        Array of [PSCustomObject] rows, formula-injection-sanitized,
+        ready for Export-Csv.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [array]$Findings
+    )
+
+    $Findings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight, SeverityLevel, Details, EstimatedEffort, KnownRisks, BackupRollback, OperationalNotes, TestName |
+        ForEach-Object {
+            [PSCustomObject]@{
+                Category = $_.Category | ConvertTo-SafeCsvValue
+                Issue = $_.Issue | ConvertTo-SafeCsvValue
+                Severity = $_.Severity | ConvertTo-SafeCsvValue
+                AffectedObject = $_.AffectedObject | ConvertTo-SafeCsvValue
+                Description = $_.Description | ConvertTo-SafeCsvValue
+                Impact = $_.Impact | ConvertTo-SafeCsvValue
+                Remediation = $_.Remediation | ConvertTo-SafeCsvValue
+                DetectedDate = $_.DetectedDate
+                MitreTechnique = $_.MitreTechnique | ConvertTo-SafeCsvValue
+                AnssiControl = $_.AnssiControl | ConvertTo-SafeCsvValue
+                Weight = $_.Weight
+                SeverityLevel = $_.SeverityLevel
+                # Compact JSON string, not a native CSV column-per-key -
+                # Details is an open-ended per-check hashtable (different
+                # keys per Issue), so there's no fixed column set to
+                # flatten it into without the schema changing per-check.
+                # Still sanitized against formula injection like every
+                # other free-text column.
+                Details = ($_.Details | ConvertTo-Json -Compress -Depth 5) | ConvertTo-SafeCsvValue
+                EstimatedEffort = $_.EstimatedEffort | ConvertTo-SafeCsvValue
+                KnownRisks = $_.KnownRisks | ConvertTo-SafeCsvValue
+                BackupRollback = $_.BackupRollback | ConvertTo-SafeCsvValue
+                OperationalNotes = $_.OperationalNotes | ConvertTo-SafeCsvValue
+                TestName = $_.TestName | ConvertTo-SafeCsvValue
+            }
+        }
 }
 
 function ConvertTo-ADFriendlyDateText {

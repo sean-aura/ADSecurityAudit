@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.23.9'
+    ModuleVersion = '1.24.2'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -49,7 +49,9 @@
         'Get-ADRemediationState',
         'Get-ADMaturityTrend',
         'Export-ADMaturityTrendHTML',
+        'Export-ADSecurityReportHTML',
         'Export-ADSecurityReportHTMLFromJson',
+        'Export-ADSecurityReportCSVFromJson',
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
@@ -69,6 +71,25 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.24.2 - Example ForcedFail Snapshot Fixtures, New Computer Unconstrained-Delegation Check, Trust Date-Cast Fix
+- Added three tiered, entirely synthetic tests/fixtures/ForcedFail-{100,60,25}pct-Snapshot.json -FromSnapshot fixtures (fake domain, no real environment/identities) exercising the full pipeline end-to-end with no live AD access, generated from one parameterized tools/build-forcedfail-fixtures.py script so all three stay consistent as checks change. Run via tools/Test-ForcedFailFixture.ps1 -Tier <100|60|25> or the tests/ForcedFailFixture.Tests.ps1 Pester smoke test.
+- New finding: "Computer Account with Unconstrained Delegation" (Test-ConstrainedDelegation) - found by tracing the new fixtures against the codebase, Test-ADUserSecurity already flagged bare unconstrained delegation on USER accounts but no equivalent existed for COMPUTER accounts, despite that being the far more common and consequential place to find it in practice. Domain Controllers are correctly excluded.
+- Fixed: Test-ADDomainTrusts' snapshot-mode trust-age check could fail to evaluate correctly when Snapshot.Trusts[].Modified comes back as a string after a JSON round-trip, lacking the same defensive [datetime] cast already established in UserAudits.ps1/KrbtgtAudits.ps1 for their own date fields.
+- Corrected a minor (currently-harmless) inaccuracy in the fixtures' "clean-state" encryption-type values, and a self-caught data-loss bug in the fixture generator script itself (a stray comment silently dropped a dict key) introduced and fixed within the same editing pass.
+- New Pester coverage: tests/ForcedFailFixture.Tests.ps1, tests/ConstrainedDelegation.Tests.ps1, tests/DomainTrustAudits.Tests.ps1.
+
+v1.24.0 - Test Coverage Tracking, Duplicate-Finding Fixes, and RC4/DNS Identity-Resolution Fixes
+- Added Test Coverage tracking: every check now reports Completed/Failed/Excluded (not just console output) via new AD_Security_TestCoverage_<timestamp>.json/.csv sidecars and a "Test Coverage" HTML report section; extended through Get-ADRetestComparison (new UnconfirmedFindings bucket so an excluded/failed check can no longer be mistaken for genuine remediation), Get-ADMaturityTrend, and Get-ADForestConsolidation.
+- Added Export-ADSecurityReportCSVFromJson (the CSV equivalent of Export-ADSecurityReportHTMLFromJson) and a shared ConvertTo-ADFindingsCsvRows column builder.
+- Fixed: a finding with any Severity other than Critical/High/Medium/Low would score correctly but never render in the HTML report at all, with no warning - added a catch-all "Other / Unclassified Severity Findings" section plus a Write-Warning.
+- Fixed several offline/recreate-path gaps: missing EstimatedEffort/KnownRisks/BackupRollback backfill for two SPN findings, a "columnar" test-coverage-sidecar malformation, ADSecurityFinding metadata loss when recreating from JSON, DetectedDate rendering, -FromSnapshot never tracking test coverage, two unexported public functions (Export-ADSecurityReportCSVFromJson, Export-ADSecurityReportHTML), and -OutputPath not accepting a folder on the JSON-recreate exports.
+- Fixed (found via a live lab run against a real 4-DC domain): 74 of 262 exported findings (28%) were exact duplicates caused by five ACE-iterating checks emitting one finding per raw ACE instead of deduplicating by (identity, rights) - AdminSDHolder ACL checks (AdminSDAudits.ps1, DomainAdminEquivalence.ps1), Exchange-in-AD escalation checks, and the DCSync replication-rights check all affected, both snapshot and live modes. This alone inflated one lab run's Critical-finding count and worst-category score to the maximum possible.
+- Follow-up fix after a second lab run dropped duplicates to 1 remaining case: proactively audited every ACE-consuming check in the codebase (not just what fired in either lab run) and found the same per-ACE duplication pattern in DomainAdminEquivalence.ps1's shared Add-Evidence/Add-SnapshotEvidence helpers (backing 6 sub-checks feeding one aggregated finding - likely the largest real contributor, since a duplicate here shows as a repeated bullet inside one finding rather than a whole duplicate finding), PermissionsAudits.ps1 (Enterprise Key Admins, critical-OU sweep, Schema/Config NC ACL - 6 locations), CertificateServicesAudits.ps1 (ESC7, Low-Privilege CA Management Rights, enrollment-principal list), CertificateServicesExtendedAudits.ps1 (ESC4 principal list), and GpoAudits.ps1 (SYSVOL NTFS permissions). Confirmed ControlPaths.ps1 structurally immune by design (visited-node-tracked BFS, single-valued Owner per object). Test-ADReplicationSecurity's DCSync check now aggregates ALL rights an identity holds across every one of its ACEs into one finding (matching how a single GenericAll ACE already aggregated all three DCSync rights), rather than reporting each specific right as a separate, identical-looking finding.
+- Fixed a "sub-finding gets lost in the flat report view" gap: Test-ADDnsSecurity's "Stale/Dangling DNS Zone Delegation" finding's per-delegation detail (which NameServer/glue IP) lived only in Details.StaleDelegations, which the HTML report never renders - now enumerated as bullets in Description, matching the convention already used elsewhere. Confirmed the CSV export was never affected (Details is always serialized to compact JSON regardless of shape).
+- Fixed: Test-ADKerberosHardening's RC4 account check preferred SID over DistinguishedName when resolving Tier-0 principals via Get-ADObject; in the same lab run all 8 of 8 SID-based lookups failed silently while DN-based lookups succeeded elsewhere in the identical run. Now prefers DistinguishedName.
+- Fixed: Test-ADDnsSecurity's delegation-staleness check produced a malformed, doubled zone name (e.g. "_msdcs.ad.local..ad.local") when the DNS cmdlet returned a child zone name with a trailing root dot; the "already fully-qualified" match now trims it first.
+- New Pester coverage: tests/RetestComparison.Tests.ps1, tests/MaturityTrend.Tests.ps1, tests/ForestConsolidation.Tests.ps1, tests/InvokeADRuleSet.Tests.ps1, tests/DuplicateAceFindingDedup.Tests.ps1, tests/KerberosHardeningIdentityResolution.Tests.ps1, plus new cases in tests/DnsSecurityAudits.Tests.ps1/tests/ReportingFromJson.Tests.ps1/tests/ReportingCSVFromJson.Tests.ps1.
+
 v1.23.9 - Surface "PDC-Only Check Ran Against a Non-PDC DC" as a Report-Level Run Scope Note
 - Added: a new "Run Scope Information" section in the HTML report (and a console notice) whenever -Server named an explicit, specific Domain Controller that is NOT the domain's actual PDC Emulator. This module's "PDC-only" checks (Test-ADMachineAccountQuota, Test-ADDomainSecurity) correctly still ran and returned real answers in this scenario - domain/forest-wide attributes are readable from any DC - but previously gave no indication that they queried the named DC directly rather than the PDC, which a reader could reasonably assume never happens for a "PDC-only" check.
 - New mechanism in Common.ps1, parallel to (but distinct from) the existing offline-skip-notes tracker: Add-ADRunScopeNote / Get-ADRunScopeNotes / Reset-ADRunScopeNotes. Populated by Resolve-ADSecurityAuditTargetServer itself, at the exact point it already determines whether -Server names an explicit DC (vs. a domain name resolved to the PDC) - the one place in the codebase that already knows both the named DC and, cheaply, the domain's real PDC (a DC can always answer Get-ADDomain about its own domain, so this adds no new reachability dependency).

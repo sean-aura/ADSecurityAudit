@@ -168,6 +168,34 @@ Describe 'Test-ADDnsSecurity (Stale/Dangling DNS Zone Delegation)' {
         $findings = Test-ADDnsSecurity
         ($findings | Where-Object { $_.Issue -eq 'Stale/Dangling DNS Zone Delegation' }) | Should -BeNullOrEmpty
     }
+
+    It 'does not double-append the parent zone when ChildZoneName has a trailing root dot (regression, v1.24.0)' {
+        # Get-DnsServerZoneDelegation can return an FQDN with a trailing
+        # root dot (e.g. '_msdcs.contoso.com.'). Before the fix this broke
+        # the "already fully-qualified" match and produced a malformed,
+        # doubled zone name like '_msdcs.contoso.com..contoso.com', which
+        # then got queried via Resolve-DnsName -Name <malformed name>.
+        function Get-DnsServerZoneDelegation {
+            param($ZoneName, $ComputerName, [switch]$ErrorAction)
+            @(
+                [PSCustomObject]@{
+                    ChildZoneName = '_msdcs.contoso.com.'
+                    NameServer    = @([PSCustomObject]@{ Name = 'ns1.contoso.com'; IPAddress = @('10.0.0.5') })
+                }
+            )
+        }
+        $Script:__resolvedNames = [System.Collections.ArrayList]::new()
+        function Resolve-DnsName {
+            param($Name, $Server, $Type, [switch]$DnsOnly, [switch]$ErrorAction)
+            [void]$Script:__resolvedNames.Add($Name)
+            [PSCustomObject]@{ Type = 'SOA'; Name = $Name }
+        }
+
+        $findings = Test-ADDnsSecurity
+        $Script:__resolvedNames | Should -Contain '_msdcs.contoso.com'
+        $Script:__resolvedNames | Should -Not -Contain '_msdcs.contoso.com..contoso.com'
+        ($findings | Where-Object { $_.Issue -eq 'Stale/Dangling DNS Zone Delegation' }) | Should -BeNullOrEmpty
+    }
 }
 
 Describe 'Test-ADDnsSecurity (delegation staleness offline-mode contract)' {

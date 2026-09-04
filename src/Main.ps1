@@ -93,6 +93,15 @@ function Start-ADSecurityAudit {
     # Same reset, for run-scope notes (e.g. a "PDC-only" check running
     # against an explicitly-named non-PDC DC) - see Common.ps1.
     Reset-ADRunScopeNotes
+
+    # Same reset, for test coverage tracking (which checks ran clean,
+    # found something, failed, or were excluded) - see
+    # Add-ADTestCoverageEntry's own docs (Common.ps1). Only -FromSnapshot
+    # actually reads this tracker (via Invoke-ADRuleSet); live mode builds
+    # $testCoverage directly in its own loop below and never touches this
+    # tracker, but resetting it unconditionally here costs nothing and
+    # keeps both code paths' state hygiene identical.
+    Reset-ADTestCoverageTracker
     
     if (-not (Test-Path $ExportPath)) {
         try {
@@ -179,6 +188,22 @@ function Start-ADSecurityAudit {
             $allFindings = @(Invoke-ADRuleSet -Snapshot $snapshot -IncludeTests $testsToRun `
                 -InactiveDaysThreshold $InactiveDaysThreshold -PasswordAgeThreshold $PasswordAgeThreshold `
                 -AllowLiveFallbackForUnsupportedTests:$AllowLiveFallbackForUnsupportedTests)
+
+            # FIXED (reported): $testCoverage was previously never assigned
+            # on this (-FromSnapshot) code path at all - only the live-mode
+            # branch below builds it directly. The shared HTML-export call
+            # near the end of this function unconditionally passes
+            # -TestCoverage $testCoverage, so an undefined variable here
+            # silently became $null, which made the Test Coverage section's
+            # gate (Count -gt 0) true while its actual row data (built via
+            # Sort-Object, which drops a $null element) came out empty -
+            # rendering a nonsensical "0 check(s) tracked" box on every
+            # single -FromSnapshot report. Invoke-ADRuleSet now populates
+            # the same tracker Add-ADTestCoverageEntry writes to
+            # (Common.ps1); read it back here so this path is a real,
+            # populated array like the live path's, not an undefined
+            # variable.
+            $testCoverage = Get-ADTestCoverageTracker
 
             $skipNotesForConsole = @(Get-ADOfflineSkipNotes)
             if ($skipNotesForConsole.Count -gt 0) {
@@ -341,7 +366,31 @@ function Start-ADSecurityAudit {
         else {
             $testsToRun = $allTests.Keys | Where-Object { $_ -notin $ExcludeTests }
         }
-        
+
+        # Reported gap: neither the HTML nor CSV report gave any
+        # indication of which checks did NOT run (deliberately excluded
+        # via -IncludeTests/-ExcludeTests, or attempted and failed with an
+        # exception - previously only a console Write-Warning, invisible
+        # to anyone reading the report later rather than watching the
+        # console live), or which checks ran and found nothing (a "clean"
+        # result is indistinguishable from "never ran" once you're only
+        # looking at the findings list, since neither produces a finding).
+        # $testCoverage tracks EVERY entry in $allTests - not just
+        # $testsToRun - so a reader gets the full picture: for every
+        # possible check, whether it ran clean, ran and found something,
+        # failed, or was excluded from this run.
+        $testCoverage = [System.Collections.Generic.List[PSCustomObject]]::new()
+        foreach ($testName in ($allTests.Keys | Sort-Object)) {
+            if ($testName -notin $testsToRun) {
+                $testCoverage.Add([PSCustomObject]@{
+                    TestName     = $testName
+                    Status       = 'Excluded'
+                    FindingCount = 0
+                    ErrorMessage = $null
+                })
+            }
+        }
+
         # Run tests and collect findings
         $allFindings = @()
         $totalTestCount = @($testsToRun).Count
@@ -384,9 +433,18 @@ function Start-ADSecurityAudit {
                             $finding.BackupRollback = $result.BackupRollback
                             $finding.OperationalNotes = $result.OperationalNotes
                             $finding.Details = if ($result.Details) { $result.Details } else { @{} }
+                            $finding.TestName = $testName
                             $allFindings += $finding
                         }
                         else {
+                            # $result is already a genuine [ADSecurityFinding] -
+                            # tag it in place (mutation persists, same
+                            # reference-type reasoning as Set-ADFindingMetadata's
+                            # own docs) rather than only tagging the converted-
+                            # from-PSCustomObject branch above, so EVERY finding
+                            # added to $allFindings carries TestName regardless
+                            # of which check-authoring style produced it.
+                            $result.TestName = $testName
                             $allFindings += $result
                         }
                     }
@@ -398,9 +456,22 @@ function Start-ADSecurityAudit {
                 $lowCount = ($testResults | Where-Object { $_.Severity -eq 'Low' }).Count
                 
                 Write-Host "  Found: $criticalCount Critical, $highCount High, $mediumCount Medium, $lowCount Low`n" -ForegroundColor Gray
+
+                $testCoverage.Add([PSCustomObject]@{
+                    TestName     = $testName
+                    Status       = 'Completed'
+                    FindingCount = @($testResults).Count
+                    ErrorMessage = $null
+                })
             }
             catch {
                 Write-Warning "Test '$testName' failed: $_"
+                $testCoverage.Add([PSCustomObject]@{
+                    TestName     = $testName
+                    Status       = 'Failed'
+                    FindingCount = 0
+                    ErrorMessage = "$_"
+                })
             }
         }
         
@@ -442,7 +513,7 @@ function Start-ADSecurityAudit {
         # already defend against this on their own inputs via this same
         # helper; applying it here, immediately after assembly, protects
         # every downstream consumer instead of just scoring.
-        $allFindings = ConvertTo-ADFlatFindingsArray -Findings $allFindings
+        $allFindings = @(ConvertTo-ADFlatFindingsArray -Findings $allFindings)
         
         # Generate summary
         Write-Host "`n==================================================" -ForegroundColor Cyan
@@ -488,13 +559,43 @@ function Start-ADSecurityAudit {
         
         Write-Host "`nDuration: $($duration.TotalSeconds) seconds" -ForegroundColor Gray
         
-        # Export results
-        if ($allFindings.Count -gt 0) {
+        # Export results.
+        # FIXED (reported): this used to be gated on
+        # "$allFindings.Count -gt 0", so a fully clean run (every check
+        # ran and found nothing - arguably the best possible outcome, and
+        # exactly the case where "what was actually checked" matters most
+        # to show) produced NO report files at all: no JSON, no HTML, no
+        # CSV, no score sidecar - nothing on disk to prove the audit ran,
+        # let alone what it covered. Always export now; an empty findings
+        # JSON is just "[]" (valid, and Get-ADRiskScore/ConvertFrom-Json
+        # both already handle a zero-finding array correctly - see their
+        # own empty-collection guards), and the HTML/CSV Test Coverage
+        # section is exactly what makes a genuinely clean run look
+        # different from a run that produced no report for some other
+        # reason.
+        if ($true) {
             Write-Progress -Activity "Exporting Audit Reports" -Status "Writing JSON report..." -PercentComplete 10
 
             # Export to JSON
             $jsonPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.json"
-            $allFindings | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding UTF8
+            # A zero-finding run (now exported unconditionally - see the
+            # "Export results" comment above) needs special-casing here:
+            # piping an EMPTY array to ConvertTo-Json produces zero
+            # pipeline objects, so ConvertTo-Json emits an empty STRING,
+            # not "[]" - Out-File would then write a 0-byte file that
+            # Export-ADSecurityReportHTMLFromJson's ConvertFrom-Json (or
+            # any other consumer) cannot parse at all. Write valid empty-
+            # array JSON explicitly instead; the non-empty path is
+            # untouched (still piped, exactly as before - a single-finding
+            # run's already-relied-upon "comes back needing
+            # ConvertTo-ADFlatFindingsArray to re-wrap" shape is
+            # unchanged).
+            if ($allFindings.Count -eq 0) {
+                '[]' | Out-File -FilePath $jsonPath -Encoding UTF8
+            }
+            else {
+                $allFindings | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding UTF8
+            }
             Write-Host "`nDetailed report exported to: $jsonPath" -ForegroundColor Green
             
             # Export to HTML
@@ -530,58 +631,23 @@ function Start-ADSecurityAudit {
                 Write-Host "Run scope note: $($runScopeNotes.Count) note(s) about how this run was scoped - see the HTML report's 'Run Scope Information' section.`n" -ForegroundColor Yellow
             }
 
-            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunMode $reportRunMode -SnapshotCollectedDate $reportSnapshotCollectedDate -OfflineSkipNotes $offlineSkipNotes -RunScopeNotes $runScopeNotes
+            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunMode $reportRunMode -SnapshotCollectedDate $reportSnapshotCollectedDate -OfflineSkipNotes $offlineSkipNotes -RunScopeNotes $runScopeNotes -TestCoverage $testCoverage
             Write-Host "HTML report exported to: $htmlPath" -ForegroundColor Green
             
             # Export to CSV with formula injection protection
             # NOTE (output contract): existing columns are never reordered or
             # removed. New flat fields are APPENDED after DetectedDate.
             #
-            # SeverityLevel and Details were previously missing entirely from
-            # this Select-Object list despite existing on every finding (and
-            # therefore in the JSON export) - the CSV silently carried less
-            # information than the JSON it's supposed to be a flat view of.
-            # Appended at the end (after Weight, the last existing column)
-            # rather than inserted after DetectedDate, so this fix itself
-            # doesn't reorder/renumber any pre-existing column a downstream
-            # consumer may reference positionally.
-            #
-            # EstimatedEffort/KnownRisks/BackupRollback/OperationalNotes
-            # (the v1.24.0 change-management enrichment fields) had the
-            # exact same gap: present on every finding and in the JSON
-            # export, but never added to this hand-maintained CSV column
-            # list. Appended after Details for the same reason - no
-            # reordering of any existing column.
+            # Single source of truth for this column list is now
+            # ConvertTo-ADFindingsCsvRows (Common.ps1) - shared with
+            # Export-ADSecurityReportCSVFromJson's offline rebuild path,
+            # so the two can no longer independently drift out of sync
+            # with each other the way this CSV previously drifted from
+            # the JSON export it's meant to mirror (see that function's
+            # own docs for the history).
             Write-Progress -Activity "Exporting Audit Reports" -Status "Writing CSV report..." -PercentComplete 70
             $csvPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.csv"
-            $allFindings | Select-Object Category, Issue, Severity, AffectedObject, Description, Impact, Remediation, DetectedDate, MitreTechnique, AnssiControl, Weight, SeverityLevel, Details, EstimatedEffort, KnownRisks, BackupRollback, OperationalNotes |
-                ForEach-Object {
-                    [PSCustomObject]@{
-                        Category = $_.Category | ConvertTo-SafeCsvValue
-                        Issue = $_.Issue | ConvertTo-SafeCsvValue
-                        Severity = $_.Severity | ConvertTo-SafeCsvValue
-                        AffectedObject = $_.AffectedObject | ConvertTo-SafeCsvValue
-                        Description = $_.Description | ConvertTo-SafeCsvValue
-                        Impact = $_.Impact | ConvertTo-SafeCsvValue
-                        Remediation = $_.Remediation | ConvertTo-SafeCsvValue
-                        DetectedDate = $_.DetectedDate
-                        MitreTechnique = $_.MitreTechnique | ConvertTo-SafeCsvValue
-                        AnssiControl = $_.AnssiControl | ConvertTo-SafeCsvValue
-                        Weight = $_.Weight
-                        SeverityLevel = $_.SeverityLevel
-                        # Compact JSON string, not a native CSV column-per-key -
-                        # Details is an open-ended per-check hashtable (different
-                        # keys per Issue), so there's no fixed column set to
-                        # flatten it into without the schema changing per-check.
-                        # Still sanitized against formula injection like every
-                        # other free-text column.
-                        Details = ($_.Details | ConvertTo-Json -Compress -Depth 5) | ConvertTo-SafeCsvValue
-                        EstimatedEffort = $_.EstimatedEffort | ConvertTo-SafeCsvValue
-                        KnownRisks = $_.KnownRisks | ConvertTo-SafeCsvValue
-                        BackupRollback = $_.BackupRollback | ConvertTo-SafeCsvValue
-                        OperationalNotes = $_.OperationalNotes | ConvertTo-SafeCsvValue
-                    }
-                } |
+            ConvertTo-ADFindingsCsvRows -Findings $allFindings |
                 Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
             Write-Host "CSV report exported to: $csvPath" -ForegroundColor Green
 
@@ -590,6 +656,32 @@ function Start-ADSecurityAudit {
             $scorePath = Join-Path $ExportPath "AD_Security_Score_$timestamp.json"
             $riskScore | ConvertTo-Json -Depth 6 | Out-File -FilePath $scorePath -Encoding UTF8
             Write-Host "Score summary exported to: $scorePath" -ForegroundColor Green
+
+            # Export test coverage (what ran clean, what found something,
+            # what failed, what was excluded) as its own sidecar JSON and
+            # CSV - same "don't pollute the per-finding schema" reasoning
+            # as the score sidecar above. This is the ONLY durable record
+            # of coverage for a run: the console Write-Warning/Write-Host
+            # lines above are gone the moment the console scrolls past
+            # them or the run was non-interactive, and neither the
+            # findings JSON/CSV/HTML previously carried this information
+            # in any form - a check that failed or was excluded looked
+            # identical to a check that ran and found nothing.
+            $testCoverageSorted = @($testCoverage | Sort-Object TestName)
+            $testCoveragePath = Join-Path $ExportPath "AD_Security_TestCoverage_$timestamp.json"
+            $testCoverageSorted | ConvertTo-Json -Depth 4 | Out-File -FilePath $testCoveragePath -Encoding UTF8
+            Write-Host "Test coverage exported to: $testCoveragePath" -ForegroundColor Green
+
+            $testCoverageCsvPath = Join-Path $ExportPath "AD_Security_TestCoverage_$timestamp.csv"
+            $testCoverageSorted | ForEach-Object {
+                [PSCustomObject]@{
+                    TestName     = $_.TestName | ConvertTo-SafeCsvValue
+                    Status       = $_.Status
+                    FindingCount = $_.FindingCount
+                    ErrorMessage = $_.ErrorMessage | ConvertTo-SafeCsvValue
+                }
+            } | Export-Csv -Path $testCoverageCsvPath -NoTypeInformation -Encoding UTF8
+            Write-Host "Test coverage CSV exported to: $testCoverageCsvPath" -ForegroundColor Green
         }
         
         # Export privileged users report with formula injection protection

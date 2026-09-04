@@ -412,8 +412,12 @@ function Get-ADRiskScore {
     # array instead of a scalar (PowerShell member-enumeration), producing a
     # confusing "cannot convert System.Object[] to Int32" deep in the loop
     # rather than working findings data. A no-op when $Findings is already
-    # flat (the normal case for a live audit run).
-    $Findings = ConvertTo-ADFlatFindingsArray -Findings $Findings
+    # flat (the normal case for a live audit run). @() wrap is load-bearing
+    # for a genuinely empty (zero-finding) call - see
+    # ConvertTo-ADFlatFindingsArray's own docs: without it, a clean run
+    # would silently reassign this already-validated parameter to a real
+    # $null mid-function, rather than keeping it a valid empty array.
+    $Findings = @(ConvertTo-ADFlatFindingsArray -Findings $Findings)
 
     $maturityLabels = @{
         1 = 'Level 1 - Critical gaps (basic hygiene not met)'

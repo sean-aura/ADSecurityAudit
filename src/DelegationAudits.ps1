@@ -97,6 +97,50 @@ function Test-ConstrainedDelegation {
                 }
             }
 
+            # FIXED (found via ForcedFail-fixture tracing, v1.24.1 follow-up):
+            # this function checked user accounts for bare, unconstrained
+            # delegation (TrustedForDelegation=$true with NO
+            # msDS-AllowedToDelegateTo, i.e. Test-ADUserSecurity's
+            # "Unconstrained Delegation Enabled" finding) but had no
+            # equivalent check for COMPUTER accounts anywhere in the
+            # codebase - even though unconstrained delegation is
+            # overwhelmingly found on computer objects in real
+            # environments (legacy print/app/file servers), not user
+            # accounts, and is one of the most consequential, well-known
+            # AD misconfigurations (a compromised host with this flag can
+            # capture and reuse the TGT of any user who authenticates to
+            # it - the classic PrinterBug/coercion-to-unconstrained-host
+            # chain). Domain Controllers are excluded: unconstrained
+            # delegation is a normal, required part of every DC's own
+            # configuration, not a misconfiguration to flag.
+            $dcNamesForDelegation = @()
+            if ($Snapshot.ContainsKey('DomainControllers')) {
+                $dcNamesForDelegation = @($Snapshot.DomainControllers | ForEach-Object { $_.Name } | Where-Object { $_ })
+            }
+            $unconstrainedComputers = @($Snapshot.Computers | Where-Object {
+                $_.TrustedForDelegation -eq $true -and $_.Name -notin $dcNamesForDelegation
+            })
+            foreach ($computer in $unconstrainedComputers) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Kerberos Delegation'
+                $finding.Issue = 'Computer Account with Unconstrained Delegation'
+                $finding.Severity = 'Critical'
+                $finding.SeverityLevel = 4
+                $finding.AffectedObject = $computer.Name
+                $finding.Description = "Computer account '$($computer.Name)' has unconstrained delegation enabled (TrustedForDelegation) and is not a Domain Controller."
+                $finding.Impact = "Any Kerberos TGT presented to this host is cached and can be extracted and replayed by an attacker who compromises it, letting them impersonate that user anywhere in the domain - including forcing a Domain Admin or Domain Controller to authenticate to it via coercion techniques (e.g. the printer bug/PetitPotam-style attacks) for full domain compromise."
+                $finding.Remediation = "Migrate to constrained delegation (with or without protocol transition, as required) or Resource-Based Constrained Delegation, then disable unconstrained delegation: Set-ADComputer -Identity '$($computer.Name)' -TrustedForDelegation `$false"
+                $finding.EstimatedEffort = 'Medium - requires discovering what the host actually delegates to and reconfiguring it with an equivalent constrained/RBCD replacement before disabling the flag, not just flipping it off.'
+                $finding.KnownRisks = 'Unconstrained delegation is one of the most consequential AD misconfigurations; disabling it without configuring an equivalent constrained/RBCD replacement first will break whatever legitimate multi-hop authentication currently depends on it.'
+                $finding.BackupRollback = 'Easy - revert the TRUSTED_FOR_DELEGATION flag; effective at next Kerberos ticket request, no data loss.'
+                $finding.Details = @{
+                    DistinguishedName = $computer.DistinguishedName
+                    OperatingSystem = $computer.OperatingSystem
+                    ServicePrincipalNames = $computer.ServicePrincipalNames -join '; '
+                }
+                $findings += $finding
+            }
+
             # RBCD: presence-flag only, scoped to computer objects (see
             # Get-ADSnapshot's HasRbcdConfigured collection note).
             $rbcdComputers = @($Snapshot.Computers | Where-Object { $_.HasRbcdConfigured })
@@ -203,6 +247,39 @@ function Test-ConstrainedDelegation {
                 }
                 $findings += $finding
             }
+        }
+
+        # FIXED (found via ForcedFail-fixture tracing, v1.24.1 follow-up):
+        # see the matching comment in this function's -Snapshot branch
+        # above for the full rationale - bare unconstrained delegation was
+        # only ever checked on USER accounts (Test-ADUserSecurity), never
+        # on computer accounts, despite that being the far more common and
+        # consequential place to find it in practice. Domain Controllers
+        # are excluded via PrimaryGroupID (516 = Domain Controllers,
+        # 521 = Read-only Domain Controllers) - unconstrained delegation is
+        # normal, required DC configuration, not a misconfiguration.
+        $unconstrainedComputers = Get-ADComputer -Filter {TrustedForDelegation -eq $true -and PrimaryGroupID -ne 516 -and PrimaryGroupID -ne 521} `
+            -Properties TrustedForDelegation, OperatingSystem, ServicePrincipalNames -Server $__adServer
+
+        foreach ($computer in $unconstrainedComputers) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Kerberos Delegation'
+            $finding.Issue = 'Computer Account with Unconstrained Delegation'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = $computer.Name
+            $finding.Description = "Computer account '$($computer.Name)' has unconstrained delegation enabled (TrustedForDelegation) and is not a Domain Controller."
+            $finding.Impact = "Any Kerberos TGT presented to this host is cached and can be extracted and replayed by an attacker who compromises it, letting them impersonate that user anywhere in the domain - including forcing a Domain Admin or Domain Controller to authenticate to it via coercion techniques (e.g. the printer bug/PetitPotam-style attacks) for full domain compromise."
+            $finding.Remediation = "Migrate to constrained delegation (with or without protocol transition, as required) or Resource-Based Constrained Delegation, then disable unconstrained delegation: Set-ADComputer -Identity '$($computer.Name)' -TrustedForDelegation `$false"
+            $finding.EstimatedEffort = 'Medium - requires discovering what the host actually delegates to and reconfiguring it with an equivalent constrained/RBCD replacement before disabling the flag, not just flipping it off.'
+            $finding.KnownRisks = 'Unconstrained delegation is one of the most consequential AD misconfigurations; disabling it without configuring an equivalent constrained/RBCD replacement first will break whatever legitimate multi-hop authentication currently depends on it.'
+            $finding.BackupRollback = 'Easy - revert the TRUSTED_FOR_DELEGATION flag; effective at next Kerberos ticket request, no data loss.'
+            $finding.Details = @{
+                DistinguishedName = $computer.DistinguishedName
+                OperatingSystem = $computer.OperatingSystem
+                ServicePrincipalNames = $computer.ServicePrincipalNames -join '; '
+            }
+            $findings += $finding
         }
         
         # Check for Resource-Based Constrained Delegation (RBCD)
