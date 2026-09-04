@@ -93,6 +93,13 @@ function Test-ADDomainAdminEquivalence {
             if (-not $principalEvidence.ContainsKey($Principal)) {
                 $principalEvidence[$Principal] = [System.Collections.ArrayList]::new()
             }
+            # A trustee can accumulate the exact same Reason more than once
+            # (e.g. multiple ACEs on the same target matching the same
+            # object-type GUID, or the same target reachable via more than
+            # one nested-group path) - dedupe so the aggregated "Domain
+            # Admin Equivalent Access Detected" finding lists each distinct
+            # piece of evidence once, not once per contributing ACE/path.
+            if ($principalEvidence[$Principal] | Where-Object { $_.Reason -eq $Reason }) { return }
             [void]$principalEvidence[$Principal].Add([PSCustomObject]@{ Reason = $Reason; Context = $Context })
         }
 
@@ -561,6 +568,13 @@ Review and remove the excessive permissions listed in the evidence:
             if (-not $principalEvidence.ContainsKey($Principal)) {
                 $principalEvidence[$Principal] = [System.Collections.ArrayList]::new()
             }
+
+            # A trustee can accumulate the exact same Reason more than once
+            # (e.g. multiple ACEs on the same target matching the same
+            # object-type GUID) - dedupe so the aggregated "Domain Admin
+            # Equivalent Access Detected" finding lists each distinct piece
+            # of evidence once, not once per contributing ACE.
+            if ($principalEvidence[$Principal] | Where-Object { $_.Reason -eq $Reason }) { return }
 
             $entry = [PSCustomObject]@{
                 Reason  = $Reason

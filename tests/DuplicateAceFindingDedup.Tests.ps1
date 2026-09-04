@@ -23,6 +23,7 @@ BeforeAll {
     . (Join-Path $root 'src/AdminSDAudits.ps1')
     . (Join-Path $root 'src/ExchangeEscalationAudits.ps1')
     . (Join-Path $root 'src/ReplicationAudits.ps1')
+    . (Join-Path $root 'src/DomainAdminEquivalence.ps1')
 
     function New-DuplicateAce {
         param(
@@ -175,7 +176,16 @@ Describe 'Test-ADReplicationSecurity (duplicate ACE dedup, snapshot mode)' {
         $hits[0].Details.Rights | Should -Match 'DS-Replication-Get-Changes-All'
     }
 
-    It 'still reports two separate findings when the same trustee genuinely holds two different specific replication rights via different ObjectTypes' {
+    It 'aggregates two different specific replication rights (via different ObjectTypes) on the same trustee into ONE finding, not two' {
+        # v1.24.0 follow-up fix: two ACEs each granting a different
+        # specific DCSync right (rather than a single GenericAll ACE
+        # granting all of them at once) used to each produce their own
+        # finding with an identical, generic Description that didn't name
+        # the specific right - reading as an exact duplicate in the
+        # report even though dedup correctly treated them as distinct.
+        # Since the two rights combine on this one principal exactly the
+        # way a single GenericAll ACE would, they're now aggregated into
+        # one finding listing both rights.
         $aces = @(
             [PSCustomObject]@{
                 IdentityReference     = 'CONTOSO\Sync Service'
@@ -200,9 +210,80 @@ Describe 'Test-ADReplicationSecurity (duplicate ACE dedup, snapshot mode)' {
         $findings = Test-ADReplicationSecurity -Snapshot $snapshot
         $hits = @($findings | Where-Object { $_.Issue -eq 'Unauthorized DCSync Permissions' })
 
-        # Different specific rights granted via different ObjectTypes are
-        # genuinely distinct information, not duplicate ACEs, so dedup must
-        # NOT collapse them.
+        $hits.Count | Should -Be 1
+        $hits[0].Details.Rights | Should -Match 'DS-Replication-Get-Changes\b'
+        $hits[0].Details.Rights | Should -Match 'DS-Replication-Get-Changes-In-Filtered-Set'
+        # The specific rights are now named in the top-level Description
+        # too, not just buried in Details - so the report doesn't look
+        # like a duplicate at a glance.
+        $hits[0].Description | Should -Match 'DS-Replication-Get-Changes'
+    }
+
+    It 'still reports two separate findings for two genuinely different trustees' {
+        $aces = @(
+            [PSCustomObject]@{
+                IdentityReference     = 'CONTOSO\Sync Service A'
+                ActiveDirectoryRights = 'GenericAll'
+                AccessControlType     = 'Allow'
+                IsInherited           = $false
+                ObjectType            = '00000000-0000-0000-0000-000000000000'
+            }
+            [PSCustomObject]@{
+                IdentityReference     = 'CONTOSO\Sync Service B'
+                ActiveDirectoryRights = 'GenericAll'
+                AccessControlType     = 'Allow'
+                IsInherited           = $false
+                ObjectType            = '00000000-0000-0000-0000-000000000000'
+            }
+        )
+        $snapshot = @{
+            Domain = [PSCustomObject]@{ NetBIOSName = 'CONTOSO' }
+            ACLs   = @{ DomainRoot = [PSCustomObject]@{ Access = $aces } }
+        }
+
+        $findings = Test-ADReplicationSecurity -Snapshot $snapshot
+        $hits = @($findings | Where-Object { $_.Issue -eq 'Unauthorized DCSync Permissions' })
+
         $hits.Count | Should -Be 2
+    }
+}
+
+Describe 'Test-ADDomainAdminEquivalence (Add-Evidence dedup, snapshot mode)' {
+    It 'lists a repeated piece of evidence once, not once per contributing ACE (regression, v1.24.0)' {
+        # Reproduces the exact pattern found in a live lab run: a
+        # principal with two ACEs granting the same right on the domain
+        # root (one per object type) produced the same evidence bullet
+        # ("Domain Root control via GenericAll") twice inside a single
+        # "Domain Admin Equivalent Access Detected" finding's Description.
+        $aces = @(
+            [PSCustomObject]@{
+                IdentityReference     = 'CONTOSO\Organization Management'
+                ActiveDirectoryRights = 'GenericAll'
+                AccessControlType     = 'Allow'
+                IsInherited           = $false
+                ObjectType            = '00000000-0000-0000-0000-000000000000'
+            }
+            [PSCustomObject]@{
+                IdentityReference     = 'CONTOSO\Organization Management'
+                ActiveDirectoryRights = 'GenericAll'
+                AccessControlType     = 'Allow'
+                IsInherited           = $false
+                ObjectType            = 'bf967a86-0de6-11d0-a285-00aa003049e2'
+            }
+        )
+        $snapshot = @{
+            Domain = [PSCustomObject]@{ DistinguishedName = 'DC=contoso,DC=com'; NetBIOSName = 'CONTOSO'; DNSRoot = 'contoso.com' }
+            ACLs   = @{
+                DomainRoot = [PSCustomObject]@{ DistinguishedName = 'DC=contoso,DC=com'; Access = $aces }
+            }
+        }
+
+        $findings = Test-ADDomainAdminEquivalence -Snapshot $snapshot
+        $hit = $findings | Where-Object { $_.Issue -eq 'Domain Admin Equivalent Access Detected' -and $_.AffectedObject -eq 'CONTOSO\Organization Management' }
+
+        $hit | Should -Not -BeNullOrEmpty
+        $bulletCount = ([regex]::Matches($hit.Description, 'Domain Root control via GenericAll')).Count
+        $bulletCount | Should -Be 1
+        @($hit.Details.Evidence).Count | Should -Be 1
     }
 }

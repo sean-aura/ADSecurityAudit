@@ -320,6 +320,12 @@ function Test-ADGroupPolicies {
             try {
                 $sysvolAcl = Get-Acl $sysvolPath -ErrorAction Stop
                 
+                # The same principal can appear in more than one ACE (e.g.
+                # separate "this folder only" vs "this folder, subfolders,
+                # files" inheritance-flag ACEs) granting the same
+                # FileSystemRights - dedupe so a repeated ACE doesn't
+                # produce a repeated finding.
+                $__seenSysvolHit = @{}
                 foreach ($ace in $sysvolAcl.Access) {
                     # Check for write/modify rights granted to non-admin groups
                     if ($ace.FileSystemRights -match 'Write|Modify|FullControl' -and
@@ -330,6 +336,10 @@ function Test-ADGroupPolicies {
                         $ace.IdentityReference -notmatch 'Enterprise Admins' -and
                         $ace.IdentityReference -notmatch 'CREATOR OWNER') {
                         
+                        $__sysvolKey = "$($ace.IdentityReference)|$($ace.FileSystemRights)"
+                        if ($__seenSysvolHit.ContainsKey($__sysvolKey)) { continue }
+                        $__seenSysvolHit[$__sysvolKey] = $true
+
                         $finding = [ADSecurityFinding]::new()
                         $finding.Category = 'Group Policy'
                         $finding.Issue = 'Insecure SYSVOL Permissions'
