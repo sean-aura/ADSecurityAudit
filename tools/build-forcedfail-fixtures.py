@@ -124,7 +124,8 @@ def build_snapshot(t):
             "AllowReversiblePasswordEncryption": False, "PasswordNeverExpires": False,
             "TrustedForDelegation": False, "LastLogonDate": now.isoformat(), "PasswordLastSet": old.isoformat(),
             "ServicePrincipalNames": [], "MemberOf": [], "adminCount": 0,
-            "msDS-SupportedEncryptionTypes": 28, "userAccountControl": 4194816,
+            "msDS-SupportedEncryptionTypes": 24,  # AES-only (8+16), no RC4 bit
+            "userAccountControl": 4194816,
             "WhenCreated": old.isoformat(), "msDS-AllowedToDelegateTo": [], "SIDHistory": [],
             "PrimaryGroupID": 513, "TrustedToAuthForDelegation": False, "scriptPath": None,
             "HasShadowCredentials": False,
@@ -138,7 +139,8 @@ def build_snapshot(t):
             "TrustedForDelegation": False, "LastLogonDate": old.isoformat(), "PasswordLastSet": old.isoformat(),
             "ServicePrincipalNames": [],
             "MemberOf": [f"CN=Backup Operators,CN=Builtin,{DOMAIN_DN}"] if t["suspicious_group_membership"] else [],
-            "adminCount": 0, "msDS-SupportedEncryptionTypes": 28, "userAccountControl": 512,
+            "adminCount": 0, "msDS-SupportedEncryptionTypes": 24,  # AES-only (8+16), no RC4 bit
+            "userAccountControl": 512,
             "WhenCreated": old.isoformat(), "msDS-AllowedToDelegateTo": [],
             "SIDHistory": [sid(500)] if t["sid_history"] else [],
             "PrimaryGroupID": 513, "TrustedToAuthForDelegation": False,
@@ -154,7 +156,8 @@ def build_snapshot(t):
             "TrustedForDelegation": False, "LastLogonDate": old.isoformat(), "PasswordLastSet": old.isoformat(),
             "ServicePrincipalNames": [], "MemberOf": [],
             "adminCount": 1 if t["adminsdholder_ghost"] else 0,
-            "msDS-SupportedEncryptionTypes": 28, "userAccountControl": 512,
+            "msDS-SupportedEncryptionTypes": 24,  # AES-only (8+16), no RC4 bit
+            "userAccountControl": 512,
             "WhenCreated": old.isoformat(), "msDS-AllowedToDelegateTo": [], "SIDHistory": [],
             "PrimaryGroupID": 513, "TrustedToAuthForDelegation": False, "scriptPath": None,
             "HasShadowCredentials": False,
@@ -167,7 +170,8 @@ def build_snapshot(t):
             "AllowReversiblePasswordEncryption": False, "PasswordNeverExpires": True,
             "TrustedForDelegation": False, "LastLogonDate": now.isoformat(), "PasswordLastSet": old.isoformat(),
             "ServicePrincipalNames": [], "MemberOf": [], "adminCount": 0,
-            "msDS-SupportedEncryptionTypes": 28, "userAccountControl": 512,
+            "msDS-SupportedEncryptionTypes": 24,  # AES-only (8+16), no RC4 bit
+            "userAccountControl": 512,
             "WhenCreated": old.isoformat(), "msDS-AllowedToDelegateTo": [], "SIDHistory": [],
             "PrimaryGroupID": 513, "TrustedToAuthForDelegation": False, "scriptPath": None,
             "HasShadowCredentials": False,
@@ -180,7 +184,8 @@ def build_snapshot(t):
             "AllowReversiblePasswordEncryption": False, "PasswordNeverExpires": True,
             "TrustedForDelegation": False, "LastLogonDate": now.isoformat(), "PasswordLastSet": old.isoformat(),
             "ServicePrincipalNames": [], "MemberOf": [], "adminCount": 0,
-            "msDS-SupportedEncryptionTypes": 28, "userAccountControl": 512,
+            "msDS-SupportedEncryptionTypes": 24,  # AES-only (8+16), no RC4 bit
+            "userAccountControl": 512,
             "WhenCreated": old.isoformat(), "msDS-AllowedToDelegateTo": [], "SIDHistory": [],
             "PrimaryGroupID": 513, "TrustedToAuthForDelegation": False, "scriptPath": None,
             "HasShadowCredentials": False,

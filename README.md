@@ -175,6 +175,16 @@ Get-ADSnapshot -ToJson "C:\Snapshots\contoso_2026-07-07.json" -Verbose
 Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso_2026-07-07.json" -ExportPath "C:\ADReports"
 ```
 
+**Want to see this in action without a real domain?** `tests/fixtures/ForcedFail-{100,60,25}pct-Snapshot.json` are three ready-made example snapshots (a fake domain, no real environment/identities) at three severity levels - 100%/60%/25% of the checks that can produce a finding offline are deliberately misconfigured. Point any of the commands in this section, or the "Recreating HTML/CSV reports from JSON" section below, at one to see real JSON/CSV/HTML output immediately:
+
+```powershell
+Start-ADSecurityAudit -FromSnapshot ".\tests\fixtures\ForcedFail-60pct-Snapshot.json" -ExportPath ".\out"
+# or, with the convenience wrapper (writes into tests/fixtures/output/<tier>pct/):
+.\tools\Test-ForcedFailFixture.ps1 -Tier 60
+```
+
+See `tests/fixtures/README.md` for what each tier covers and a maintenance note for keeping them current as checks change.
+
 <details>
 <summary><strong>Which of the 28 tests are fully vs. partially offline-capable (click to expand)</strong></summary>
 
@@ -320,6 +330,17 @@ Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports\AD_Security_Audit_2
     -OutputPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00-recreated.csv"
 
 Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports"
+```
+
+**No JSON export handy to try this with?** Generate one first from a bundled example fixture, no live AD needed:
+
+```powershell
+# 1. Produce a real AD_Security_Audit_*.json (plus CSV/HTML) from an example fixture:
+Start-ADSecurityAudit -FromSnapshot ".\tests\fixtures\ForcedFail-60pct-Snapshot.json" -ExportPath ".\out"
+
+# 2. Recreate the HTML and CSV from that JSON alone, as if starting fresh from it:
+Export-ADSecurityReportHTMLFromJson -FindingsPath ".\out" -OutputPath ".\out"
+Export-ADSecurityReportCSVFromJson  -FindingsPath ".\out" -OutputPath ".\out"
 ```
 
 </details>

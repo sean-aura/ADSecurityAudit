@@ -146,6 +146,23 @@ Describe 'ForcedFail fixtures - full pipeline smoke test' {
         }
     }
 
+    Context 'New coverage found via fixture tracing (v1.24.1 follow-up)' {
+        It 'flags unconstrained delegation on a non-DC computer (a check that previously did not exist)' {
+            $hit = $script:Findings100 | Where-Object {
+                $_.Issue -eq 'Computer Account with Unconstrained Delegation' -and $_.AffectedObject -eq 'LEGACY-SRV01'
+            }
+            $hit | Should -Not -BeNullOrEmpty
+            $hit.Severity | Should -Be 'Critical'
+        }
+
+        It 'does not flag Domain Controllers for unconstrained delegation (expected, normal DC configuration)' {
+            $dcHits = @($script:Findings100 | Where-Object {
+                $_.Issue -eq 'Computer Account with Unconstrained Delegation' -and $_.AffectedObject -in @('DC01', 'DC02')
+            })
+            $dcHits.Count | Should -Be 0
+        }
+    }
+
     Context 'CSV export fidelity' {
         It 'every finding in the 100%-tier fixture serializes through ConvertTo-ADFindingsCsvRows with no errors' {
             { $script:CsvRows = ConvertTo-ADFindingsCsvRows -Findings $script:Findings100 } | Should -Not -Throw

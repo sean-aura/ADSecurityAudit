@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.24.1'
+    ModuleVersion = '1.24.2'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -71,6 +71,13 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.24.2 - Example ForcedFail Snapshot Fixtures, New Computer Unconstrained-Delegation Check, Trust Date-Cast Fix
+- Added three tiered, entirely synthetic tests/fixtures/ForcedFail-{100,60,25}pct-Snapshot.json -FromSnapshot fixtures (fake domain, no real environment/identities) exercising the full pipeline end-to-end with no live AD access, generated from one parameterized tools/build-forcedfail-fixtures.py script so all three stay consistent as checks change. Run via tools/Test-ForcedFailFixture.ps1 -Tier <100|60|25> or the tests/ForcedFailFixture.Tests.ps1 Pester smoke test.
+- New finding: "Computer Account with Unconstrained Delegation" (Test-ConstrainedDelegation) - found by tracing the new fixtures against the codebase, Test-ADUserSecurity already flagged bare unconstrained delegation on USER accounts but no equivalent existed for COMPUTER accounts, despite that being the far more common and consequential place to find it in practice. Domain Controllers are correctly excluded.
+- Fixed: Test-ADDomainTrusts' snapshot-mode trust-age check could fail to evaluate correctly when Snapshot.Trusts[].Modified comes back as a string after a JSON round-trip, lacking the same defensive [datetime] cast already established in UserAudits.ps1/KrbtgtAudits.ps1 for their own date fields.
+- Corrected a minor (currently-harmless) inaccuracy in the fixtures' "clean-state" encryption-type values, and a self-caught data-loss bug in the fixture generator script itself (a stray comment silently dropped a dict key) introduced and fixed within the same editing pass.
+- New Pester coverage: tests/ForcedFailFixture.Tests.ps1, tests/ConstrainedDelegation.Tests.ps1, tests/DomainTrustAudits.Tests.ps1.
+
 v1.24.0 - Test Coverage Tracking, Duplicate-Finding Fixes, and RC4/DNS Identity-Resolution Fixes
 - Added Test Coverage tracking: every check now reports Completed/Failed/Excluded (not just console output) via new AD_Security_TestCoverage_<timestamp>.json/.csv sidecars and a "Test Coverage" HTML report section; extended through Get-ADRetestComparison (new UnconfirmedFindings bucket so an excluded/failed check can no longer be mistaken for genuine remediation), Get-ADMaturityTrend, and Get-ADForestConsolidation.
 - Added Export-ADSecurityReportCSVFromJson (the CSV equivalent of Export-ADSecurityReportHTMLFromJson) and a shared ConvertTo-ADFindingsCsvRows column builder.

@@ -183,6 +183,12 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - re-enable protocol transition and restore the msDS-AllowedToDelegateTo list on the computer object; effective at next Kerberos ticket request, no data loss.'
         OperationalNotes = ''
     }
+    'Computer Account with Unconstrained Delegation' = @{
+        EstimatedEffort  = 'Medium - requires discovering what the host actually delegates to and reconfiguring it with an equivalent constrained/RBCD replacement before disabling the flag, not just flipping it off.'
+        KnownRisks       = 'Unconstrained delegation is one of the most consequential AD misconfigurations; disabling it without configuring an equivalent constrained/RBCD replacement first will break whatever legitimate multi-hop authentication currently depends on it.'
+        BackupRollback   = 'Easy - revert the TRUSTED_FOR_DELEGATION flag; effective at next Kerberos ticket request, no data loss.'
+        OperationalNotes = ''
+    }
     'Resource-Based Constrained Delegation Configured' = @{
         EstimatedEffort  = 'Medium - a single-attribute change on the resource object, but confirm with the resource owner whether the delegation is an intentional, still-needed configuration.'
         KnownRisks       = 'RBCD is commonly used intentionally for modern constrained delegation without protocol transition, so removing it can break a legitimate service-to-service delegation scenario it was set up for.'
