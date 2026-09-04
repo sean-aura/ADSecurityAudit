@@ -19,9 +19,32 @@ function Test-ADGroupPolicies {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+    # Resolved once, explicitly passed to every live AD/GPO call below -
+    # not relying on the $PSDefaultParameterValues injection alone. $null
+    # when no override is active, which Get-AD*/Get-GP* cmdlets treat
+    # identically to -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
+
+    try {
     Write-Verbose "Starting Group Policy audit..."
     $findings = @()
 
@@ -63,6 +86,9 @@ function Test-ADGroupPolicies {
                             $finding.Description = "GPO '$($gpo.DisplayName)' grants '$dangerousRight' to non-privileged principal '$trustee'."
                             $finding.Impact = "Low-privileged users or groups can modify the GPO, leading to privilege escalation, malware deployment, or persistence mechanisms."
                             $finding.Remediation = "Remove dangerous permission: Set-GPPermission -Guid $($gpo.Id) -TargetName '$trustee' -TargetType User -PermissionLevel None"
+                            $finding.EstimatedEffort = 'Medium - removing a non-standard Edit/FullControl right from one GPO; confirm the trustee isn''t a legitimate delegated owner.'
+                            $finding.KnownRisks = 'Procedural - confirm the trustee isn''t an active, legitimate delegated GPO administrator before removing their rights.'
+                            $finding.BackupRollback = 'Easy - restore the GPO permission via GPMC; effective immediately, no data loss.'
                             $finding.Details = @{
                                 GPOID = $gpo.Id
                                 Trustee = $trustee
@@ -92,6 +118,9 @@ function Test-ADGroupPolicies {
                         $finding.Description = "GPO '$($gpo.DisplayName)' is linked to Domain Controllers OU but has edit rights granted to non-admin principals."
                         $finding.Impact = "Attackers can deploy malicious packages or configurations to Domain Controllers with SYSTEM-level rights, leading to full domain compromise."
                         $finding.Remediation = "Restrict GPO permissions to only Domain Admins and Enterprise Admins. Remove all non-admin edit rights immediately."
+                        $finding.EstimatedEffort = 'Medium - removing a non-standard Edit/Write right from the GPO object itself; confirm the trustee isn''t a legitimate delegated GPO-management account.'
+                        $finding.KnownRisks = 'Procedural - confirm the trustee isn''t a legitimate delegated GPO administrator for that specific GPO before removing their rights.'
+                        $finding.BackupRollback = 'Easy - restore the GPO permission via GPMC; effective immediately, though the change still needs to replicate to all DCs.'
                         $finding.Details = @{
                             GPOID = $gpo.Id
                             LinkedOU = ($dcOuLinks -join '; ')
@@ -111,6 +140,9 @@ function Test-ADGroupPolicies {
                     $finding.Description = "GPO '$($gpo.DisplayName)' is not linked to any OU or domain."
                     $finding.Impact = "Unlinked GPOs create clutter and may contain misconfigurations that could cause issues if accidentally linked."
                     $finding.Remediation = "Review the GPO and delete if no longer needed: Remove-GPO -Guid $($gpo.Id)"
+                    $finding.EstimatedEffort = 'Low - this is a hygiene finding; typical remediation is to delete the unused GPO or formally document/retain it.'
+                    $finding.KnownRisks = 'Deleting an unlinked GPO is safe in the sense that it isn''t currently applied anywhere, but if it''s only temporarily unlinked (e.g. staged for a future rollout), deleting it loses that work - confirm with whoever created it first.'
+                    $finding.BackupRollback = 'Moderate - back up the GPO with Backup-GPO before deleting so it can be restored with Restore-GPO if needed.'
                     $finding.Details = @{
                         GPOID = $gpo.Id
                         CreatedDate = $gpo.CreationTime
@@ -145,8 +177,8 @@ function Test-ADGroupPolicies {
     try {
         Import-Module GroupPolicy -ErrorAction Stop
         
-        $allGPOs = Get-GPO -All
-        $domain = Get-ADDomain
+        $allGPOs = if ($__adServer) { Get-GPO -All -Server $__adServer } else { Get-GPO -All }
+        $domain = if ($__adServer) { Get-ADDomain -Server $__adServer } else { Get-ADDomain }
         
         Write-Verbose "Analyzing $($allGPOs.Count) GPOs..."
         
@@ -159,7 +191,7 @@ function Test-ADGroupPolicies {
                 -PercentComplete (($currentGpo / $gpoCount) * 100)
             
             # Get GPO permissions
-            $gpoPermissions = Get-GPPermission -Guid $gpo.Id -All
+            $gpoPermissions = if ($__adServer) { Get-GPPermission -Guid $gpo.Id -All -Server $__adServer } else { Get-GPPermission -Guid $gpo.Id -All }
             
             # Check for dangerous permissions granted to non-admin users/groups
             foreach ($permission in $gpoPermissions) {
@@ -194,6 +226,9 @@ function Test-ADGroupPolicies {
                         $finding.Description = "GPO '$($gpo.DisplayName)' grants '$dangerousRight' to non-privileged principal '$trustee'."
                         $finding.Impact = "Low-privileged users or groups can modify the GPO, leading to privilege escalation, malware deployment, or persistence mechanisms."
                         $finding.Remediation = "Remove dangerous permission: Set-GPPermission -Guid $($gpo.Id) -TargetName '$trustee' -TargetType User -PermissionLevel None"
+                        $finding.EstimatedEffort = 'Medium - removing a non-standard Edit/FullControl right from one GPO; confirm the trustee isn''t a legitimate delegated owner.'
+                        $finding.KnownRisks = 'Procedural - confirm the trustee isn''t an active, legitimate delegated GPO administrator before removing their rights.'
+                        $finding.BackupRollback = 'Easy - restore the GPO permission via GPMC; effective immediately, no data loss.'
                         $finding.Details = @{
                             GPOID = $gpo.Id
                             GPOPath = $gpo.Path
@@ -206,7 +241,7 @@ function Test-ADGroupPolicies {
             }
             
             # Check for GPOs linked to sensitive OUs
-            $gpoLinks = Get-ADObject -Filter "gPLink -like '*$($gpo.Id)*'" -Properties gPLink, DistinguishedName
+            $gpoLinks = Get-ADObject -Filter "gPLink -like '*$($gpo.Id)*'" -Properties gPLink, DistinguishedName -Server $__adServer
             
             foreach ($link in $gpoLinks) {
                 # Check if linked to Domain Controllers OU
@@ -229,6 +264,9 @@ function Test-ADGroupPolicies {
                         $finding.Description = "GPO '$($gpo.DisplayName)' is linked to Domain Controllers OU but has edit rights granted to non-admin principals."
                         $finding.Impact = "Attackers can deploy malicious packages or configurations to Domain Controllers with SYSTEM-level rights, leading to full domain compromise."
                         $finding.Remediation = "Restrict GPO permissions to only Domain Admins and Enterprise Admins. Remove all non-admin edit rights immediately."
+                        $finding.EstimatedEffort = 'Medium - removing a non-standard Edit/Write right from the GPO object itself; confirm the trustee isn''t a legitimate delegated GPO-management account.'
+                        $finding.KnownRisks = 'Procedural - confirm the trustee isn''t a legitimate delegated GPO administrator for that specific GPO before removing their rights.'
+                        $finding.BackupRollback = 'Easy - restore the GPO permission via GPMC; effective immediately, though the change still needs to replicate to all DCs.'
                         $finding.Details = @{
                             GPOID = $gpo.Id
                             LinkedOU = $link.DistinguishedName
@@ -250,6 +288,9 @@ function Test-ADGroupPolicies {
                 $finding.Description = "GPO '$($gpo.DisplayName)' is not linked to any OU or domain."
                 $finding.Impact = "Unlinked GPOs create clutter and may contain misconfigurations that could cause issues if accidentally linked."
                 $finding.Remediation = "Review the GPO and delete if no longer needed: Remove-GPO -Guid $($gpo.Id)"
+                $finding.EstimatedEffort = 'Low - this is a hygiene finding; typical remediation is to delete the unused GPO or formally document/retain it.'
+                $finding.KnownRisks = 'Deleting an unlinked GPO is safe in the sense that it isn''t currently applied anywhere, but if it''s only temporarily unlinked (e.g. staged for a future rollout), deleting it loses that work - confirm with whoever created it first.'
+                $finding.BackupRollback = 'Moderate - back up the GPO with Backup-GPO before deleting so it can be restored with Restore-GPO if needed.'
                 $finding.Details = @{
                     GPOID = $gpo.Id
                     CreatedDate = $gpo.CreationTime
@@ -263,12 +304,28 @@ function Test-ADGroupPolicies {
         
         # Check SYSVOL permissions
         Write-Verbose "Checking SYSVOL permissions..."
-        $sysvolPath = "\\$($domain.DNSRoot)\SYSVOL\$($domain.DNSRoot)"
+        # The server component of the UNC path uses the active -Server
+        # override when one is set, not just the domain's DNS name - see
+        # the matching comment on Get-ADGpoSecretsSysvolPolicyRoot
+        # (GpoSecretsAudits.ps1) for why a bare domain name here is
+        # subject to the same "closest DC" DFS-referral ambiguity Get-AD*/
+        # Get-GP* cmdlets have via -Server, with no -Server parameter of
+        # its own to fix it - the only fix is putting the resolved DC
+        # directly in the path.
+        $sysvolServer = Get-ADSecurityAuditActiveServerOverride
+        if (-not $sysvolServer) { $sysvolServer = $domain.DNSRoot }
+        $sysvolPath = "\\$sysvolServer\SYSVOL\$($domain.DNSRoot)"
         
         if (Test-Path $sysvolPath) {
             try {
                 $sysvolAcl = Get-Acl $sysvolPath -ErrorAction Stop
                 
+                # The same principal can appear in more than one ACE (e.g.
+                # separate "this folder only" vs "this folder, subfolders,
+                # files" inheritance-flag ACEs) granting the same
+                # FileSystemRights - dedupe so a repeated ACE doesn't
+                # produce a repeated finding.
+                $__seenSysvolHit = @{}
                 foreach ($ace in $sysvolAcl.Access) {
                     # Check for write/modify rights granted to non-admin groups
                     if ($ace.FileSystemRights -match 'Write|Modify|FullControl' -and
@@ -279,6 +336,10 @@ function Test-ADGroupPolicies {
                         $ace.IdentityReference -notmatch 'Enterprise Admins' -and
                         $ace.IdentityReference -notmatch 'CREATOR OWNER') {
                         
+                        $__sysvolKey = "$($ace.IdentityReference)|$($ace.FileSystemRights)"
+                        if ($__seenSysvolHit.ContainsKey($__sysvolKey)) { continue }
+                        $__seenSysvolHit[$__sysvolKey] = $true
+
                         $finding = [ADSecurityFinding]::new()
                         $finding.Category = 'Group Policy'
                         $finding.Issue = 'Insecure SYSVOL Permissions'
@@ -288,6 +349,9 @@ function Test-ADGroupPolicies {
                         $finding.Description = "SYSVOL has write permissions granted to '$($ace.IdentityReference)'."
                         $finding.Impact = "Attackers can tamper with GPO files, scripts, and policies that apply to all domain members, leading to widespread compromise."
                         $finding.Remediation = "Restrict SYSVOL permissions. Remove write access for non-admin principals. Only Domain Admins and SYSTEM should have write access."
+                        $finding.EstimatedEffort = 'Medium - correcting ACLs on SYSVOL/NETLOGON shares (and their filesystem equivalents) on every DC, then validating legitimate scripts/GPOs still function for all clients.'
+                        $finding.KnownRisks = 'Over-tightening SYSVOL permissions can break clients'' ability to read GPOs or logon scripts if a legitimate group loses access it was relying on; validate with a domain-wide policy refresh test after the change.'
+                        $finding.BackupRollback = 'Moderate - export the current SYSVOL share/NTFS ACL (icacls or Get-Acl) before changing it, and allow for DFSR/FRS replication across all DCs before the change is fully in effect.'
                         $finding.Details = @{
                             Path = $sysvolPath
                             Identity = $ace.IdentityReference
@@ -312,6 +376,12 @@ function Test-ADGroupPolicies {
     catch {
         Write-Error "Error during Group Policy audit: $_"
         throw
+    }
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
     }
 }
 

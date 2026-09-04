@@ -22,9 +22,38 @@ function Test-ADDomainAdminEquivalence {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        # Resolve-ADSecurityAuditTargetServer, not the raw -Server value:
+        # resolves to the domain's PDC Emulator specifically, so this
+        # standalone call targets the exact same single, deterministic DC
+        # Start-ADSecurityAudit itself would use for this domain, not an
+        # arbitrary DC-locator pick.
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+
+    # Resolved once, explicitly passed to every live AD call below - not
+    # relying on the $PSDefaultParameterValues injection alone. $null when
+    # no override is active, which Get-AD* cmdlets treat identically to
+    # -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
+
+    try {
     Write-Verbose "Starting Admin Equivalence Audit"
     $findings = @()
 
@@ -64,6 +93,13 @@ function Test-ADDomainAdminEquivalence {
             if (-not $principalEvidence.ContainsKey($Principal)) {
                 $principalEvidence[$Principal] = [System.Collections.ArrayList]::new()
             }
+            # A trustee can accumulate the exact same Reason more than once
+            # (e.g. multiple ACEs on the same target matching the same
+            # object-type GUID, or the same target reachable via more than
+            # one nested-group path) - dedupe so the aggregated "Domain
+            # Admin Equivalent Access Detected" finding lists each distinct
+            # piece of evidence once, not once per contributing ACE/path.
+            if ($principalEvidence[$Principal] | Where-Object { $_.Reason -eq $Reason }) { return }
             [void]$principalEvidence[$Principal].Add([PSCustomObject]@{ Reason = $Reason; Context = $Context })
         }
 
@@ -121,6 +157,9 @@ function Test-ADDomainAdminEquivalence {
                     $finding.Description = "User has 'adminCount=1' but is not a member of any protected group. This may indicate a leftover administrative account or a persistence backdoor where ACLs are frozen by SDProp."
                     $finding.Impact = "The account's ACL inheritance remains disabled and its permissions frozen even though it's no longer in a protected group, which can mask a persistence mechanism or leave stale, overly-permissive rights in place unnoticed."
                     $finding.Remediation = "Clear the 'adminCount' attribute (set to 0) and enable permission inheritance on the object. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
+                    $finding.EstimatedEffort = 'Low - a single adminCount reset plus re-enabling inheritance on one object.'
+                    $finding.KnownRisks = 'Low technical risk; confirm the account isn''t intentionally protected for an undocumented but legitimate reason (e.g. a break-glass account) before clearing adminCount.'
+                    $finding.BackupRollback = 'Easy - reset adminCount to 1 and disable inheritance again if needed; effective immediately, no data loss.'
                     $finding.Details = @{ UserDN = $user.DistinguishedName; Domain = $domainName }
                     $findings += $finding
                 }
@@ -141,6 +180,9 @@ function Test-ADDomainAdminEquivalence {
                 $finding.Description = "Object has 'msDS-KeyCredentialLink' populated. Unless Windows Hello for Business is deployed, this indicates a potential 'Shadow Credentials' attack (Whisker/Certipy) allowing account takeover."
                 $finding.Impact = "An attacker with this key credential can authenticate as the object via PKINIT without knowing (or changing) its password, giving silent, persistent account takeover that survives a password reset."
                 $finding.Remediation = "Investigate the 'msDS-KeyCredentialLink' attribute. If not legitimate WHfB, clear the attribute immediately. Reference: https://posts.specterops.io/shadow-credentials-abusing-key-credential-link-translation-to-en-9d8f9fb12be8"
+                $finding.EstimatedEffort = 'Low - clearing the msDS-KeyCredentialLink attribute is a single-attribute change on one object.'
+                $finding.KnownRisks = 'Removing an unauthorized key credential has no legitimate compatibility impact unless it is actually a currently-enrolled Windows Hello for Business or passwordless-auth key, so confirm the key isn''t legitimate before clearing.'
+                $finding.BackupRollback = 'Moderate - export the current msDS-KeyCredentialLink value before clearing so a legitimate key can be restored if the removal turns out to affect a real passwordless sign-in.'
                 $finding.Details = @{
                     ObjectDN    = $obj.DistinguishedName
                     ObjectClass = if ($collectionKey -eq 'Users') { 'user' } else { 'computer' }
@@ -222,6 +264,10 @@ function Test-ADDomainAdminEquivalence {
                         $finding.Description = "User contains a SID from the CURRENT domain in its SID History ($sidStr). This is a definitive sign of a Golden Ticket or SID History injection attack."
                         $finding.Impact = "The account carries privileges from the injected SID in addition to its normal group memberships, effectively granting hidden, unauthorized access that standard group-membership reviews will not reveal."
                         $finding.Remediation = "Immediate Incident Response required. Reset the account and investigate origin. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
+                        $finding.EstimatedEffort = 'High - this is an active-compromise indicator, not a configuration fix; it requires incident-response engagement, forensic investigation, and likely a KRBTGT password reset (twice) if a Golden Ticket is suspected, not a single change.'
+                        $finding.KnownRisks = 'Resetting the account or clearing sIDHistory while an attacker may still have persistence elsewhere (forged tickets, other backdoors) can tip them off without fully evicting them, so this needs IR judgment, not just a config change.'
+                        $finding.BackupRollback = 'Hard/Limited - this isn''t a reversible setting; it''s an incident-response action (reset/disable the account and investigate origin) with no rollback concept.'
+                        $finding.OperationalNotes = 'Engage incident response before making changes if compromise is suspected, since a same-domain sIDHistory entry is a well-documented Golden Ticket/injection indicator rather than a misconfiguration.'
                         $finding.Details = @{ UserDN = $user.DistinguishedName; InjectedSID = $sidStr; Domain = $domainName }
                         $findings += $finding
                     }
@@ -235,6 +281,9 @@ function Test-ADDomainAdminEquivalence {
                         $finding.Description = "User has a highly privileged SID ($sidStr) in their SID History. They possess Domain Admin rights regardless of group membership."
                         $finding.Impact = "The account has effective Domain Admin (or equivalent) rights that won't show up in any group-membership audit, since the privilege comes from SID History rather than an actual group the account belongs to."
                         $finding.Remediation = "Clear the sIDHistory attribute immediately unless this is a verified migration account. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
+                        $finding.EstimatedEffort = 'Medium - clearing sIDHistory is simple technically, but confirming the account isn''t an active cross-domain migration in progress requires checking with whoever ran the migration.'
+                        $finding.KnownRisks = 'If a domain migration is still underway, clearing sIDHistory before every migrated resource''s ACL has been updated to the new SID can break the migrated user''s access to resources that still only trust the old SID.'
+                        $finding.BackupRollback = 'Hard/Limited - sIDHistory can''t be restored to its prior value without re-injecting it via the same migration tooling (e.g. ADMT) that originally populated it; treat clearing it as a one-way cleanup once confirmed unauthorized.'
                         $finding.Details = @{ UserDN = $user.DistinguishedName; PrivilegedSID = $sidStr; Domain = $domainName }
                         $findings += $finding
                     }
@@ -255,6 +304,9 @@ function Test-ADDomainAdminEquivalence {
                 $finding.Description = "User has a legacy logon script defined: '$($user.scriptPath)'. Attackers can modify this file to achieve code execution upon user logon."
                 $finding.Impact = "Anyone able to write to the referenced script file gains code execution as every user the script runs for at their next logon, a low-effort persistence and lateral-movement foothold."
                 $finding.Remediation = "Migrate to Group Policy Preferences and clear the 'scriptPath' attribute. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/logon-script-issues"
+                $finding.EstimatedEffort = 'Low - a single scriptPath/userWorkstations-style attribute per account.'
+                $finding.KnownRisks = 'Removing or migrating a working legacy logon script could break whatever the script does for affected users until an equivalent modern (GPO-based) replacement is validated.'
+                $finding.BackupRollback = 'Easy - restore the scriptPath attribute to its prior value; effective at next logon, no data loss.'
                 $finding.Details = @{ UserDN = $user.DistinguishedName; ScriptPath = $user.scriptPath; Domain = $domainName }
                 $findings += $finding
             }
@@ -289,10 +341,19 @@ function Test-ADDomainAdminEquivalence {
         # 8. AdminSDHolder ACL analysis (dedicated finding, mirrors live's separate check)
         Write-Verbose "Test-ADDomainAdminEquivalence: performing AdminSDHolder ACL analysis..."
         if ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('AdminSDHolder')) {
+            # A trustee can hold multiple ACEs on AdminSDHolder (one per
+            # property set/object type) even when ActiveDirectoryRights is
+            # identical - dedupe on (principal, rights) so each is reported
+            # once rather than once per ACE.
+            $__seenAdminSdCompromise = @{}
             foreach ($ace in @($Snapshot.ACLs['AdminSDHolder'].Access)) {
                 $principal = $ace.IdentityReference
                 if ($ace.IsInherited -or $principal -in $legitimatePrincipals) { continue }
                 if ($ace.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite') {
+                    $__compromiseKey = "$principal|$($ace.ActiveDirectoryRights)"
+                    if ($__seenAdminSdCompromise.ContainsKey($__compromiseKey)) { continue }
+                    $__seenAdminSdCompromise[$__compromiseKey] = $true
+
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Admin Equivalence'
                     $finding.Issue = 'AdminSDHolder ACL Compromise'
@@ -302,6 +363,10 @@ function Test-ADDomainAdminEquivalence {
                     $finding.Description = "Principal '$principal' has dangerous rights ($($ace.ActiveDirectoryRights)) on AdminSDHolder. This grants persistent Domain Admin rights via SDProp."
                     $finding.Impact = "Because SDProp periodically re-applies AdminSDHolder's ACL to every protected (Tier-0) account and group, this principal effectively controls the DACL of every Domain Admin, Enterprise Admin, and other protected object in the domain - a single ACE here compromises the entire tier."
                     $finding.Remediation = "Remove the ACE immediately and check all protected groups for 'adminCount=1' users. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
+                    $finding.EstimatedEffort = 'Low - removing a single unauthorized ACE from one object (AdminSDHolder); SDProp then reapplies the corrected ACL to every protected object automatically.'
+                    $finding.KnownRisks = 'Low technical risk; an unauthorized ACE here grants no legitimate capability, so removing it has no realistic compatibility impact beyond confirming it isn''t a very recent, still-being-configured delegation.'
+                    $finding.BackupRollback = 'Moderate - export the current AdminSDHolder ACL (dsacls or Get-Acl) before removing the ACE so it can be restored if needed; the correction only reaches every protected Tier-0 object once SDProp''s next propagation cycle runs, not instantly.'
+                    $finding.OperationalNotes = 'SDProp runs on a periodic interval (roughly hourly by default), so previously-protected objects keep the old, compromised ACL until the next cycle completes.'
                     $finding.Details = @{ Principal = $principal; Rights = "$($ace.ActiveDirectoryRights)"; Domain = $domainName }
                     $findings += $finding
                 }
@@ -393,6 +458,9 @@ function Test-ADDomainAdminEquivalence {
             $evidenceBullets = ($evidence.Reason | ForEach-Object { "- $_" }) -join "`n"
             $finding.Description = "Principal '$principal' holds permissions that provide Domain Admin-equivalent control:`n$evidenceBullets"
             $finding.Impact = 'Compromise of this principal would allow attackers to seize control of protected groups, the domain naming context, PKI infrastructure, or perform DCSync.'
+            $finding.EstimatedEffort = 'High - the underlying access is typically composed of multiple pieces of evidence (nested groups, ACEs, ownership), each of which may need a separate fix, similar to breaking a control-path chain.'
+            $finding.KnownRisks = 'Removing any single contributing factor could break a legitimate, if undocumented, delegation if it was set up intentionally, so confirm with the principal''s owning team before changing each piece of evidence.'
+            $finding.BackupRollback = 'Moderate - export/record each ACE or membership being changed before removing it, then re-run the audit to confirm the effective access is gone.'
             $finding.Remediation = @"
 Review and remove the excessive permissions listed in the evidence:
 1. Restrict Domain Naming Context and AdminSDHolder control.
@@ -415,11 +483,11 @@ Review and remove the excessive permissions listed in the evidence:
     }
 
     try {
-        $domain = Get-ADDomain
+        $domain = if ($__adServer) { Get-ADDomain -Server $__adServer } else { Get-ADDomain }
         $domainDN = $domain.DistinguishedName
         $domainSID = $domain.DomainSID.Value
         $netBIOSName = $domain.NetBIOSName
-        $configContext = (Get-ADRootDSE).ConfigurationNamingContext
+        $configContext = (Get-ADRootDSE -Server $__adServer).ConfigurationNamingContext
         
         # Explicitly trusted principals that normally require broad control
         $legitimatePrincipals = @(
@@ -475,7 +543,12 @@ Review and remove the excessive permissions listed in the evidence:
         Write-Verbose "Enumerating Domain Controllers..."
         $dcComputers = $null
         try {
-            $dcComputers = Get-ADComputer -Filter "primaryGroupID -eq 516" -Properties nTSecurityDescriptor, OperatingSystem -ErrorAction Stop
+            $dcComputers = if ($__adServer) {
+                Get-ADComputer -Filter "primaryGroupID -eq 516" -Server $__adServer -Properties nTSecurityDescriptor, OperatingSystem -ErrorAction Stop
+            }
+            else {
+                Get-ADComputer -Filter "primaryGroupID -eq 516" -Properties nTSecurityDescriptor, OperatingSystem -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to enumerate Domain Controllers: $_"
@@ -495,6 +568,13 @@ Review and remove the excessive permissions listed in the evidence:
             if (-not $principalEvidence.ContainsKey($Principal)) {
                 $principalEvidence[$Principal] = [System.Collections.ArrayList]::new()
             }
+
+            # A trustee can accumulate the exact same Reason more than once
+            # (e.g. multiple ACEs on the same target matching the same
+            # object-type GUID) - dedupe so the aggregated "Domain Admin
+            # Equivalent Access Detected" finding lists each distinct piece
+            # of evidence once, not once per contributing ACE.
+            if ($principalEvidence[$Principal] | Where-Object { $_.Reason -eq $Reason }) { return }
 
             $entry = [PSCustomObject]@{
                 Reason  = $Reason
@@ -526,7 +606,12 @@ Review and remove the excessive permissions listed in the evidence:
         foreach ($groupName in $sensitiveGroupNames) {
             $group = $null
             try {
-                $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                $group = if ($__adServer) {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get group '$groupName': $_"
@@ -535,7 +620,12 @@ Review and remove the excessive permissions listed in the evidence:
 
             $members = $null
             try {
-                $members = Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop | Where-Object { $_.objectClass -eq 'user' }
+                $members = if ($__adServer) {
+                    Get-ADGroupMember -Identity $group -Recursive -Server $__adServer -ErrorAction Stop | Where-Object { $_.objectClass -eq 'user' }
+                }
+                else {
+                    Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop | Where-Object { $_.objectClass -eq 'user' }
+                }
             }
             catch {
                 Write-Verbose "Failed to get members of group '$groupName': $_"
@@ -555,7 +645,12 @@ Review and remove the excessive permissions listed in the evidence:
         foreach ($groupName in $sensitiveGroupNames) {
             $group = $null
             try {
-                $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                $group = if ($__adServer) {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get protected group '$groupName': $_"
@@ -563,7 +658,12 @@ Review and remove the excessive permissions listed in the evidence:
             if ($group) {
                 $members = $null
                 try {
-                    $members = Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+                    $members = if ($__adServer) {
+                        Get-ADGroupMember -Identity $group -Recursive -Server $__adServer -ErrorAction Stop
+                    }
+                    else {
+                        Get-ADGroupMember -Identity $group -Recursive -ErrorAction Stop
+                    }
                 }
                 catch {
                     Write-Verbose "Failed to get protected group members for '$groupName': $_"
@@ -577,7 +677,12 @@ Review and remove the excessive permissions listed in the evidence:
         # Find users with adminCount=1
         $adminCountUsers = $null
         try {
-            $adminCountUsers = Get-ADUser -LDAPFilter "(adminCount=1)" -Properties adminCount, nTSecurityDescriptor -ErrorAction Stop
+            $adminCountUsers = if ($__adServer) {
+                Get-ADUser -LDAPFilter "(adminCount=1)" -Server $__adServer -Properties adminCount, nTSecurityDescriptor -ErrorAction Stop
+            }
+            else {
+                Get-ADUser -LDAPFilter "(adminCount=1)" -Properties adminCount, nTSecurityDescriptor -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to enumerate adminCount users: $_"
@@ -594,6 +699,9 @@ Review and remove the excessive permissions listed in the evidence:
                 $finding.Description = "User has 'adminCount=1' but is not a member of any protected group. This may indicate a leftover administrative account or a persistence backdoor where ACLs are frozen by SDProp."
                 $finding.Impact = "The account's ACL inheritance remains disabled and its permissions frozen even though it's no longer in a protected group, which can mask a persistence mechanism or leave stale, overly-permissive rights in place unnoticed."
                 $finding.Remediation = "Clear the 'adminCount' attribute (set to 0) and enable permission inheritance on the object. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
+                $finding.EstimatedEffort = 'Low - a single adminCount reset plus re-enabling inheritance on one object.'
+                $finding.KnownRisks = 'Low technical risk; confirm the account isn''t intentionally protected for an undocumented but legitimate reason (e.g. a break-glass account) before clearing adminCount.'
+                $finding.BackupRollback = 'Easy - reset adminCount to 1 and disable inheritance again if needed; effective immediately, no data loss.'
                 $finding.Details = @{
                     UserDN = $user.DistinguishedName
                     Domain = $domain.DNSRoot
@@ -606,7 +714,12 @@ Review and remove the excessive permissions listed in the evidence:
 
         $shadowCreds = $null
         try {
-            $shadowCreds = Get-ADObject -LDAPFilter "(msDS-KeyCredentialLink=*)" -Properties msDS-KeyCredentialLink, samAccountName, objectClass -ErrorAction Stop
+            $shadowCreds = if ($__adServer) {
+                Get-ADObject -LDAPFilter "(msDS-KeyCredentialLink=*)" -Server $__adServer -Properties msDS-KeyCredentialLink, samAccountName, objectClass -ErrorAction Stop
+            }
+            else {
+                Get-ADObject -LDAPFilter "(msDS-KeyCredentialLink=*)" -Properties msDS-KeyCredentialLink, samAccountName, objectClass -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to scan for Shadow Credentials: $_"
@@ -622,6 +735,9 @@ Review and remove the excessive permissions listed in the evidence:
             $finding.Description = "Object has 'msDS-KeyCredentialLink' populated. Unless Windows Hello for Business is deployed, this indicates a potential 'Shadow Credentials' attack (Whisker/Certipy) allowing account takeover."
             $finding.Impact = "An attacker with this key credential can authenticate as the object via PKINIT without knowing (or changing) its password, giving silent, persistent account takeover that survives a password reset."
             $finding.Remediation = "Investigate the 'msDS-KeyCredentialLink' attribute. If not legitimate WHfB, clear the attribute immediately. Reference: https://posts.specterops.io/shadow-credentials-abusing-key-credential-link-translation-to-en-9d8f9fb12be8"
+            $finding.EstimatedEffort = 'Low - clearing the msDS-KeyCredentialLink attribute is a single-attribute change on one object.'
+            $finding.KnownRisks = 'Removing an unauthorized key credential has no legitimate compatibility impact unless it is actually a currently-enrolled Windows Hello for Business or passwordless-auth key, so confirm the key isn''t legitimate before clearing.'
+            $finding.BackupRollback = 'Moderate - export the current msDS-KeyCredentialLink value before clearing so a legitimate key can be restored if the removal turns out to affect a real passwordless sign-in.'
             $finding.Details = @{
                 ObjectDN    = $obj.DistinguishedName
                 ObjectClass = $obj.objectClass -join ', '
@@ -634,7 +750,12 @@ Review and remove the excessive permissions listed in the evidence:
 
         $criticalComputers = $null
         try {
-            $criticalComputers = Get-ADComputer -Filter * -Properties nTSecurityDescriptor, OperatingSystem -ResultPageSize 500 -ErrorAction Stop
+            $criticalComputers = if ($__adServer) {
+                Get-ADComputer -Filter * -Server $__adServer -Properties nTSecurityDescriptor, OperatingSystem -ResultPageSize 500 -ErrorAction Stop
+            }
+            else {
+                Get-ADComputer -Filter * -Properties nTSecurityDescriptor, OperatingSystem -ResultPageSize 500 -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to enumerate computers for Shadow Credentials check: $_"
@@ -669,7 +790,12 @@ Review and remove the excessive permissions listed in the evidence:
 
             $user = $null
             try {
-                $user = Get-ADUser -Identity $dn -Properties nTSecurityDescriptor -ErrorAction Stop
+                $user = if ($__adServer) {
+                    Get-ADUser -Identity $dn -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
+                else {
+                    Get-ADUser -Identity $dn -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get user '$sam' for Shadow Credentials check: $_"
@@ -703,7 +829,12 @@ Review and remove the excessive permissions listed in the evidence:
 
             $user = $null
             try {
-                $user = Get-ADUser -Identity $dn -Properties nTSecurityDescriptor -ErrorAction Stop
+                $user = if ($__adServer) {
+                    Get-ADUser -Identity $dn -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
+                else {
+                    Get-ADUser -Identity $dn -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get user '$sam' for WriteSPN check: $_"
@@ -733,7 +864,12 @@ Review and remove the excessive permissions listed in the evidence:
 
         $sidHistoryUsers = $null
         try {
-            $sidHistoryUsers = Get-ADUser -LDAPFilter "(sIDHistory=*)" -Properties sIDHistory -ErrorAction Stop
+            $sidHistoryUsers = if ($__adServer) {
+                Get-ADUser -LDAPFilter "(sIDHistory=*)" -Server $__adServer -Properties sIDHistory -ErrorAction Stop
+            }
+            else {
+                Get-ADUser -LDAPFilter "(sIDHistory=*)" -Properties sIDHistory -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to scan for SID History Injection: $_"
@@ -753,6 +889,10 @@ Review and remove the excessive permissions listed in the evidence:
                     $finding.Description = "User contains a SID from the CURRENT domain in its SID History ($sidStr). This is a definitive sign of a Golden Ticket or SID History injection attack."
                     $finding.Impact = "The account carries privileges from the injected SID in addition to its normal group memberships, effectively granting hidden, unauthorized access that standard group-membership reviews will not reveal."
                     $finding.Remediation = "Immediate Incident Response required. Reset the account and investigate origin. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
+                    $finding.EstimatedEffort = 'High - this is an active-compromise indicator, not a configuration fix; it requires incident-response engagement, forensic investigation, and likely a KRBTGT password reset (twice) if a Golden Ticket is suspected, not a single change.'
+                    $finding.KnownRisks = 'Resetting the account or clearing sIDHistory while an attacker may still have persistence elsewhere (forged tickets, other backdoors) can tip them off without fully evicting them, so this needs IR judgment, not just a config change.'
+                    $finding.BackupRollback = 'Hard/Limited - this isn''t a reversible setting; it''s an incident-response action (reset/disable the account and investigate origin) with no rollback concept.'
+                    $finding.OperationalNotes = 'Engage incident response before making changes if compromise is suspected, since a same-domain sIDHistory entry is a well-documented Golden Ticket/injection indicator rather than a misconfiguration.'
                     $finding.Details = @{
                         UserDN       = $user.DistinguishedName
                         InjectedSID  = $sidStr
@@ -771,6 +911,9 @@ Review and remove the excessive permissions listed in the evidence:
                     $finding.Description = "User has a highly privileged SID ($sidStr) in their SID History. They possess Domain Admin rights regardless of group membership."
                     $finding.Impact = "The account has effective Domain Admin (or equivalent) rights that won't show up in any group-membership audit, since the privilege comes from SID History rather than an actual group the account belongs to."
                     $finding.Remediation = "Clear the sIDHistory attribute immediately unless this is a verified migration account. Reference: https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-sidhistory"
+                    $finding.EstimatedEffort = 'Medium - clearing sIDHistory is simple technically, but confirming the account isn''t an active cross-domain migration in progress requires checking with whoever ran the migration.'
+                    $finding.KnownRisks = 'If a domain migration is still underway, clearing sIDHistory before every migrated resource''s ACL has been updated to the new SID can break the migrated user''s access to resources that still only trust the old SID.'
+                    $finding.BackupRollback = 'Hard/Limited - sIDHistory can''t be restored to its prior value without re-injecting it via the same migration tooling (e.g. ADMT) that originally populated it; treat clearing it as a one-way cleanup once confirmed unauthorized.'
                     $finding.Details = @{
                         UserDN       = $user.DistinguishedName
                         PrivilegedSID = $sidStr
@@ -785,7 +928,12 @@ Review and remove the excessive permissions listed in the evidence:
 
         $scriptUsers = $null
         try {
-            $scriptUsers = Get-ADUser -LDAPFilter "(scriptPath=*)" -Properties scriptPath -ErrorAction Stop
+            $scriptUsers = if ($__adServer) {
+                Get-ADUser -LDAPFilter "(scriptPath=*)" -Server $__adServer -Properties scriptPath -ErrorAction Stop
+            }
+            else {
+                Get-ADUser -LDAPFilter "(scriptPath=*)" -Properties scriptPath -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to scan for legacy Logon Scripts: $_"
@@ -802,6 +950,9 @@ Review and remove the excessive permissions listed in the evidence:
             $finding.Description = "User has a legacy logon script defined: '$path'. Attackers can modify this file to achieve code execution upon user logon."
             $finding.Impact = "Anyone able to write to the referenced script file gains code execution as every user the script runs for at their next logon, a low-effort persistence and lateral-movement foothold."
             $finding.Remediation = "Migrate to Group Policy Preferences and clear the 'scriptPath' attribute. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/logon-script-issues"
+            $finding.EstimatedEffort = 'Low - a single scriptPath/userWorkstations-style attribute per account.'
+            $finding.KnownRisks = 'Removing or migrating a working legacy logon script could break whatever the script does for affected users until an equivalent modern (GPO-based) replacement is validated.'
+            $finding.BackupRollback = 'Easy - restore the scriptPath attribute to its prior value; effective at next logon, no data loss.'
             $finding.Details = @{
                 UserDN     = $user.DistinguishedName
                 ScriptPath = $path
@@ -823,7 +974,12 @@ Review and remove the excessive permissions listed in the evidence:
         foreach ($target in $controlTargets) {
             $object = $null
             try {
-                $object = Get-ADObject -Identity $target.DistinguishedName -Properties nTSecurityDescriptor -ErrorAction Stop
+                $object = if ($__adServer) {
+                    Get-ADObject -Identity $target.DistinguishedName -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
+                else {
+                    Get-ADObject -Identity $target.DistinguishedName -Properties nTSecurityDescriptor -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get control target '$($target.Name)': $_"
@@ -850,17 +1006,31 @@ Review and remove the excessive permissions listed in the evidence:
         Write-Verbose "Performing AdminSDHolder ACL Analysis..."
         $adminSdHolder = $null
         try {
-            $adminSdHolder = Get-ADObject -Identity "CN=AdminSDHolder,CN=System,$domainDN" -Properties nTSecurityDescriptor -ErrorAction Stop
+            $adminSdHolder = if ($__adServer) {
+                Get-ADObject -Identity "CN=AdminSDHolder,CN=System,$domainDN" -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+            }
+            else {
+                Get-ADObject -Identity "CN=AdminSDHolder,CN=System,$domainDN" -Properties nTSecurityDescriptor -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to get AdminSDHolder: $_"
         }
         if ($adminSdHolder -and $adminSdHolder.nTSecurityDescriptor) {
+            # A trustee can hold multiple ACEs on AdminSDHolder (one per
+            # property set/object type) even when ActiveDirectoryRights is
+            # identical - dedupe on (principal, rights) so each is reported
+            # once rather than once per ACE.
+            $__seenAdminSdCompromise = @{}
             foreach ($ace in $adminSdHolder.nTSecurityDescriptor.Access) {
                 $principal = $ace.IdentityReference.Value
                 if ($ace.IsInherited -or $principal -in $legitimatePrincipals) { continue }
                 
                 if ($ace.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner|GenericWrite') {
+                    $__compromiseKey = "$principal|$($ace.ActiveDirectoryRights)"
+                    if ($__seenAdminSdCompromise.ContainsKey($__compromiseKey)) { continue }
+                    $__seenAdminSdCompromise[$__compromiseKey] = $true
+
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Admin Equivalence'
                     $finding.Issue = 'AdminSDHolder ACL Compromise'
@@ -870,6 +1040,10 @@ Review and remove the excessive permissions listed in the evidence:
                     $finding.Description = "Principal '$principal' has dangerous rights ($($ace.ActiveDirectoryRights)) on AdminSDHolder. This grants persistent Domain Admin rights via SDProp."
                     $finding.Impact = "Because SDProp periodically re-applies AdminSDHolder's ACL to every protected (Tier-0) account and group, this principal effectively controls the DACL of every Domain Admin, Enterprise Admin, and other protected object in the domain - a single ACE here compromises the entire tier."
                     $finding.Remediation = "Remove the ACE immediately and check all protected groups for 'adminCount=1' users. Reference: https://learn.microsoft.com/en-us/troubleshoot/windows-server/identity/adminsdholder-protected-accounts-and-groups"
+                    $finding.EstimatedEffort = 'Low - removing a single unauthorized ACE from one object (AdminSDHolder); SDProp then reapplies the corrected ACL to every protected object automatically.'
+                    $finding.KnownRisks = 'Low technical risk; an unauthorized ACE here grants no legitimate capability, so removing it has no realistic compatibility impact beyond confirming it isn''t a very recent, still-being-configured delegation.'
+                    $finding.BackupRollback = 'Moderate - export the current AdminSDHolder ACL (dsacls or Get-Acl) before removing the ACE so it can be restored if needed; the correction only reaches every protected Tier-0 object once SDProp''s next propagation cycle runs, not instantly.'
+                    $finding.OperationalNotes = 'SDProp runs on a periodic interval (roughly hourly by default), so previously-protected objects keep the old, compromised ACL until the next cycle completes.'
                     $finding.Details = @{
                         Principal = $principal
                         Rights    = $ace.ActiveDirectoryRights.ToString()
@@ -884,7 +1058,12 @@ Review and remove the excessive permissions listed in the evidence:
 
         $delegationRisk = $null
         try {
-            $delegationRisk = Get-ADObject -LDAPFilter "(msDS-AllowedToDelegateTo=*)" -Properties msDS-AllowedToDelegateTo, samAccountName -ErrorAction Stop
+            $delegationRisk = if ($__adServer) {
+                Get-ADObject -LDAPFilter "(msDS-AllowedToDelegateTo=*)" -Server $__adServer -Properties msDS-AllowedToDelegateTo, samAccountName -ErrorAction Stop
+            }
+            else {
+                Get-ADObject -LDAPFilter "(msDS-AllowedToDelegateTo=*)" -Properties msDS-AllowedToDelegateTo, samAccountName -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to check Constrained Delegation: $_"
@@ -909,7 +1088,12 @@ Review and remove the excessive permissions listed in the evidence:
         Write-Verbose "Checking constrained delegation with protocol transition (S4U2Self abuse)..."
         $constrainedDelegation = $null
         try {
-            $constrainedDelegation = Get-ADObject -Filter {msDS-AllowedToDelegateTo -like '*'} -Properties msDS-AllowedToDelegateTo, servicePrincipalName, samAccountName, objectClass -ErrorAction Stop
+            $constrainedDelegation = if ($__adServer) {
+                Get-ADObject -Filter {msDS-AllowedToDelegateTo -like '*'} -Server $__adServer -Properties msDS-AllowedToDelegateTo, servicePrincipalName, samAccountName, objectClass -ErrorAction Stop
+            }
+            else {
+                Get-ADObject -Filter {msDS-AllowedToDelegateTo -like '*'} -Properties msDS-AllowedToDelegateTo, servicePrincipalName, samAccountName, objectClass -ErrorAction Stop
+            }
         }
         catch {
             Write-Verbose "Failed to check constrained delegation with protocol transition: $_"
@@ -919,7 +1103,12 @@ Review and remove the excessive permissions listed in the evidence:
             $allowedServices = $delegator.'msDS-AllowedToDelegateTo'
             $delegatorDetails = $null
             try {
-                $delegatorDetails = Get-ADObject -Identity $delegator.DistinguishedName -Properties TrustedToAuthForDelegation -ErrorAction Stop
+                $delegatorDetails = if ($__adServer) {
+                    Get-ADObject -Identity $delegator.DistinguishedName -Server $__adServer -Properties TrustedToAuthForDelegation -ErrorAction Stop
+                }
+                else {
+                    Get-ADObject -Identity $delegator.DistinguishedName -Properties TrustedToAuthForDelegation -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get delegator details for '$($delegator.samAccountName)': $_"
@@ -948,7 +1137,12 @@ Review and remove the excessive permissions listed in the evidence:
         foreach ($dc in $dcComputers) {
             $dcObj = $null
             try {
-                $dcObj = Get-ADComputer -Identity $dc.DistinguishedName -Properties 'msDS-AllowedToActOnBehalfOfOtherIdentity' -ErrorAction Stop
+                $dcObj = if ($__adServer) {
+                    Get-ADComputer -Identity $dc.DistinguishedName -Server $__adServer -Properties 'msDS-AllowedToActOnBehalfOfOtherIdentity' -ErrorAction Stop
+                }
+                else {
+                    Get-ADComputer -Identity $dc.DistinguishedName -Properties 'msDS-AllowedToActOnBehalfOfOtherIdentity' -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get RBCD info for DC '$($dc.Name)': $_"
@@ -981,7 +1175,12 @@ Review and remove the excessive permissions listed in the evidence:
         foreach ($groupName in @('Print Operators', 'Server Operators', 'Backup Operators', 'Account Operators', 'DnsAdmins')) {
             $group = $null
             try {
-                $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                $group = if ($__adServer) {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get built-in group '$groupName': $_"
@@ -990,7 +1189,12 @@ Review and remove the excessive permissions listed in the evidence:
 
             $members = $null
             try {
-                $members = Get-ADGroupMember -Identity $group -ErrorAction Stop
+                $members = if ($__adServer) {
+                    Get-ADGroupMember -Identity $group -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroupMember -Identity $group -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get members of built-in group '$groupName': $_"
@@ -1038,6 +1242,9 @@ Review and remove the excessive permissions listed in the evidence:
             $evidenceBullets = ($evidence.Reason | ForEach-Object { "- $_" }) -join "`n"
             $finding.Description = "Principal '$principal' holds permissions that provide Domain Admin-equivalent control:`n$evidenceBullets"
             $finding.Impact = 'Compromise of this principal would allow attackers to seize control of protected groups, the domain naming context, PKI infrastructure, or perform DCSync.'
+            $finding.EstimatedEffort = 'High - the underlying access is typically composed of multiple pieces of evidence (nested groups, ACEs, ownership), each of which may need a separate fix, similar to breaking a control-path chain.'
+            $finding.KnownRisks = 'Removing any single contributing factor could break a legitimate, if undocumented, delegation if it was set up intentionally, so confirm with the principal''s owning team before changing each piece of evidence.'
+            $finding.BackupRollback = 'Moderate - export/record each ACE or membership being changed before removing it, then re-run the audit to confirm the effective access is gone.'
             $finding.Remediation = @"
 Review and remove the excessive permissions listed in the evidence:
 1. Restrict Domain Naming Context and AdminSDHolder control.
@@ -1064,6 +1271,12 @@ Review and remove the excessive permissions listed in the evidence:
     catch {
         Write-Error "Error during equivalence audit: $_"
         throw
+    }
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
     }
 }
 

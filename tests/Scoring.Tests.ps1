@@ -108,6 +108,97 @@ Describe 'Get-ADRiskScore (edge cases)' {
     }
 }
 
+Describe 'Get-ADRiskScore - jagged/nested findings array (defensive flattening)' {
+    <#
+        Regression coverage for a real crash: a jagged $Findings array (an
+        element that is itself a sub-array of several findings, e.g.
+        surfaced via Get-ADRetestComparison reading a findings export back
+        offline) made every property read on that element return an array
+        instead of a scalar - "Cannot convert the System.Object[] value ...
+        to type System.Int32" at the $w = [int]$finding.Weight line, plus
+        several other failures further down the same loop.
+    #>
+    BeforeAll {
+        function New-TaggedFinding {
+            param([string]$Category, [string]$Issue, [string]$Severity, [int]$SeverityLevel, [string]$AffectedObject, [int]$Weight, [string]$Anssi)
+            $f = [ADSecurityFinding]::new()
+            $f.Category = $Category; $f.Issue = $Issue; $f.Severity = $Severity; $f.SeverityLevel = $SeverityLevel
+            $f.AffectedObject = $AffectedObject
+            # Pre-populate Weight/AnssiControl exactly as real production
+            # findings already do after a prior live run (this is what makes
+            # Get-ADRiskScore's own re-tagging pre-check skip Set-ADFindingMetadata
+            # and fall straight into the arithmetic where the crash occurs).
+            $f.Weight = $Weight
+            $f.AnssiControl = $Anssi
+            return $f
+        }
+    }
+
+    It 'does not throw when one array element is itself a sub-array of multiple findings' {
+        $f1 = New-TaggedFinding -Category 'User Account' -Issue 'I1' -Severity 'Low' -SeverityLevel 1 -AffectedObject 'o1' -Weight 4 -Anssi 'vuln4_test'
+        $f2 = New-TaggedFinding -Category 'User Account' -Issue 'I2' -Severity 'Low' -SeverityLevel 1 -AffectedObject 'o2' -Weight 4 -Anssi 'vuln4_test'
+        $f3 = New-TaggedFinding -Category 'Privileged Groups' -Issue 'I3' -Severity 'High' -SeverityLevel 3 -AffectedObject 'o3' -Weight 20 -Anssi 'vuln2_test'
+
+        $jagged = @( @($f1, $f2), $f3 )
+
+        { Get-ADRiskScore -Findings $jagged } | Should -Not -Throw
+    }
+
+    It 'produces the same FindingCount/TotalScore as the equivalent flat array' {
+        $f1 = New-TaggedFinding -Category 'User Account' -Issue 'I1' -Severity 'Low' -SeverityLevel 1 -AffectedObject 'o1' -Weight 4 -Anssi 'vuln4_test'
+        $f2 = New-TaggedFinding -Category 'User Account' -Issue 'I2' -Severity 'Low' -SeverityLevel 1 -AffectedObject 'o2' -Weight 4 -Anssi 'vuln4_test'
+        $f3 = New-TaggedFinding -Category 'Privileged Groups' -Issue 'I3' -Severity 'High' -SeverityLevel 3 -AffectedObject 'o3' -Weight 20 -Anssi 'vuln2_test'
+
+        $flat = @($f1, $f2, $f3)
+        $jagged = @( @($f1, $f2), $f3 )
+
+        $flatResult = Get-ADRiskScore -Findings $flat
+        $jaggedResult = Get-ADRiskScore -Findings $jagged
+
+        $jaggedResult.FindingCount | Should -Be $flatResult.FindingCount
+        $jaggedResult.TotalScore | Should -Be $flatResult.TotalScore
+    }
+}
+
+Describe 'ConvertTo-ADFlatFindingsArray' {
+    It 'is a no-op on an already-flat array' {
+        $f1 = [ADSecurityFinding]::new(); $f1.Issue = 'A'
+        $f2 = [ADSecurityFinding]::new(); $f2.Issue = 'B'
+        $flat = ConvertTo-ADFlatFindingsArray -Findings @($f1, $f2)
+        $flat.Count | Should -Be 2
+    }
+
+    It 'flattens one level of nesting' {
+        $f1 = [ADSecurityFinding]::new(); $f1.Issue = 'A'
+        $f2 = [ADSecurityFinding]::new(); $f2.Issue = 'B'
+        $f3 = [ADSecurityFinding]::new(); $f3.Issue = 'C'
+        $jagged = @( @($f1, $f2), $f3 )
+        $flat = ConvertTo-ADFlatFindingsArray -Findings $jagged
+        $flat.Count | Should -Be 3
+        ($flat.Issue | Sort-Object) | Should -Be @('A', 'B', 'C')
+    }
+
+    It 'flattens multiple levels of nesting' {
+        $f1 = [ADSecurityFinding]::new(); $f1.Issue = 'A'
+        $f2 = [ADSecurityFinding]::new(); $f2.Issue = 'B'
+        $deeplyNested = @( @( @($f1), $f2 ) )
+        $flat = ConvertTo-ADFlatFindingsArray -Findings $deeplyNested
+        $flat.Count | Should -Be 2
+    }
+
+    It 'treats a Details hashtable as a leaf value, not something to recurse into' {
+        $f1 = [ADSecurityFinding]::new(); $f1.Issue = 'A'; $f1.Details = @{ SomeArray = @(1, 2, 3) }
+        $flat = ConvertTo-ADFlatFindingsArray -Findings @($f1)
+        $flat.Count | Should -Be 1
+        $flat[0].Details.SomeArray.Count | Should -Be 3
+    }
+
+    It 'handles an empty input array' {
+        $flat = ConvertTo-ADFlatFindingsArray -Findings @()
+        $flat.Count | Should -Be 0
+    }
+}
+
 Describe 'Mapping table integrity' {
     It 'exposes a clone via Get-ADFindingMetadataMap (does not mutate source)' {
         $map = Get-ADFindingMetadataMap

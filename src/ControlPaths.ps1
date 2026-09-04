@@ -129,6 +129,7 @@ function Get-ADControlPathGraph {
     )
 
     Write-Verbose "Get-ADControlPathGraph: building control-edge graph..."
+    $__adServer = Get-ADSecurityAuditTargetServerValue
 
     $edges = [System.Collections.ArrayList]::new()
     $tier0Targets = [System.Collections.ArrayList]::new()
@@ -148,7 +149,7 @@ function Get-ADControlPathGraph {
             $null
         }
         else {
-            Get-ADDomain -ErrorAction Stop
+            Get-ADDomain -Server $__adServer -ErrorAction Stop
         }
     }
     catch {
@@ -181,8 +182,11 @@ function Get-ADControlPathGraph {
             @()
         }
         else {
-            @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController (control-path graph)' -Query {
-                Get-ADDomainController -Filter * -ErrorAction Stop
+            # Get-ADSecurityAuditDomainController, not a bare
+            # Get-ADDomainController -Filter * - the latter is forest-wide
+            # regardless of -Server; see Common.ps1 for why.
+            @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (control-path graph)' -Query {
+                Get-ADSecurityAuditDomainController -Server $__adServer
             })
         }
     }
@@ -235,7 +239,7 @@ function Get-ADControlPathGraph {
         if (-not $groupDN -and -not $Snapshot) {
             try {
                 $g = Invoke-ADQueryWithRetry -OperationName "Get-ADGroup '$groupName' (control-path graph)" -Query {
-                    Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                    Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
                 }
                 if ($g) { $groupDN = $g.DistinguishedName }
             }
@@ -263,7 +267,7 @@ function Get-ADControlPathGraph {
     else {
         try {
             $rawGroups = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup (control-path graph)' -Query {
-                Get-ADGroup -Filter '*' -ResultPageSize 500 -Properties Members -ErrorAction Stop
+                Get-ADGroup -Filter '*' -ResultPageSize 500 -Properties Members -Server $__adServer -ErrorAction Stop
             })
             $groups = @($rawGroups | ForEach-Object {
                 [PSCustomObject]@{
@@ -351,7 +355,7 @@ function Get-ADControlPathGraph {
         else {
             try {
                 $obj = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor ($targetDN)" -Query {
-                    Get-ADObject -Identity $targetDN -Properties nTSecurityDescriptor -ErrorAction Stop
+                    Get-ADObject -Identity $targetDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
                 }
                 if ($obj -and $obj.nTSecurityDescriptor) {
                     $aclInfo = @{
@@ -569,6 +573,9 @@ function Test-ADControlPaths {
             $finding.Description = "Principal '$source' can reach the Tier-0 object '$targetLabel' through a chain of $hopCount control hop(s) (group membership, dangerous ACEs, and/or ownership), even though it holds no direct privileged group membership of its own."
             $finding.Impact = "Chained, non-obvious control relationships like this are the paths real intrusions use to reach Domain Admins/Domain Controllers; a flat, per-object permissions review would not surface this because no single hop looks critical in isolation."
             $finding.Remediation = "Break the chain by removing the unnecessary/unexpected control relationship closest to '$source' (see Details.HopChain for the full path), then re-run this audit and confirm the path no longer resolves. Prefer removing the group nesting or ACE outright over adding compensating controls."
+            $finding.EstimatedEffort = 'Medium - breaking one specific hop (a group nesting or ACE) in the chain; effort scales with how many hops and objects are involved for a given path.'
+            $finding.KnownRisks = 'Removing the identified hop could break a legitimate, if poorly documented, delegation model if the chain was set up intentionally rather than accidentally, so confirm with the object owner before removing.'
+            $finding.BackupRollback = 'Moderate - export the specific ACE or group membership being removed so it can be restored, then re-run this audit to confirm the path no longer resolves.'
             $finding.Details = @{
                 Source               = $source
                 Target               = $targetLabel
@@ -597,6 +604,9 @@ function Test-ADControlPaths {
             $finding.Description = "The Tier-0 object '$targetLabel' is owned by '$($edge.From)', which is not itself a Tier-0 principal. Object ownership grants implicit WriteDacl-equivalent control - an owner can always rewrite the DACL - regardless of the current ACL contents."
             $finding.Impact = "An attacker who compromises the owning principal can grant themselves any right on this object, including full control, without needing an existing dangerous ACE."
             $finding.Remediation = "Change ownership of '$targetLabel' to a Tier-0 principal (e.g. Domain Admins) and investigate how the current owner was set."
+            $finding.EstimatedEffort = 'Low - a single ownership change on one object.'
+            $finding.KnownRisks = 'Low technical risk; object ownership implicitly carries WriteDacl-equivalent rights, so confirm no automation currently depends on the existing owner''s implicit rights before changing it.'
+            $finding.BackupRollback = 'Easy - reassign ownership back to the prior principal if needed; effective immediately.'
             $finding.Details = @{
                 Owner    = $edge.From
                 Target   = $targetLabel

@@ -109,9 +109,10 @@ function Test-ADExchangeEscalation {
         }
     }
     else {
+        $__adServer = Get-ADSecurityAuditTargetServerValue
         try {
             $domain = Invoke-ADQueryWithRetry -OperationName 'Get-ADDomain (exchange-escalation audit)' -Query {
-                Get-ADDomain -ErrorAction Stop
+                Get-ADDomain -Server $__adServer -ErrorAction Stop
             }
         }
         catch {
@@ -129,7 +130,7 @@ function Test-ADExchangeEscalation {
 
         try {
             $domainObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor on $domainDN" -Query {
-                Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor -ErrorAction Stop
+                Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
             }
             if ($domainObject -and $domainObject.nTSecurityDescriptor) {
                 $domainAces = @($domainObject.nTSecurityDescriptor.Access)
@@ -141,7 +142,7 @@ function Test-ADExchangeEscalation {
 
         try {
             $adminSDHolderObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor on $adminSDHolderDN" -Query {
-                Get-ADObject -Identity $adminSDHolderDN -Properties nTSecurityDescriptor -ErrorAction Stop
+                Get-ADObject -Identity $adminSDHolderDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
             }
             if ($adminSDHolderObject -and $adminSDHolderObject.nTSecurityDescriptor) {
                 $adminSDHolderAces = @($adminSDHolderObject.nTSecurityDescriptor.Access)
@@ -211,10 +212,20 @@ function Test-ADExchangeEscalation {
     # -------------------------------------------------------------------
     # Finding: Exchange Group Holds WriteDACL on Domain Object
     # -------------------------------------------------------------------
+    # A trustee can hold multiple ACEs on the same object (one per property
+    # set/object type) even when Identity+Rights are identical - dedupe so
+    # each combination is reported once rather than once per raw ACE.
     $domainHits = [System.Collections.ArrayList]::new()
+    $__seenDomainHit = @{}
     foreach ($ace in $domainAces) {
         $hit = Test-ExchangeDangerousAce -Ace $ace
-        if ($hit) { [void]$domainHits.Add($hit) }
+        if ($hit) {
+            $__hitKey = "$($hit.Identity)|$($hit.Rights)"
+            if (-not $__seenDomainHit.ContainsKey($__hitKey)) {
+                $__seenDomainHit[$__hitKey] = $true
+                [void]$domainHits.Add($hit)
+            }
+        }
     }
 
     if ($domainHits.Count -gt 0) {
@@ -228,6 +239,9 @@ function Test-ADExchangeEscalation {
             $finding.Description = "'$($hit.Identity)' (matched Exchange principal '$($hit.MatchedPrincipal)') holds '$($hit.Rights)' on the domain head object '$domainDN'. This is the classic PrivExchange-style escalation path: Exchange Windows Permissions / Exchange Trusted Subsystem is granted WriteDacl on the domain during Exchange setup, and any principal that can add itself (or a controlled identity) to that group inherits the ability to rewrite the domain's ACL and grant itself replication (DCSync) rights."
             $finding.Impact = "Any account that can control or is a member of '$($hit.Identity)' can modify the domain object's ACL to grant DS-Replication-Get-Changes / DS-Replication-Get-Changes-All to an attacker-controlled principal, enabling a full DCSync credential dump and complete domain compromise - with no need for elevated Exchange server access itself."
             $finding.Remediation = "Remove the '$($hit.Rights)' ACE for '$($hit.Identity)' from the domain head object's ACL (e.g. via ADSIEdit/dsacls.exe against '$domainDN'). If Exchange is still in use, apply Microsoft's post-PrivExchange guidance to scope Exchange's domain permissions down instead of relying on broad WriteDacl. If Exchange has been decommissioned, this ACE is residual and should be removed entirely."
+            $finding.EstimatedEffort = 'Medium - removing this legacy right requires confirming the current Exchange version/CU no longer needs it and coordinating with the Exchange admin team.'
+            $finding.KnownRisks = 'Some Exchange functionality - particularly on older CUs that still expect this legacy permission model - can break if the right is removed while an in-place Exchange server still depends on it; confirm current CU-level guidance before removing.'
+            $finding.BackupRollback = 'Moderate - export the domain object''s ACL before removing the ACE so it can be restored if Exchange functionality is affected; changes follow normal AD replication.'
             $finding.Details = @{
                 DomainDN            = $domainDN
                 Identity            = $hit.Identity
@@ -250,9 +264,16 @@ function Test-ADExchangeEscalation {
     # Finding: Exchange-Related AdminSDHolder ACE
     # -------------------------------------------------------------------
     $adminSDHolderHits = [System.Collections.ArrayList]::new()
+    $__seenAdminSDHolderHit = @{}
     foreach ($ace in $adminSDHolderAces) {
         $hit = Test-ExchangeDangerousAce -Ace $ace
-        if ($hit) { [void]$adminSDHolderHits.Add($hit) }
+        if ($hit) {
+            $__hitKey = "$($hit.Identity)|$($hit.Rights)"
+            if (-not $__seenAdminSDHolderHit.ContainsKey($__hitKey)) {
+                $__seenAdminSDHolderHit[$__hitKey] = $true
+                [void]$adminSDHolderHits.Add($hit)
+            }
+        }
     }
 
     if ($adminSDHolderHits.Count -gt 0) {
@@ -266,6 +287,9 @@ function Test-ADExchangeEscalation {
             $finding.Description = "'$($hit.Identity)' (matched Exchange principal '$($hit.MatchedPrincipal)') holds '$($hit.Rights)' on AdminSDHolder ($adminSDHolderDN). SDProp propagates this ACE to every protected (Tier-0) account and group every 60 minutes, extending Exchange's reach into every AdminCount=1 object regardless of whether Exchange is still installed."
             $finding.Impact = "Any account that can control or is a member of '$($hit.Identity)' effectively holds '$($hit.Rights)' on every protected account/group in the domain (Domain Admins members, Enterprise Admins members, etc.), since SDProp re-applies the AdminSDHolder template ACL to them on its normal cycle."
             $finding.Remediation = "Remove the '$($hit.Rights)' ACE for '$($hit.Identity)' from AdminSDHolder ($adminSDHolderDN). After removal, allow SDProp to re-propagate (or force it with a directory-service restart / repadmin) and re-verify no protected object retains the inherited rights."
+            $finding.EstimatedEffort = 'Medium - a single-object ACE removal, but coordinate with the Exchange admin team to confirm the current Exchange version doesn''t still rely on it.'
+            $finding.KnownRisks = 'Removing an Exchange-related AdminSDHolder ACE that a currently-installed Exchange version still expects could break Exchange''s ability to manage protected mail-enabled accounts.'
+            $finding.BackupRollback = 'Moderate - export the AdminSDHolder ACL before removing the ACE; the correction only reaches every protected object after SDProp''s next propagation cycle.'
             $finding.Details = @{
                 AdminSDHolderDN     = $adminSDHolderDN
                 Identity            = $hit.Identity

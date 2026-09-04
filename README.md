@@ -1,89 +1,101 @@
-# Active Directory Security Audit 
+# Active Directory Security Audit
 
-A comprehensive PowerShell module for identifying misconfigurations and security vulnerabilities within Active Directory environments.
+<p align="center">
+  <img src="./assets/banner.png" alt="Active Directory Security Audit — a domain controller hub connected to directory objects, with one flagged in amber" width="100%">
+</p>
 
-The repository also includes a responsive web dashboard (in `ui/`) that visualizes the JSON output from the audit scripts. Upload an audit JSON or load the bundled sample to explore findings by category (e.g., computer account delegation, fine-grained password policies, DNS security configuration) and drill into remediation guidance with documentation links.
+A PowerShell module that finds misconfigurations and security vulnerabilities in Active Directory environments, plus a web dashboard (`ui/`) for browsing the results.
 
-> **Independence note:** ADSecurityAudit is an independent, MIT-licensed project. Throughout this README, the CHANGELOG, and the source code, you'll see notes like "PingCastle-comparable check" or "similar in spirit to PingCastle's approach" — these describe feature comparisons only (which known AD security concept a given check maps to), not affiliation, endorsement, or shared code. ADSecurityAudit is not produced by, affiliated with, or endorsed by Netwrix/PingCastle.
+> **Independence note:** This is an independent, MIT-licensed project. Mentions of "PingCastle-comparable" describe which known AD concept a check maps to — not affiliation. Not produced by, affiliated with, or endorsed by Netwrix/PingCastle.
+
+## Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Scoring & Maturity](#scoring--maturity)
+- [Test Coverage](#test-coverage)
+- [Offline / Snapshot Mode](#offline--snapshot-mode)
+- [Multi-Domain / Forest Targeting](#multi-domain--forest-targeting)
+- [Forest Consolidation, Retesting & Trends](#forest-consolidation-retesting--trends)
+- [Exception / Remediation-State Tracking](#exception--remediation-state-tracking)
+- [Findings by Severity](#findings-by-severity)
+- [Report Interpretation](#report-interpretation)
+- [Troubleshooting](#troubleshooting)
+- [Security Best Practices](#security-best-practices)
+- [Automation & Integration](#automation--integration)
+- [Contributing / License / Disclaimer](#contributing--license--disclaimer)
+- [Version History](#version-history)
+- [Acknowledgments](#acknowledgments)
 
 ## Features
 
-### Core Auditing Capabilities
+### Core checks
+User account risks (AS-REP Roasting, weak/reversible encryption, unconstrained delegation, Kerberoasting, inactive accounts) · privileged group hygiene (excessive/nested membership, disabled users) · AdminSDHolder tampering · GPO misconfigurations (over-permissioned, insecure SYSVOL, mislinked) · DCSync detection · domain security settings (password policy, domain/forest functional level, tombstone lifetime, legacy systems) · dangerous ACL permissions on AD objects (critical OUs, Schema/Configuration naming context head objects).
 
-- **User Account Auditing**: Detects AS-REP Roasting vulnerabilities, weak encryption, reversible passwords, unconstrained delegation, Kerberoasting risks, and inactive accounts
-- **Privileged Group Analysis**: Identifies excessive membership, nested groups, and disabled users in critical groups
-- **AdminSDHolder Security**: Scans for risky permissions and unauthorized modifications that could lead to persistent compromise
-- **Group Policy Assessment**: Detects over-permissioned GPOs, insecure SYSVOL permissions, and mislinked policies
-- **DCSync Detection**: Identifies unauthorized replication permissions that enable credential dumping attacks
-- **Domain Security Settings**: Evaluates password policies, functional levels, legacy systems, and AzureADSSOACC rotation compliance
-- **Dangerous Permissions**: Locates overly permissive rights on critical AD objects
+<details>
+<summary><strong>Advanced checks (click to expand — 20+ modules)</strong></summary>
 
-### Advanced Security Features
+- **AD CS (Certificate Services)**: ESC1/ESC2/ESC3/ESC7, plus **Extended**: ESC4 (weak template ACLs), ESC8 (HTTP enrollment without EPA), ROCA-vulnerable keys (CVE-2017-15361), weak signature/RSA sizes across CA + NTAuth/AIA/Root store, and CA chase-fallback exposure (CVE-2026-54121 "Certighost").
+- **KRBTGT password age**: flags rotation older than the 180-day recommendation (Golden Ticket risk).
+- **Domain trusts**: SID filtering, selective auth, direction, bidirectional exposure.
+- **LAPS**: schema presence, coverage %, static local-admin passwords.
+- **Audit policy**: critical policies enabled, SACLs on sensitive objects.
+- **Delegation**: constrained delegation, protocol transition (T2A4D), resource-based constrained delegation (RBCD).
+- **Risk Scoring / ANSSI Maturity / MITRE ATT&CK**: rolls findings into a 0–100 score with per-category sub-scores, a 1–5 ANSSI maturity level, and MITRE technique tags — all from one mapping table (`Get-ADRiskScore`, `Set-ADFindingMetadata`).
+- **Snapshot & offline mode**: `Get-ADSnapshot` collects once; `Start-ADSecurityAudit -FromSnapshot` re-runs fully offline.
+- **Machine Account Quota**: flags the unmodified default of 10 (or any non-zero value) — a common RBCD/SamAccountName-spoofing foothold.
+- **Domain hardening flags**: dangerous `dSHeuristics` settings, broad membership in Pre-Windows 2000 Compatible Access, anonymous LDAP bind, and null-session pipe/share access (`RestrictNullSessAccess`).
+- **Coercion & NTLM relay exposure**: Print Spooler / WebClient running on DCs, LDAP signing/channel binding not enforced.
+- **AD-integrated DNS**: DnsAdmins membership (DC code-exec path), zone-transfer exposure, insecure dynamic updates, broad CreateChild rights (ADIDNS spoofing), and stale/dangling zone delegations (subdomain-takeover risk).
+- **Legacy auth & name-poisoning surface**: SMBv1, SMB signing, LM/NTLMv1, LLMNR, WSUS-over-HTTP — distinguishing policy-enforced values from unset ones.
+- **Kerberos hardening depth**: RC4 still permitted for Tier-0/krbtgt, trusts missing AES-only, Kerberos Armoring (FAST), cross-trust TGT delegation.
+- **Stale-object & hygiene depth**: PASSWD_NOTREQD accounts, non-default `primaryGroupID` (membership-hiding technique), duplicate SPNs, DCs missing from AD Sites subnets, insufficient DC count.
+- **GPO-deployed secrets**: leftover GPP `cpassword` (MS14-025), credential patterns in deployed scripts, insecure GPO settings (firewall, RDP NLA), and User Rights Assignments handing sensitive logon rights to broad principals.
+- **Known DC vulnerabilities by patch/build**: ZeroLogon, EternalBlue, MS14-068, PrintNightmare, CVE-2026-41089 (Netlogon RCE), and BadSuccessor/dMSA exposure on Server 2025 DCs (per-DC CVE-2025-53779 patch classification) — all inferred from build/hotfix level, never exploitation.
+- **Exchange-in-AD privilege escalation**: Exchange security principals holding dangerous rights on the domain object or AdminSDHolder — fires even on residual ACEs after Exchange is decommissioned.
+- **RODC security posture**: cached/revealable Tier-0 secrets, overly broad replication policy, orphaned RODC krbtgt accounts.
+- **Attack-path graph**: builds a control-edge graph (dangerous ACEs, group membership, ownership) and computes reachability from any non-Tier-0 principal to Tier-0 targets, with full hop chains and an optional BloodHound-compatible export.
+- **Multi-domain/forest consolidation**: rolls up prior per-domain JSON exports into one forest score, heatmap, and comparison table — a free equivalent to PingCastle's paid "Conso" feature.
 
-- **Certificate Services (AD CS) Vulnerabilities**: Scans for exploitable certificate templates (ESC1/ESC2/ESC3) where attackers can request certificates for privilege escalation, and audits Certificate Authority permissions (ESC7)
-- **KRBTGT Password Age Analysis**: Monitors KRBTGT account password age to prevent Golden Ticket attacks, alerting when passwords exceed the recommended 180-day rotation threshold
-- **Domain Trust Security**: Comprehensive auditing of trust relationships including SID filtering status, selective authentication validation, trust direction analysis, and bidirectional trust detection
-- **LAPS Deployment Verification**: Validates Local Administrator Password Solution (LAPS) schema installation, checks computer coverage percentage, and identifies systems with static local admin passwords
-- **Audit Policy Configuration**: Verifies critical audit policies are enabled on domain controllers, validates SACL configurations on sensitive objects, and ensures proper security event logging
-- **Constrained Delegation Analysis**: Identifies accounts with constrained delegation, dangerous protocol transition (T2A4D), and resource-based constrained delegation (RBCD) configurations
-- **Risk Scoring, ANSSI Maturity & MITRE ATT&CK Tagging**: Rolls findings up into a 0-100 risk score with per-category sub-scores, a 1-5 ANSSI-style maturity level, and MITRE ATT&CK technique tagging, all driven by a single source-of-truth mapping table (`Get-ADRiskScore`, `Set-ADFindingMetadata`)
-- **Collect-Once Snapshot & Offline Mode**: `Get-ADSnapshot` performs a single paged collection pass reused across checks, and `Start-ADSecurityAudit -FromSnapshot` re-runs the full audit offline with no live AD access
-- **Machine Account Quota**: Audits `ms-DS-MachineAccountQuota` on the domain root and flags the unmodified default of 10 or any other non-zero value that lets authenticated users self-service-join computer accounts, a common foothold for RBCD relay and SamAccountName-spoofing privilege escalation
-- **Domain Hardening Flags**: Positionally parses the `dSHeuristics` attribute for dangerous settings (anonymous access, List Object security mode, AdminSDHolder exclusion mask weakening), flags broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group, and performs a strictly read-only anonymous LDAP/RootDSE bind probe
-- **Coercion & NTLM Relay Exposure**: Checks every Domain Controller for the configuration that enables coerce-then-relay attacks - Print Spooler (PrinterBug) or WebClient (WebDAV) running, LDAP signing not enforced, and LDAP channel binding (EPA) not required
-- **AD CS Extended (ESC4, ESC8, ROCA, Weak PKI Crypto)**: Extends AD CS coverage beyond ESC1/2/3/7 with dangerous template ACLs (ESC4), high-risk templates missing a manager-approval gate, CA web enrollment reachable over HTTP without Extended Protection for Authentication (ESC8), ROCA-vulnerable (CVE-2017-15361) RSA keys, and weak signature algorithms/RSA key sizes across the CA certificates and the NTAuth/AIA/Root store
-- **AD-Integrated DNS Security**: Audits DnsAdmins group membership (a well-known Domain-Controller code-execution path via the DNS server's `ServerLevelPluginDll` mechanism), DNS zone transfer exposure (transfers to any server or any NS-listed server rather than an explicit secondary list), insecure (nonsecure) dynamic DNS updates, and overly broad CreateChild rights on AD-integrated zone objects granted to Authenticated Users/Everyone/ANONYMOUS LOGON (ADIDNS spoofing/MITM surface)
-- **Legacy Auth & Name-Poisoning Surface**: Audits GPO/registry-enforced legacy authentication and name-resolution poisoning surface - SMBv1 enabled/not disabled by policy, SMB signing not required, LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3), LLMNR not disabled by policy, and WSUS delivered over HTTP (package-injection MITM surface) - distinguishing policy-enforced values (naming the source GPO) from unset/local ones
-- **Kerberos Hardening Depth**: Audits RC4 Kerberos encryption still being permitted (Tier-0 privileged accounts and krbtgt via `msDS-SupportedEncryptionTypes`, trusts missing the `TRUST_USES_AES_KEYS` attribute, and the domain-wide "Configure encryption types allowed for Kerberos" GPO/registry policy), Kerberos Armoring (FAST) not enabled (KDC and client `EnableCbacAndArmor` policy), and cross-trust TGT delegation (trusts with the `CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION` `trustAttributes` flag set)
-- **Stale-Object & Hygiene Depth**: Audits accounts with the PASSWD_NOTREQD flag set (`userAccountControl` 0x0020), non-default `primaryGroupID` on user and computer objects (a known membership-hiding technique, distinguishing the legitimate Domain Controllers RID for genuine DCs from a suspicious value elsewhere), duplicate Service Principal Names across users and computers (reporting every holder), Domain Controllers not covered by any AD Sites & Services subnet object, and insufficient Domain Controller count
-- **GPO-Deployed Secrets & Insecure Settings**: Scans each GPO's SYSVOL policy folder for leftover Group Policy Preferences (GPP) `cpassword` values (MS14-025, flagged by presence and file path only - never decrypted), credential-flavoured patterns embedded in deployed logon/startup scripts (reported by file and line number only), and insecure settings pushed via GPO (Windows Firewall disabled, hidden file extensions, RDP Network Level Authentication disabled or an insecure RDP security layer)
-- **Known DC Vulnerabilities by Patch/Build**: Flags Domain Controller exposure to ZeroLogon (CVE-2020-1472), MS17-010/EternalBlue, MS14-068, PrintNightmare (CVE-2021-34527, only while the Spooler service is running), and CVE-2026-41089 (unauthenticated Netlogon RCE, CVSS 9.8) strictly from OS build/install date and installed hotfix level (`Get-HotFix`) against documented fix-date thresholds, plus BadSuccessor/dMSA escalation exposure on Windows Server 2025-level Domain Controllers - as of v1.18.0 each Server 2025-level DC is additionally classified Patched/Unpatched/Unknown for CVE-2025-53779 via a per-DC UBR (Update Build Revision) registry read, since independent research shows the underlying dMSA-linking primitive remains partially abusable even after that patch - every determination is a version/patch/config read, never exploitation
-- **Exchange-in-AD Privilege Escalation**: Flags Exchange security principals (Exchange Windows Permissions, Exchange Trusted Subsystem, Exchange Servers, Exchange Enterprise Servers, Organization Management) holding GenericAll/WriteDacl/WriteOwner on the domain head object (the PrivExchange-style path to DCSync) or on AdminSDHolder, firing on residual ACEs even after Exchange has been fully decommissioned
-- **Read-Only Domain Controller Security Posture**: Audits RODCs for Tier-0/privileged principals already cached (`msDS-RevealedUsers`) or allowed to replicate (`msDS-RevealOnDemandGroup`), password replication policy gaps (allowed list too broad or denied list missing expected privileged groups via `msDS-NeverRevealGroup`), and orphaned RODC-specific `krbtgt_*` accounts left behind after an RODC is demoted or removed
-- **Attack-Path Graph & Indirect-Privilege (Control-Path) Findings**: Builds a directed control-edge graph from dangerous ACEs, group membership, and object ownership (`Get-ADControlPathGraph`), then computes reachability from non-Tier-0 principals to the Tier-0 set - Domain Admins/Enterprise Admins/etc. (per `Get-ADTier0Principal`), Domain Controllers, AdminSDHolder, and the domain head object - via `Test-ADControlPaths`, emitting a finding per reachable path with the full hop chain recorded in `Details`. Surfaces the indirect escalation paths that flat, per-object permission checks can't express on their own; a broad principal (Everyone/Authenticated Users/Domain Users/ANONYMOUS LOGON) on any path is always Critical. Includes an optional BloodHound-compatible generic-edge JSON export (`Export-ADControlPathGraphBloodHound`) for cross-checking against a BloodHound collection of the same environment
-- **Multi-Domain / Forest Consolidation**: `Get-ADForestConsolidation` reads two or more of this module's own prior JSON exports (one per domain) entirely offline - no additional AD queries - and rolls them up into a forest score/maturity (same worst-category semantics as `Get-ADRiskScore`), a per-category heatmap, a worst-first domain comparison table, and cross-domain trust-risk enrichment (annotating `Test-ADDomainTrusts` findings with the target domain's own score when that domain was also scanned); `Export-ADForestConsolidationHTML` renders the result as a standalone report. A free equivalent to PingCastle's paid "Conso" consolidation feature
+</details>
 
 ## Requirements
 
 - Windows PowerShell 5.1 or PowerShell 7+
-- Active Directory PowerShell Module (RSAT)
-- Group Policy PowerShell Module (RSAT)
-- Domain Administrator or equivalent permissions for full audit
-- Windows Server 2016 or later (recommended)
-- Network connectivity to Domain Controllers
-- Appropriate read permissions for AD Certificate Services (if installed)
+- Active Directory + Group Policy PowerShell modules (RSAT)
+- Domain Admin (or equivalent) for a full audit
+- Windows Server 2016+ recommended, network access to DCs
+- Read access to AD CS if installed
 
 ## Installation
 
-Ensure RSAT PowerShell modules are installed:
-
-```
+```powershell
 Get-WindowsCapability -Name RSAT.ActiveDirectory* -Online | Add-WindowsCapability -Online
 Get-WindowsCapability -Name Rsat.GroupPolicy.Management.Tools* -Online | Add-WindowsCapability -Online
 ```
 
-### Option A - Run in place (recommended)
-
-No installation step is required. Clone or download the repository, then import the module directly from wherever it lives:
+<details open>
+<summary><strong>Option A — Run in place (recommended)</strong></summary>
 
 ```powershell
-git clone https://github.com/AlchemicalChef/ADSecurityAudit.git
+git clone https://github.com/sean-aura/ADSecurityAudit.git
 cd ADSecurityAudit
 Import-Module .\ADSecurityAudit.psd1
 ```
 
-To update, pull the latest changes and re-import (`-Force` reloads an already-imported module in the current session):
-
+To update:
 ```powershell
 git pull
 Import-Module .\ADSecurityAudit.psd1 -Force
 ```
+If you didn't clone via git, just re-download over the same folder and re-run `Import-Module -Force`.
 
-If you didn't clone via git, updating is just re-downloading the repository over the same folder and re-running `Import-Module -Force`.
+</details>
 
-### Option B - Install into a PowerShell modules directory
-
-If you'd rather have the module available by name (`Import-Module ADSecurityAudit`) from any working directory without pointing at a path, copy it into a location on `$env:PSModulePath` instead:
+<details>
+<summary><strong>Option B — Install into a PowerShell modules directory</strong></summary>
 
 ```powershell
 $modulePath = "$env:ProgramFiles\WindowsPowerShell\Modules\ADSecurityAudit"
@@ -94,432 +106,467 @@ Copy-Item -Path ".\src" -Destination "$modulePath\src" -Recurse -Force
 Import-Module ADSecurityAudit
 ```
 
-**Updating an Option B install:** copying over an existing install doesn't take effect in a session that already has the old version loaded. To update:
+**To update:** close any session with the module loaded (or `Remove-Module ADSecurityAudit -Force`), re-copy the files above with `-Force`, then start a new session and confirm with `(Get-Module ADSecurityAudit).Version`.
 
-```powershell
-# 1. Close any PowerShell session with the module loaded (or run: Remove-Module ADSecurityAudit -Force)
-# 2. Re-copy the updated files over the existing install:
-Copy-Item -Path ".\ADSecurityAudit.psd1" -Destination "$modulePath\ADSecurityAudit.psd1" -Force
-Copy-Item -Path ".\ADSecurityAudit.psm1" -Destination "$modulePath\ADSecurityAudit.psm1" -Force
-Copy-Item -Path ".\src" -Destination "$modulePath\src" -Recurse -Force
-# 3. Start a new PowerShell session (or Import-Module ADSecurityAudit -Force) and confirm the version:
-(Get-Module ADSecurityAudit).Version
-```
-
+</details>
 
 ## Usage
 
-### Basic Audit
-Run a complete security audit with default settings:
-
+**Basic audit:**
 ```powershell
 Start-ADSecurityAudit -ExportPath "C:\ADReports"
 ```
 
-### Advanced Options
-Customize the audit with additional parameters:
-
+**Verbose:**
 ```powershell
 Start-ADSecurityAudit -ExportPath "C:\ADReports" -Verbose
 ```
 
-### Offline / Snapshot-Based Audit
-Collect once, analyze later or elsewhere, with no live AD access at analysis time:
+**Targeting another domain/DC** (multi-domain forests): by default the audit targets your own account's domain — no parameter needed. Pass `-Server` only when auditing a *different* domain, or when only one DC is reachable:
+```powershell
+Start-ADSecurityAudit -Server domainb.corp.com -ExportPath "C:\ADReports"
+# or target one specific DC directly:
+Start-ADSecurityAudit -Server dc01.domainb.corp.com -ExportPath "C:\ADReports"
+```
+Every standalone audit function accepts the same `-Server` parameter. Full detail (PDC Emulator resolution, `runas /netonly` limitation, internals): see [Multi-Domain / Forest Targeting](#multi-domain--forest-targeting).
 
+**Offline / snapshot:**
 ```powershell
 Get-ADSnapshot -ToJson "C:\Snapshots\contoso.json"
 Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso.json" -ExportPath "C:\ADReports"
 ```
 
-### Output Formats
-The script generates these report formats:
-- **HTML Report**: Color-coded interactive report with severity indicators, a risk-score gauge, an ANSSI maturity panel, per-category risk bars, and a MITRE ATT&CK technique summary
-- **CSV Export**: Detailed findings in spreadsheet format for analysis (now includes appended `MitreTechnique`, `AnssiControl`, and `Weight` columns)
-- **JSON Export**: Machine-readable findings (the new metadata fields serialize automatically)
-- **Score sidecar (JSON)**: `AD_Security_Score_<timestamp>.json` containing the global risk score, per-category sub-scores, maturity level, and MITRE roll-up
+**Output formats:** HTML (interactive, risk gauge, maturity panel, MITRE summary, Test Coverage section) · CSV (with `MitreTechnique`/`AnssiControl`/`Weight`/`TestName` columns) · JSON · a JSON score sidecar (`AD_Security_Score_<timestamp>.json`) · a test coverage sidecar (`AD_Security_TestCoverage_<timestamp>.json`/`.csv`) recording, for every registered check, whether it ran clean, ran and found something, failed, or was excluded.
+
+**Visual dashboard:** open `ui/index.html`, upload a generated JSON report (or click **Load sample report**) to browse findings by severity with remediation links.
 
 ## Scoring & Maturity
 
-As of v1.2.0 every audit run produces an executive roll-up on top of the raw findings, computed by `Get-ADRiskScore`:
+Every run produces an executive roll-up via `Get-ADRiskScore`:
 
-- **Risk score (0-100, higher = worse)** — each finding carries a `Weight`; a category's score uses diminishing returns as findings accumulate (approaches, but doesn't abruptly hit, 100), and the **global score is the worst category's score** — similar in spirit to PingCastle's "you are as exposed as your weakest area" philosophy, though the underlying math is our own.
-- **Per-category sub-scores** — a 0-100 score per audit category (Kerberos Security, Certificate Services, Replication Security, etc.), rendered as bars in the HTML report.
-- **ANSSI-style maturity level (1-5, higher = better)** — derived from the ANSSI control level mapped to each finding. A single Level 1 finding caps maturity at Level 1; maturity rises as the most critical hygiene gaps are closed.
-- **MITRE ATT&CK tagging** — every finding is tagged with the technique it maps to (e.g. `T1558.001` Golden Ticket, `T1003.006` DCSync, `T1649` AD CS abuse), and the report shows a technique-frequency summary.
+- **Risk score (0–100, higher = worse)** — diminishing returns per category; the global score is the *worst* category's score (similar philosophy to PingCastle's "as exposed as your weakest area," own math).
+- **Per-category sub-scores** — rendered as bars in the HTML report.
+- **ANSSI-style maturity (1–5, higher = better)** — a single Level-1 finding caps maturity at Level 1.
+- **MITRE ATT&CK tagging** — every finding maps to a technique (e.g. `T1558.001` Golden Ticket), with a frequency summary in the report.
 
-All tagging flows from a **single source-of-truth mapping table** in `src/Scoring.ps1` (`Issue → MITRE technique → ANSSI control → weight`). To extend coverage for a new check, add one entry there keyed by the finding's exact `Issue` string; `Set-ADFindingMetadata` and `Get-ADRiskScore` pick it up automatically. The output schema is **additive-only**: new finding fields and CSV columns are appended, never reordered or removed.
+All three come from one mapping table in `src/Scoring.ps1` (`Issue → MITRE technique → ANSSI control → weight`) — extend coverage by adding one entry there. The output schema is additive-only.
 
-> Note: MITRE technique IDs are authoritative; the ANSSI control identifiers follow ANSSI's Active Directory conventions with a maturity-level structure comparable to PingCastle's, and should be reviewed against the current official ANSSI Active Directory control catalogue before use in formal compliance reporting.
+## Test Coverage
 
-## Collect-Once Snapshot & Offline Analysis
+Since v1.24.0, every run records not just what it *found*, but what it *checked*: for every registered check (`-IncludeTests`/`-ExcludeTests` in mind), the report shows whether it ran clean, ran and found something, failed, or was deliberately excluded. Previously a check that errored out only produced a console warning, and a check that ran and found nothing was indistinguishable from one that never ran at all — a "clean" report and an "incomplete" report looked identical.
 
-As of v1.3.0, AD collection is decoupled from rule evaluation:
+- **HTML** — a "Test Coverage" section (collapsed by default; click to expand the full per-check list — it's a large table when every check is listed) with a per-check badge (`COMPLETED` / `CLEAN` / `FAILED` / `EXCLUDED`) and a summary line, visible either way, breaking out passed-clean vs. found-issues vs. untested (failed+excluded) as distinct counts.
+- **CSV/JSON sidecars** — `AD_Security_TestCoverage_<timestamp>.json`/`.csv`, alongside the existing findings/score exports.
+- **A fully clean run (zero findings) now exports a full report** — previously this was silently skipped, since export was gated on having at least one finding.
+- **`Export-ADSecurityReportCSVFromJson`** (new) — the CSV equivalent of `Export-ADSecurityReportHTMLFromJson`, rebuilding the findings CSV (and coverage CSV, if available) from an old JSON export offline.
+- An export that predates test coverage tracking gets an explicit note rather than a silently-missing section: the HTML rebuild path adds a "Test Coverage Not Available" note citing the version boundary, and the CSV rebuild path still writes a coverage CSV with a single explanatory row instead of omitting the file.
+- **Forest Consolidation, Retest Comparison, and Maturity Trend all cross-check against this data too** — see [Forest Consolidation, Retesting & Trends](#forest-consolidation-retesting--trends) for why this matters (a false "Resolved" claim, or a misleading score/domain comparison, can both result from under-testing rather than genuine improvement if this isn't accounted for).
 
-- **`Get-ADSnapshot [-ToJson <path>]`** performs one paged, read-only collection pass over users, computers, groups, GPOs (+ permissions), ACLs on key objects (AdminSDHolder, domain root, certificate templates container), AD CS configuration, DNS zones, domain trusts, DC inventory, and the domain's `ms-DS-MachineAccountQuota` attribute, returning a single structured snapshot. Pass `-ToJson` to also persist it to disk for later offline re-analysis.
-- **`Invoke-ADRuleSet -Snapshot $snapshot`** dispatches the `Test-*` audit functions against that snapshot. Before passing `-Snapshot` to a function it checks whether that function actually declares the parameter (`(Get-Command $fn).Parameters.ContainsKey('Snapshot')`); functions that haven't been retrofitted yet are simply invoked live instead of erroring (this skip path stays in place for any future new test, though as of v1.19.0 it has nothing to skip - see below). Audit modules were retrofitted with an optional `-Snapshot` parameter gradually across releases; **as of v1.19.0, all 27 registered tests support `-Snapshot`, fully or partially**:
-  - **Fully offline-capable** (no live AD access at all when `-Snapshot` is supplied): `Test-ADUserSecurity`, `Test-KRBTGTAccount`, `Test-ADMachineAccountQuota`, `Test-ADExchangeEscalation`, `Test-ADPrivilegedGroups`, `Test-AdminSDHolder`, `Test-ADReplicationSecurity`, `Test-ADDangerousPermissions`, `Test-LAPSDeployment`, `Test-ConstrainedDelegation`, `Test-ADDomainTrusts`, `Test-ADDomainSecurity`, `Test-ADCertificateServices`, and `Test-ADDomainAdminEquivalence` (added in v1.19.0, alongside the ten preceding names in this sentence starting from `Test-ADPrivilegedGroups`).
-  - **Partially offline** (most checks run from the snapshot; a small number of sub-checks are genuinely real-time machine/network state with no AD-schema equivalent and are skipped entirely under `-Snapshot` - as of v1.19.1, this is unconditional: `-Snapshot` performs zero live AD/network access, full stop, with a structured note recorded for every skipped sub-check - see "Offline Mode Coverage Notes" below): `Test-ADDomainHardeningFlags` (dSHeuristics and Pre-Windows 2000 membership are offline; its anonymous-bind check is a live network probe and is skipped in offline mode), `Test-ADCoercionAndRelayExposure` (its Spooler/WebClient/LDAP-registry checks are live per-DC network probes and are skipped entirely in offline mode; only the DC list is taken from the snapshot), `Test-ADCSExtended` (template/CA enumeration, ESC4 (per-template ACL), the approval-gate/CA-certificate weak-crypto checks, and the NTAuth/AIA/Root store sweep all run from `Snapshot.ADCS` as of v1.19.1 - ESC4 and NTAuth/AIA/Root gained snapshot support that release; only ESC8, a live HTTP probe against the CA host itself, remains genuinely live-only and is skipped entirely in offline mode), `Test-ADDnsSecurity` (the DnsAdmins membership check reads from `Snapshot.Groups`; the zone transfer, dynamic-update, and ADIDNS CreateChild checks read zone-level attributes/ACLs not present in the current snapshot schema and are skipped entirely in offline mode), `Test-ADKerberosHardening` (the account-level RC4 check reads from `Snapshot.Users` and the Tier-0 set, and both trust-level checks read from `Snapshot.Trusts`; the domain-wide encryption-type policy and Kerberos Armoring (FAST) checks are live-only GPO/registry reads and are skipped entirely in offline mode), `Test-ADStaleObjectDepth` (the PASSWD_NOTREQD, primaryGroupID, and duplicate-SPN checks read from `Snapshot.Users`/`Snapshot.Computers`, and the DC-count check reads from `Snapshot.DomainControllers`; the DC subnet/site registration check has no AD-schema equivalent and is skipped entirely under `-Snapshot` as of v1.19.1 - see CHANGELOG), `Test-ADRodcSecurity` (reads RODC inventory from the snapshot when supplied, but every finding depends on per-RODC `msDS-RevealedUsers`/`RevealOnDemandGroup`/`NeverRevealGroup`/`KrbTgtLink` attributes with no snapshot equivalent, so this entire test is skipped under `-Snapshot` as of v1.19.1 - see CHANGELOG), `Test-ADGroupPolicies` (over-permissioned-GPO, DC-OU-linked-weak-permissions, and unlinked-GPO checks are offline via `Snapshot.GPOs`/`.LinkedTo`, added in v1.19.0; the SYSVOL file-share ACL check has no AD-schema equivalent and is skipped entirely under `-Snapshot` as of v1.19.1 - see CHANGELOG), `Test-AuditPolicyConfiguration` (the two AdminSDHolder/domain-root SACL-presence checks are offline via `Snapshot.ACLs.*.HasAuditRules`, added in v1.19.0; the per-DC `auditpol` check has no AD-schema equivalent and is skipped entirely under `-Snapshot` as of v1.19.1 - see CHANGELOG), and `Test-ADControlPaths` (group-membership/`MemberOf` edges, DC targets, and the AdminSDHolder/domain-root ACL/ownership edges all come from the snapshot with zero live access as of v1.19.1; ACL/ownership edges for any other control-relevant object in an escalation chain have no snapshot equivalent - the snapshot intentionally does not sweep ACLs domain-wide - so those objects contribute `MemberOf` edges only, a coverage gap recorded as a single note rather than a live read per object). `Test-ADGpoDeployedSecrets` is skipped entirely under `-Snapshot` as of v1.19.1 (its whole purpose is scanning SYSVOL *file content* - GPP cpassword, deployed scripts - which has no attribute/schema representation at all; prior to v1.19.1 it still performed live SYSVOL reads even under `-Snapshot`, which is now considered a bug, not a documented exception).
-  - **Where to see this per-run, not just in this README**: every skipped sub-check above records a structured note during the run (`Add-ADOfflineSkipNote`/`Get-ADOfflineSkipNotes` in `src/Common.ps1`). A `-FromSnapshot` HTML report shows these in an **"Offline Mode Coverage Notes"** table - which sub-check, and why - so you don't have to cross-reference this README or the run log to know what a specific report does and doesn't cover. As of v1.19.1, no built-in test uses this mechanism's `StillLive` mode (a sub-check that runs anyway over a live connection) - every entry you'll see is `Skipped`, meaning `-Snapshot` performed zero live AD/network access for that run, full stop. If you're comparing a live run against a `-FromSnapshot` run for parity, check that table first: a finding-count difference that traces to a listed entry is expected coverage loss, not a bug.
-  - **Declared but effectively live-only** (declare `-Snapshot` for registry/dispatch consistency, but every check they perform is real-time machine state with no snapshot equivalent, so this entire test returns no findings when invoked with `-Snapshot`, performing zero live AD/network access): `Test-ADLegacyAuthSurface` and `Test-ADKnownDCVulnerabilities`.
-- **`Start-ADSecurityAudit -FromSnapshot <path>`** re-runs the full audit offline against a previously saved snapshot - no live AD access is performed - and produces the same JSON/HTML/CSV report and risk score as a live run.
-- **`Get-ADTier0Principal [-Snapshot $snapshot]`** returns the shared privileged/Tier-0 principal set (recursive membership of the protected groups) used across detection modules; it can be derived from a snapshot or from live AD.
+## Offline / Snapshot Mode
+
+Since v1.3.0, collection is decoupled from rule evaluation:
+
+- **`Get-ADSnapshot [-ToJson <path>]`** — one read-only pass over users, computers, groups, GPOs, key ACLs, AD CS config, DNS zones, trusts, DC inventory, and machine account quota.
+- **`Start-ADSecurityAudit -FromSnapshot <path>`** — re-runs the full audit offline, no live AD access, same report outputs as a live run.
+- **`Get-ADTier0Principal [-Snapshot $snapshot]`** — shared privileged/Tier-0 principal set, usable live or offline.
 
 ```powershell
-# Collect once, on the DC or a management host with AD access:
 Get-ADSnapshot -ToJson "C:\Snapshots\contoso_2026-07-07.json" -Verbose
-
-# Later, anywhere, without AD access:
 Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso_2026-07-07.json" -ExportPath "C:\ADReports"
 ```
 
-New audit modules going forward should accept an optional `[hashtable]$Snapshot` parameter and read from it when supplied, falling back to live queries when it's not - keeping every module runnable both live and offline.
-
-### Visual dashboard
-
-Open `ui/index.html` in a browser and either upload your generated JSON report or click **Load sample report** to explore the UI. The dashboard highlights severity distributions, privileged account counts, and provides tap-to-expand detail views with remediation references for each finding.
-
-## Multi-Domain / Forest Consolidation
-
-As of v1.17.0, `Get-ADForestConsolidation` rolls up two or more of this module's own prior exports - one `AD_Security_Audit_<timestamp>.json` + `AD_Security_Score_<timestamp>.json` pair per domain, produced by an existing `Start-ADSecurityAudit` run - into a single forest-wide view. This is an **offline, file-based post-processing feature**: it performs no additional LDAP/AD queries, requires no credentials, and needs no network access to any domain controller. It is not part of the live audit test set (`Main.ps1`'s `$allTests`) - it's a standalone command you run after one-or-more domains have already been scanned, the same way `Export-ADControlPathGraphBloodHound` is its own standalone command.
-
-It produces:
-
-- **Forest score rollup** - a forest-wide score and ANSSI maturity level using the exact same worst-category (MAX) semantics as the per-domain `Get-ADRiskScore`: the forest is only as strong as its weakest domain, not an average of all of them.
-- **Per-category heatmap** - for each audit category, the worst per-domain score across the forest, so a category that's fine in one domain doesn't get diluted into an average with a domain where it's bad.
-- **Domain comparison table** - finding counts by severity, per domain, sorted worst-first.
-- **Cross-domain trust-risk enrichment** - for every `Test-ADDomainTrusts` finding naming a target domain, if a report for that target domain is also present in the input set, the finding's `Details` are annotated with the target domain's own score/maturity (e.g. "trusts Domain B, which itself scores 85/100, Maturity 1"); a finding whose target domain isn't part of the input set renders normally, unannotated.
-- **Newly-missing domains** - pass a previous consolidated JSON via `-PriorConsolidationPath` and any domain present there but absent from the current input is flagged as "not scanned this run" instead of silently disappearing from the rollup.
-
-Domain names are resolved from (in order): an explicit `-DomainName` array matching the discovered report pairs 1:1, the per-domain subfolder a report pair lives in (`<ReportPath>\<DomainName>\AD_Security_Audit_*.json`), or a synthetic `UnknownDomain-N` label with a warning - the underlying finding schema doesn't carry a `Domain` field, since a single audit run is already scoped to one domain.
+**Want to see this in action without a real domain?** `tests/fixtures/ForcedFail-{100,60,25}pct-Snapshot.json` are three ready-made example snapshots (a fake domain, no real environment/identities) at three severity levels - 100%/60%/25% of the checks that can produce a finding offline are deliberately misconfigured. Point any of the commands in this section, or the "Recreating HTML/CSV reports from JSON" section below, at one to see real JSON/CSV/HTML output immediately:
 
 ```powershell
-# Assumes AD_Security_Audit_*.json / AD_Security_Score_*.json exports already
-# exist for each domain, e.g. one Start-ADSecurityAudit run per domain saved
-# into its own subfolder:
-#   C:\Reports\contoso.com\AD_Security_Audit_2026-07-01.json
-#   C:\Reports\child.contoso.com\AD_Security_Audit_2026-07-01.json
-
-Get-ADForestConsolidation -ReportPath "C:\Reports" -Verbose |
-    Export-ADForestConsolidationHTML -OutputPath "C:\Reports\forest-report.html"
-
-# Also persist the consolidated JSON, and compare against a prior run to
-# catch domains that weren't re-scanned this time:
-Get-ADForestConsolidation -ReportPath "C:\Reports" `
-    -PriorConsolidationPath "C:\Reports\AD_Forest_Consolidation_2026-06-01.json" `
-    -ToJson "C:\Reports\AD_Forest_Consolidation_2026-07-01.json"
+Start-ADSecurityAudit -FromSnapshot ".\tests\fixtures\ForcedFail-60pct-Snapshot.json" -ExportPath ".\out"
+# or, with the convenience wrapper (writes into tests/fixtures/output/<tier>pct/):
+.\tools\Test-ForcedFailFixture.ps1 -Tier 60
 ```
 
-Comparable in spirit to PingCastle's paid "Conso" (multi-domain consolidation) report - see the Independence note above: this is implemented independently against this project's own JSON schema, not against PingCastle's report format.
+See `tests/fixtures/README.md` for what each tier covers and a maintenance note for keeping them current as checks change.
 
-## Security Findings Categories
+<details>
+<summary><strong>Which of the 28 tests are fully vs. partially offline-capable (click to expand)</strong></summary>
 
-The audit generates findings across multiple severity levels:
+As of v1.19.0 all 27 registered tests (28 as of v1.23.6, with the addition of `Test-ADCSChaseFallback`) support `-Snapshot`, fully or partially. As of v1.19.1, `-Snapshot` means literally zero live AD/network access — every skipped sub-check records a structured note, visible in the HTML report's **"Offline Mode Coverage Notes"** table.
 
-### Critical Findings
+- **Fully offline-capable:** `Test-ADUserSecurity`, `Test-KRBTGTAccount`, `Test-ADMachineAccountQuota`, `Test-ADExchangeEscalation`, `Test-ADPrivilegedGroups`, `Test-AdminSDHolder`, `Test-ADReplicationSecurity`, `Test-ADDangerousPermissions`, `Test-LAPSDeployment`, `Test-ConstrainedDelegation`, `Test-ADDomainTrusts`, `Test-ADDomainSecurity`, `Test-ADCertificateServices`, `Test-ADDomainAdminEquivalence`.
+- **Partially offline** (a few sub-checks are genuinely real-time and get skipped under `-Snapshot`, with a logged reason each time):
+  - `Test-ADDomainHardeningFlags` — dSHeuristics/Pre-2000 membership offline; anonymous-bind probe is live-only.
+  - `Test-ADCoercionAndRelayExposure` — only the DC list comes from the snapshot; Spooler/WebClient/LDAP registry checks are live-only.
+  - `Test-ADCSExtended` — template/CA enumeration, ESC4, approval-gate, and NTAuth/AIA/Root sweep are offline; only ESC8 (a live HTTP probe) is live-only.
+  - `Test-ADCSChaseFallback` — live-only (reads `policy\EditFlags` on the CA host itself, no snapshot representation), same as ESC8.
+  - `Test-ADDnsSecurity` — DnsAdmins membership is offline; zone transfer, dynamic-update, ADIDNS, and delegation-staleness checks are live-only (not in current snapshot schema).
+  - `Test-ADKerberosHardening` — account/trust-level RC4 checks are offline; domain-wide encryption policy and FAST are live-only.
+  - `Test-ADStaleObjectDepth` — PASSWD_NOTREQD/primaryGroupID/duplicate-SPN/DC-count are offline; DC subnet/site registration is live-only.
+  - `Test-ADRodcSecurity` — entirely skipped under `-Snapshot` (every finding needs live per-RODC attributes).
+  - `Test-ADGroupPolicies` — over-permissioned/unlinked GPO checks offline; SYSVOL file-share ACL check is live-only.
+  - `Test-AuditPolicyConfiguration` — SACL-presence checks offline; per-DC `auditpol` is live-only.
+  - `Test-ADControlPaths` — membership/DC/AdminSDHolder edges offline; ACL/ownership edges for other objects in a chain aren't (recorded as a coverage note, not a live read).
+  - `Test-ADGpoDeployedSecrets` — entirely skipped under `-Snapshot` (its whole job is scanning SYSVOL file content).
+- **Declared but effectively live-only** (no findings under `-Snapshot`): `Test-ADLegacyAuthSurface`, `Test-ADKnownDCVulnerabilities`.
+
+</details>
+
+## Multi-Domain / Forest Targeting
+
+In a multi-domain forest, an AD query without an explicit `-Server` resolves against the *auditor's own logon domain*, not necessarily the domain you mean to audit — this can silently scope results to the wrong domain (most visibly `Test-ADMachineAccountQuota`).
+
+**Default:** if `-Server` is omitted, it now defaults to your own domain (`$env:USERDNSDOMAIN`) — no parameter needed for the common case. Whatever `-Server` resolves to is then further resolved to that domain's **PDC Emulator**, so every query in the run hits the same, well-defined DC (visible in `-Verbose` as `resolved '...' to its PDC Emulator '...'`).
+
+```powershell
+Start-ADSecurityAudit -Server domainb.corp.com -ExportPath "C:\ADReports"
+# or target one specific DC directly (honored exactly as given):
+Start-ADSecurityAudit -Server dc01.domainb.corp.com -ExportPath "C:\ADReports"
+```
+
+Also available standalone: `Test-ADMachineAccountQuota -Server ...`, `Get-ADSnapshot -Server ...`, `Test-ADUserSecurity -Server ...`, `Get-ADPrivilegedUsers -Server ...`, `Test-ADPrivilegedGroups -Server ...`, `Test-ADDomainAdminEquivalence -Server ...`, `Test-ADRodcSecurity -Server ...`. Ignored (with a warning) alongside `-FromSnapshot`, since offline mode makes no live queries at all.
+
+**Known limitation:** `runas /netonly` doesn't change `$env:USERDNSDOMAIN` — pass `-Server` explicitly in that case.
+
+<details>
+<summary><strong>What the -Server fix actually touches under the hood (click to expand)</strong></summary>
+
+This override applies everywhere the module talks to AD, including several paths that don't go through normal `Get-AD*` cmdlets and would otherwise silently ignore it or query the wrong scope:
+
+- **GroupPolicy module** (`Get-GPO`, `Get-GPInheritance`, `Get-GPPermission`, `Get-GPRegistryValue`) is a separate PowerShell module — the `Get-AD*` wildcard never covered it, so GPO-derived findings were previously unscoped by `-Server`. Fixed by installing the equivalent `Get-GP*`/`Set-GP*` wildcards.
+- **Certificate template/CA ACL reads** used `Get-Acl -Path "AD:$dn"`, which has no `-Server` parameter — now uses `Get-ADObject -Properties nTSecurityDescriptor` instead, same as `Test-AdminSDHolder`.
+- **SYSVOL UNC paths** were built from the bare domain name, resolving via DFS referral based on the *calling machine's* site — now built with the resolved `-Server` directly in the path.
+- **Raw ADSI RootDSE binds** (`[ADSI]"LDAP://RootDSE"`) are invisible to the override — now go through `Get-ADRootDSE`.
+- **Live-probe checks** calling `Get-ADDomainController -Discover` directly threw and silently skipped under an active override — now resolve against the override directly.
+- **Enterprise/Schema Admins checks** only exist in the forest root — now re-queries the forest root when a child-domain-scoped lookup comes back empty.
+- **Per-DC enumeration** used a bare `Get-ADDomainController -Filter *`, which queries the *forest-wide* Sites container regardless of `-Server` — the actual root cause of most "wrong domain" reports. Fixed via a new `Get-ADSecurityAuditDomainController` helper that filters to DCs whose `.Domain` matches the resolved target.
+
+**Since corrected further:** a specific DC passed to `-Server` is now honored exactly as given (never silently promoted to the PDC Emulator), and per-DC probes scope to only that named DC.
+
+</details>
+
+## Forest Consolidation, Retesting & Trends
+
+Three offline, file-based post-processing features — none perform additional AD queries, and none are part of the live audit test set.
+
+<details>
+<summary><strong>Forest Consolidation — Get-ADForestConsolidation (since v1.17.0)</strong></summary>
+
+Rolls up two or more prior per-domain JSON exports into one forest-wide view:
+
+- **Forest score rollup** — worst-domain (MAX) semantics, same as per-domain scoring.
+- **Per-category heatmap** — worst per-domain score per category.
+- **Domain comparison table** — finding counts by severity, worst-first, plus a **Coverage column** (since v1.24.0) flagging any domain with untested (failed/excluded) checks or no coverage data at all — a domain that looks "cleaner" purely from checking less is called out rather than mistaken for genuinely better posture.
+- **Cross-domain trust-risk enrichment** — annotates trust findings with the target domain's own score, when scanned.
+- **Newly-missing domains** — via `-PriorConsolidationPath`, flags domains scanned before but absent this run.
+
+```powershell
+Get-ADForestConsolidation -ReportPath "C:\Reports" -Verbose |
+    Export-ADForestConsolidationHTML -OutputPath "C:\Reports\forest-report.html"
+```
+
+Comparable in spirit to PingCastle's paid "Conso" report — implemented independently against this project's own schema.
+
+</details>
+
+<details>
+<summary><strong>Retest Comparison — Get-ADRetestComparison (since v1.21.0)</strong></summary>
+
+Compares a pre-remediation baseline against a post-remediation retest of the same domain:
+
+- **Score & maturity delta** — both runs recomputed under the *current* scoring table, so version drift doesn't distort the delta.
+- **Per-category delta**.
+- **New / Resolved / Unconfirmed / Still Open / Changed findings** — matched by Category+Issue+AffectedObject (not just Category+Issue, so partial remediation shows correctly). Since v1.24.0, a finding that disappears from the retest is only counted as **Resolved** if the check that would have found it is confirmed to have actually run; if that check failed or was excluded in the retest, the finding lands in a separate **Unconfirmed** bucket instead — its disappearance is not evidence of remediation, just of not being re-checked.
+- **`Export-ADRetestComparisonHTML`** — togglable Current State / Delta View, plus an Unconfirmed section and Coverage Caveats box when relevant.
+
+```powershell
+Get-ADRetestComparison -BaselinePath "C:\Reports\Pre" -RetestPath "C:\Reports\Post" -Verbose |
+    Export-ADRetestComparisonHTML -OutputPath "C:\Reports\retest-report.html"
+```
+
+`-BaselinePath`/`-RetestPath` accept a file or a folder (newest export used).
+
+</details>
+
+<details>
+<summary><strong>Maturity Trend History — Get-ADMaturityTrend (since v1.22.0)</strong></summary>
+
+Answers "what's the trajectory over N runs" rather than a two-point comparison:
+
+- **Score/maturity over time** — chronological series from every score sidecar under `-ReportPath`.
+- **Per-category trend** — Improving / Flat / Regressing per category.
+- **`Export-ADMaturityTrendHTML`** — inline-SVG line chart, per-category sparklines, and a table showing module version per run (so a score jump can be attributed to a tool change vs. real posture change), plus a **Coverage column** (since v1.24.0) flagging any run with untested (failed/excluded) checks or no coverage data at all — a score that looks like improvement purely from checking less is called out rather than read as genuine progress.
+
+Unlike Retest Comparison, this does **not** recompute scores under the current table — it shows the historical record exactly as originally scored.
+
+```powershell
+Get-ADMaturityTrend -ReportPath "C:\Reports\contoso.com" -Verbose |
+    Export-ADMaturityTrendHTML -OutputPath "C:\Reports\maturity-trend.html"
+```
+
+With only one sidecar, no trend is computed (`RunCount = 1`, explanatory message, no error).
+
+</details>
+
+<details>
+<summary><strong>Recreating HTML/CSV reports from JSON, with no re-scan</strong></summary>
+
+- **`Export-ADSecurityReportHTMLFromJson`** — rebuilds the main audit HTML report from an `AD_Security_Audit_<timestamp>.json` export alone. Score/maturity/MITRE are recomputed fresh. Gaps it *can't* recover (never stored in that JSON): Domain, Duration, RunMode, Offline Mode Coverage Notes, and the Privileged Users section — pass what you know via parameters, or accept the placeholders. Findings missing supporting information (`EstimatedEffort`/`KnownRisks`/`BackupRollback`/`OperationalNotes`, or MITRE/ANSSI/Weight metadata) because the export predates those fields are backfilled with current guidance where available (`Merge-ADFindingNarrativeGaps`), clearly labeled as such — never silently presented as if it were part of the original run.
+- **`Export-ADSecurityReportCSVFromJson`** (new in v1.24.0) — the CSV equivalent: rebuilds the findings CSV (and, if the sidecar exists, a coverage CSV) from the same JSON export, using the exact same column-construction function as the live export so the two can't drift apart.
+- Both rebuild functions accept a folder for `-OutputPath` (not just an exact file path) - an auto-named `AD_Security_Audit_<timestamp>-recreated.<ext>` is created inside it, so pointing this at "the reports folder" just works without constructing a filename yourself, and without risk of overwriting the original same-timestamp report.
+- Both rebuild paths pick up a sibling `AD_Security_TestCoverage_<timestamp>.json`, if present, to populate the Test Coverage section/CSV; an export that predates coverage tracking gets an explicit note instead of a silently-missing section.
+- **Retest comparison JSON** round-trips the same way: reload with `ConvertFrom-Json` and pipe straight into `Export-ADRetestComparisonHTML` — no need to re-run the comparison. The same idiom works for Forest Consolidation and Maturity Trend.
+
+```powershell
+# HTML - explicit findings file, explicit output file:
+Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00.json" `
+    -OutputPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00-recreated.html" `
+    -Domain "contoso.com"
+
+# HTML - folder form for both: picks the newest AD_Security_Audit_*.json in
+# the folder, and auto-names the output file inside that same folder
+# (never overwrites the original same-timestamp report):
+Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports"
+
+# CSV - same two forms, same auto-naming convention. Also writes a
+# "-coverage.csv" alongside it automatically if a coverage sidecar exists:
+Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00.json" `
+    -OutputPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00-recreated.csv"
+
+Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports"
+```
+
+**No JSON export handy to try this with?** Generate one first from a bundled example fixture, no live AD needed:
+
+```powershell
+# 1. Produce a real AD_Security_Audit_*.json (plus CSV/HTML) from an example fixture:
+Start-ADSecurityAudit -FromSnapshot ".\tests\fixtures\ForcedFail-60pct-Snapshot.json" -ExportPath ".\out"
+
+# 2. Recreate the HTML and CSV from that JSON alone, as if starting fresh from it:
+Export-ADSecurityReportHTMLFromJson -FindingsPath ".\out" -OutputPath ".\out"
+Export-ADSecurityReportCSVFromJson  -FindingsPath ".\out" -OutputPath ".\out"
+```
+
+</details>
+
+## Exception / Remediation-State Tracking
+
+Since v1.23.0, a small file-based store lets you record "we've accepted this risk" so a persisting finding doesn't look identical to a neglected one on retest. Purely additive — never inferred automatically, and doesn't change scoring.
+
+- **`Set-ADRemediationState -Key <k> -Status <Open|AcceptedRisk|InProgress|Remediated> [-Owner] [-Note] -StatePath <path>`**
+- **`Get-ADRemediationState -StatePath <path>`**
+- **`Get-ADRetestComparison -RemediationStatePath <path>`** — annotates Still Open / Changed findings with the tracked state.
+- **`Export-ADRetestComparisonHTML`** — badges each Still Open finding by status.
+
+```powershell
+$key = Get-ADFindingMatchKey -Category 'Certificate Services' `
+    -Issue 'Enrollment Agent Template with Low-Privilege Enrollment (ESC3)' `
+    -AffectedObject 'CN=LegacyEnroll,CN=Certificate Templates,...'
+
+Set-ADRemediationState -Key $key -Status AcceptedRisk -Owner 'jane.doe@contoso.com' `
+    -Note 'Legacy app dependency, tracked in JIRA-1234, revisit Q3 2027.' `
+    -StatePath 'C:\Reports\AD_Remediation_State.json'
+```
+
+An `AcceptedRisk` finding still counts toward the risk score — this is a reporting annotation, not a scoring exclusion.
+
+## Findings by Severity
+
+<details>
+<summary><strong>Critical</strong></summary>
+
 - Exploitable AD CS certificate templates
 - CA web enrollment reachable over HTTP without EPA (ESC8)
+- CA chase-fallback enabled (CVE-2026-54121 "Certighost" exposure)
+- Non-standard permissions on the Schema or Configuration naming context head object
 - KRBTGT password not rotated (Golden Ticket risk)
 - Unconstrained delegation on user accounts
 - DCSync permissions granted to non-admin users
 - Domain trusts without SID filtering
 
-### High Findings
-- Weak password policies
-- Accounts with password never expires
+</details>
+
+<details>
+<summary><strong>High</strong></summary>
+
+- Weak password policies; accounts with password never expires
 - Service accounts with SPNs using weak encryption
 - Missing LAPS deployment on computers
 - Disabled critical audit policies
 - Constrained delegation with protocol transition
 - Machine Account Quota left at the unrestricted default of 10
-- Dangerous dsHeuristics flags (anonymous access, List Object mode, AdminSDHolder exclusion mask weakening)
-- Broad membership (Authenticated Users/Everyone/ANONYMOUS LOGON) in Pre-Windows 2000 Compatible Access
-- Certificate templates with weak ACLs granting write access to low-privileged principals (ESC4)
-- Certificate templates allowing high-risk enrollment without manager approval
+- Dangerous `dsHeuristics` flags; broad membership in Pre-Windows 2000 Compatible Access
+- Certificate templates with weak ACLs (ESC4) or missing manager approval
 - ROCA-vulnerable (CVE-2017-15361) certificate keys
-- Non-default membership in the DnsAdmins group (DNS server plugin-DLL code-execution path)
-- AD-integrated DNS zones granting Authenticated Users/Everyone/ANONYMOUS LOGON broad CreateChild rights (ADIDNS spoofing)
-- SMBv1 enabled or not disabled by policy
-- SMB signing not required
-- LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3)
-- WSUS delivered over HTTP (package-injection MITM surface)
+- Non-default DnsAdmins membership; AD-integrated DNS zones with broad CreateChild rights (ADIDNS spoofing)
+- SMBv1 enabled/not disabled by policy; SMB signing not required
+- LM/NTLMv1 permitted (`LmCompatibilityLevel` < 3); WSUS delivered over HTTP
 
-### Medium Findings
-- Nested groups in privileged groups
-- Stale privileged accounts
+</details>
+
+<details>
+<summary><strong>Medium</strong></summary>
+
+- Nested groups in privileged groups; stale privileged accounts
 - Missing selective authentication on trusts
 - Low LAPS coverage percentage
 - Resource-based constrained delegation configurations
 - Non-zero (but reduced) Machine Account Quota
-- Anonymous LDAP/RootDSE binding permitted (null-session indicator)
-- Weak signature algorithms (MD2/MD4/MD5/SHA0/SHA1) or undersized RSA keys in the PKI trust store
-- AD-integrated DNS zones allowing transfer to any server or any NS-listed server
-- AD-integrated DNS zones permitting insecure (nonsecure) dynamic updates
+- Anonymous LDAP/RootDSE binding; null-session pipe/share access permitted
+- Weak signature algorithms or undersized RSA keys in the PKI trust store
+- AD-integrated DNS zones allowing broad transfer or insecure dynamic updates
 - LLMNR not disabled by policy
+- Outdated forest functional level
 
-### Low Findings
+</details>
+
+<details>
+<summary><strong>Low</strong></summary>
+
 - Informational findings about domain configuration
 - Baseline security posture indicators
+- Forest tombstone lifetime below 180 days
+
+</details>
 
 ## Report Interpretation
 
-### HTML Report Structure
-- **Executive Summary**: Overview of total findings by severity, with clickable cards linking straight to each severity section
-- **Risk Score & Maturity**: Global risk-score gauge, ANSSI 1-5 maturity ladder, per-category risk bars, and a MITRE ATT&CK technique summary
-- **Critical Issues**: Immediate action required
-- **Detailed Findings**: Collapsed by default (click to expand; each severity section has Expand All/Collapse All). Findings that fire once per affected object are consolidated into a single entry per Category+Issue - the shared Impact/Remediation/MITRE/ANSSI tags are shown once, and every affected object is listed underneath with its own specific detail and detection time, rather than repeating the whole finding once per object
-- **Affected Objects**: Every user, group, computer, or object flagged by a finding, listed under that finding with its own specific description
+**HTML report structure:** Executive Summary (clickable severity cards) → Risk Score & Maturity (gauge, ANSSI ladder, category bars, MITRE summary) → Critical Issues → Detailed Findings (collapsed by default, one entry per Category+Issue with every affected object listed underneath) → Affected Objects. When applicable, a **Run Scope Information** box appears near the top (e.g. `-Server` named a specific DC that isn't the domain's PDC Emulator) alongside the offline-mode boxes for `-FromSnapshot` runs, and a **Test Coverage** box (collapsed by default, click to expand the full per-check list — see [Test Coverage](#test-coverage)) when coverage data is available for the run.
 
-### Remediation Guidance
-Each finding includes:
-- **Description**: What the vulnerability is
-- **Impact**: Why it matters for security
-- **Affected Objects**: Specific accounts, groups, or systems
-- **Remediation**: Step-by-step fix instructions
+**Each finding includes:** Description, Impact, Affected Objects, and step-by-step Remediation.
 
-## Common Security Issues Detected
+<details>
+<summary><strong>Full breakdown of checks by category (click to expand)</strong></summary>
 
-### Certificate Services Vulnerabilities
-- Certificate templates allowing SAN specification (ESC1)
-- Templates with overly permissive enrollment rights (ESC2)
-- Enrollment agent templates (ESC3)
-- CA permissions allowing unauthorized certificate issuance (ESC7)
-- Certificate templates with weak ACLs (Write/WriteDacl/WriteOwner/GenericAll/GenericWrite for low-privileged principals) (ESC4)
-- Templates allowing enrollee-supplied subject/SAN or an Any-Purpose EKU with no manager-approval gate
-- CA web enrollment reachable over HTTP without Extended Protection for Authentication (ESC8)
-- ROCA-vulnerable (CVE-2017-15361) RSA keys and weak signature algorithms/RSA key sizes across the CA certificates and the NTAuth/AIA/Root store
+**Certificate Services:** ESC1/ESC2/ESC3/ESC7/ESC4/ESC8, missing manager-approval gates, ROCA-vulnerable keys, weak signature/RSA sizes across CA + trust store, CA chase-fallback exposure (CVE-2026-54121 "Certighost").
 
-### Kerberos Security
-- KRBTGT password older than 180 days
-- Accounts with unconstrained delegation
-- Accounts with constrained delegation and protocol transition
-- Service accounts with weak Kerberos encryption (RC4)
+**Kerberos Security:** KRBTGT age, unconstrained/constrained+protocol-transition delegation, RC4 encryption.
 
-### Trust Relationships
-- Trusts without SID filtering (allows SID history attacks)
-- Bidirectional trusts increasing attack surface
-- Missing selective authentication on external trusts
-- Stale or misconfigured trust relationships
+**Trust Relationships:** missing SID filtering, bidirectional trusts, missing selective auth, stale/misconfigured trusts.
 
-### Local Administrator Security
-- Computers without LAPS protection
-- Static local admin passwords enabling lateral movement
-- Missing LAPS schema extensions
+**Local Administrator Security:** missing LAPS, static local admin passwords, missing schema extensions.
 
-### Machine Account Quota
-- `ms-DS-MachineAccountQuota` left at the unmodified default of 10
-- Any non-zero quota allowing unprivileged users to self-service-join computer accounts (RBCD / SamAccountName-spoofing foothold)
+**Machine Account Quota:** unmodified default of 10; any non-zero value enabling self-service computer joins.
 
-### Domain Hardening Flags
-- Dangerous `dSHeuristics` positional flags: anonymous access, List Object security mode, or AdminSDHolder exclusion mask weakening
-- Broad principals (Authenticated Users, Everyone, ANONYMOUS LOGON) in the built-in Pre-Windows 2000 Compatible Access group
-- Anonymous LDAP/RootDSE binding permitted (a null-session indicator)
+**Domain Hardening Flags:** dangerous `dSHeuristics`, broad Pre-2000 Compatible Access membership, anonymous LDAP bind, null-session pipe/share access.
 
-### Coercion & NTLM Relay Exposure
-- Print Spooler service running on a Domain Controller (PrinterBug coercion surface)
-- WebClient (WebDAV) service running on a Domain Controller (WebDAV coercion surface)
-- LDAP signing not enforced (`LDAPServerIntegrity` not set to require signing)
-- LDAP channel binding / Extended Protection for Authentication not required (`LdapEnforceChannelBinding` not set to `2`)
+**Coercion & NTLM Relay:** Print Spooler/WebClient running on a DC, LDAP signing/channel binding not enforced.
 
-### AD-Integrated DNS Security
-- Non-default members in the built-in `DnsAdmins` group (a direct path to Domain-Controller code execution via `ServerLevelPluginDll`)
-- AD-integrated zones configured to allow zone transfer to any server or any server listed as an NS record, instead of an explicit secondary-server list
-- AD-integrated zones permitting nonsecure (unauthenticated) dynamic DNS updates
-- AD-integrated zone objects granting Authenticated Users, Everyone, or ANONYMOUS LOGON the right to create child objects (ADIDNS spoofing/MITM surface)
+**AD-Integrated DNS:** non-default DnsAdmins members, open zone transfer, insecure dynamic updates, broad CreateChild rights, stale/dangling delegations (subdomain takeover).
 
-### Legacy Auth & Name-Poisoning Surface
-- SMBv1 permitted (enabled or not explicitly disabled by policy)
-- SMB signing not required (`RequireSecuritySignature` not enforced)
-- LM/NTLMv1 authentication permitted (`LmCompatibilityLevel` < 3)
-- LLMNR not disabled by policy (no confirmed GPO sets `EnableMulticast` to 0)
-- WSUS delivering updates over unencrypted HTTP (`WUServer` set to an `http://` URL - a known package-injection MITM vector)
+**Legacy Auth & Name-Poisoning:** SMBv1, SMB signing, LM/NTLMv1, LLMNR, WSUS-over-HTTP.
 
-### Kerberos Hardening Depth
-- RC4-HMAC still permitted for Tier-0 privileged accounts or krbtgt (`msDS-SupportedEncryptionTypes` unset or with the RC4 bit set)
-- Trusts missing the `TRUST_USES_AES_KEYS` attribute (RC4 remains usable across that trust)
-- Domain-wide "Configure encryption types allowed for Kerberos" GPO/registry policy unset or still permitting RC4/DES
-- Kerberos Armoring (FAST) not enabled on the KDC and/or client side (`EnableCbacAndArmor` not configured)
-- Cross-trust TGT delegation enabled (`trustAttributes` `CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION` flag set), allowing a client's TGT to be forwarded across the trust boundary
+**Kerberos Hardening Depth:** RC4 for Tier-0/krbtgt, trusts missing AES-only, domain-wide encryption policy, Kerberos Armoring (FAST), cross-trust TGT delegation.
 
-### Stale-Object & Hygiene Depth
-- Accounts with the PASSWD_NOTREQD flag set (`userAccountControl` 0x0020), which waives the domain password policy for that account
-- Non-default `primaryGroupID` on a user or computer object, a technique for hiding effective privileged membership from memberOf-based reviews (RID 516 - Domain Controllers - is legitimate only for objects that are genuinely registered as DCs)
-- Duplicate Service Principal Names registered on more than one account (reports every holder)
-- Domain Controllers whose IPv4 address is not covered by any AD Sites & Services subnet object
-- Fewer than two Domain Controllers in the domain (no redundancy)
+**Stale-Object & Hygiene Depth:** PASSWD_NOTREQD accounts, non-default `primaryGroupID`, duplicate SPNs, DCs missing subnet coverage, DC count < 2.
 
-### GPO-Deployed Secrets & Insecure Settings
-- Group Policy Preferences (GPP) `cpassword` values left over from MS14-025 in `Groups.xml`, `Services.xml`, `ScheduledTasks.xml`, `Drives.xml`, `DataSources.xml`, or `Printers.xml` - flagged by presence and file path only, never decrypted
-- Credential-flavoured patterns (`net use /user:`, `runas /savecred`, `ConvertTo-SecureString`, etc.) embedded in logon/startup scripts deployed via GPO - reported by file and line number only, never the matched line's content
-- Insecure settings deployed via GPO: Windows Firewall disabled for a profile, file extensions hidden by policy, RDP Network Level Authentication disabled, or an insecure (native) RDP security layer
+**GPO-Deployed Secrets:** leftover GPP `cpassword`, credential patterns in deployed scripts, insecure GPO settings, User Rights Assignments granting sensitive logon rights to broad principals.
 
-### Known DC Vulnerabilities by Patch/Build
-- ZeroLogon (CVE-2020-1472) - no OS install date or installed hotfix on or after the August 11, 2020 fix
-- MS17-010/EternalBlue - no patch evidence on or after the March 14, 2017 fix
-- MS14-068 - no patch evidence on or after the November 18, 2014 out-of-band fix
-- PrintNightmare (CVE-2021-34527) - Print Spooler running AND no patch evidence on or after the July 6, 2021 fix
-- CVE-2026-41089 (Netlogon RCE, CVSS 9.8, unauthenticated) - no patch evidence on or after the May 12, 2026 fix; actively exploited in the wild as of June 2026
-- BadSuccessor / dMSA Escalation Exposure - Domain Controllers running Windows Server 2025 (build 26100+), where the delegated Managed Service Account feature requires delegation/ACL review. As of v1.18.0, each affected DC is further classified Patched/Unpatched/Unknown for CVE-2025-53779 via a per-DC UBR (Update Build Revision, remote registry read) check against build 26100.4946 - the finding continues to fire even for confirmed-patched DCs (at a reduced severity when every affected DC is patched) since a mutually-paired dMSA/target relationship can still be abused if an attacker controls both sides
-- Every determination comes from OS build/version, installed hotfix level (`Get-HotFix`), and service state - never from exploitation, authentication bypass, or PoC traffic
+**Known DC Vulnerabilities:** ZeroLogon, EternalBlue, MS14-068, PrintNightmare, CVE-2026-41089, BadSuccessor/dMSA (per-DC CVE-2025-53779 classification) — all from build/hotfix level, never exploitation.
 
-### Exchange-in-AD Privilege Escalation
-- Exchange Group Holds WriteDACL on Domain Object - Exchange Windows Permissions / Exchange Trusted Subsystem / Organization Management (or similar Exchange principal) holding GenericAll, WriteDacl, or WriteOwner on the domain head object
-- Exchange-Related AdminSDHolder ACE - the same Exchange principals holding those rights on `CN=AdminSDHolder,CN=System,<domain>`, propagated to every protected (Tier-0) account/group by SDProp
-- Fires on residual ACEs even if Exchange has been fully decommissioned from the forest - the ACE, not the presence of Exchange servers, is what's evaluated
-- Exact affected principal, right, and target object are recorded in `Details`
+**Exchange-in-AD Escalation:** Exchange principals holding dangerous rights on the domain object or AdminSDHolder, including residual ACEs after decommission.
 
-### Read-Only Domain Controller Security Posture
-- Privileged Account Revealed to RODC - a Tier-0 principal (per `Get-ADTier0Principal`) appears in an RODC's `msDS-RevealedUsers` (secrets already cached) or its `msDS-RevealOnDemandGroup` allowed list
-- RODC Password Replication Policy Misconfigured - the allowed replication group is too broad, or the `msDS-NeverRevealGroup` denied list is missing expected privileged groups
-- Orphaned RODC krbtgt Account - a `krbtgt_*` account remains after the corresponding RODC computer object no longer exists
-- Clean exit when the domain has no RODCs; every determination is a read of RODC attributes and the krbtgt account inventory, never exploitation, coercion, relay, or PoC traffic
+**RODC Security Posture:** cached/revealable Tier-0 secrets, overly broad replication policy, orphaned krbtgt accounts.
 
-### Attack-Path Graph & Indirect-Privilege (Control-Path) Findings
-- Indirect Control Path to Tier-0 Object - a non-privileged principal can reach a Tier-0 object (Domain Admins/Enterprise Admins/etc., Domain Controllers, AdminSDHolder, or the domain head) through a chain of group-membership, dangerous-ACE, and/or ownership hops, with the full principal→…→target hop chain recorded in `Details.HopChain`
-- Everyone/Authenticated Users on a Control Path to Tier-0 - same as above, but a broad principal (Everyone, Authenticated Users, Domain Users, or ANONYMOUS LOGON) sits somewhere on the path; always Critical regardless of hop count
-- Owner of Tier-0 Object is Non-Privileged - a Tier-0 object is owned by a principal that is not itself Tier-0, which grants that owner implicit WriteDacl-equivalent control (an owner can always rewrite the DACL) regardless of the current ACL contents
-- Reuses the existing dangerous-rights tables (`GenericAll`/`WriteDacl`/`WriteOwner`/`GenericWrite`/`AllExtendedRights`, the dangerous extended-rights and property-write GUID tables, including the DS-Replication set) and `Get-ADTier0Principal` rather than re-deriving its own definitions
-- `Get-ADControlPathGraph` builds the underlying directed edge graph (exposed separately for scripting/inspection); `Test-ADControlPaths` runs the reachability analysis and emits findings; `Export-ADControlPathGraphBloodHound` optionally writes the same graph out as BloodHound-compatible generic-edge JSON for cross-checking against a BloodHound collection of the same environment
-- Detection only - every edge comes from a read of `nTSecurityDescriptor`, group membership, or object ownership; ACL/ownership edges are scoped to the Tier-0 target set plus every group on a chain toward it, not a sweep of the entire domain. No exploitation, coercion, relay, ticket forging, or PoC traffic is ever sent to any host
+**Attack-Path Graph:** indirect control paths to Tier-0 objects via group membership/ACE/ownership chains; broad principals on any path are always Critical; non-Tier-0 ownership of a Tier-0 object; optional BloodHound export.
 
-### Monitoring & Logging
-- Disabled audit policies for critical events
-- Missing SACLs on AdminSDHolder container
-- Insufficient logging for privilege escalation detection
+**Monitoring & Logging:** disabled audit policies, missing SACLs on AdminSDHolder, insufficient privilege-escalation logging.
+
+</details>
 
 ## Troubleshooting
 
-### Common Issues
+<details>
+<summary><strong>Multi-domain data looks wrong</strong></summary>
 
-**Module Import Failure**
+If `-Server` is set but data still looks like it's coming from the wrong domain:
 
-# Ensure RSAT and Group Policy modules are installed
+1. **Update first** — the `Get-ADDomainController -Filter *` and GroupPolicy-module gaps (see [Multi-Domain / Forest Targeting](#multi-domain--forest-targeting)) were the most common causes and are fixed in current versions.
+2. **Confirm the override took effect** — run with `-Verbose` and check for `Server override: forcing all AD queries to target '<value>'`.
+3. **Pass a specific DC FQDN**, not just the domain name — a bare domain name depends on DNS-based locator resolution, which can silently fall back to the wrong domain if conditional forwarders aren't configured.
+4. **Confirm `-Server` is on the same invocation** producing the report — it doesn't persist across separate commands, and calling a `Test-AD*` function directly (outside `Start-ADSecurityAudit`) has no `-Server` of its own except `Test-ADMachineAccountQuota`/`Get-ADSnapshot`.
+5. **Check "Cross-Domain Privileged Group Membership"** if the mismatch is in group members rather than DCs — nested/universal groups can legitimately span domains.
+6. If using `runas /netonly`, pass `-Server` explicitly (see Known Limitation above).
 
-```
+</details>
+
+**Module import failure:**
+```powershell
 Get-WindowsCapability -Name RSAT.ActiveDirectory* -Online | Add-WindowsCapability -Online
 Get-WindowsCapability -Name Rsat.GroupPolicy.Management.Tools* -Online | Add-WindowsCapability -Online
 ```
 
-**Permission Denied**
-- Run PowerShell as Administrator
-- Verify account has Domain Admin or equivalent permissions
-- Check network connectivity to Domain Controllers
+**Permission denied:** run PowerShell as Administrator; verify Domain Admin (or equivalent); check DC connectivity.
 
-**Certificate Services Checks Failing**
-- Requires AD CS to be installed in the environment
-- Needs permissions to query Certificate Authority
-- Gracefully skips if AD CS is not present
+**Certificate Services checks failing:** requires AD CS installed and CA query permissions — gracefully skips if not present. If you see `CA 'Enrollment Services' has no dNSHostName; skipping ESC8 probe`, that's a fixed bug (an old version matched the `CN=Enrollment Services` container itself, not your real CA) — your actual CA is unaffected; update to clear it.
 
-**Incomplete LAPS Results**
-- Verify LAPS schema extensions are installed
-- Check permissions to read ms-Mcs-AdmPwd attribute
-- Confirms LAPS GPO deployment
+**Incomplete LAPS results:** verify schema extensions, permission to read `ms-Mcs-AdmPwd`, and LAPS GPO deployment.
 
 ## Security Best Practices
 
-Based on audit findings, implement these security controls:
-
-1. **Rotate KRBTGT Password**: Every 180 days (twice with 24-hour intervals)
-2. **Deploy LAPS**: Achieve 100% coverage on all workstations and servers
-3. **Review Certificate Templates**: Remove unnecessary templates, restrict enrollment rights
-4. **Enable Audit Policies**: Configure advanced audit policies for AD object access
-5. **Harden Trust Relationships**: Enable SID filtering, use selective authentication
-6. **Remove Unconstrained Delegation**: Migrate to constrained or resource-based delegation
-7. **Implement Tiered Access Model**: Separate Tier 0 administrative accounts
-8. **Regular Audits**: Run this script monthly to track security posture improvements
+1. Rotate KRBTGT password every 180 days (twice, 24 hours apart)
+2. Deploy LAPS to 100% coverage
+3. Review certificate templates — remove unnecessary ones, restrict enrollment
+4. Enable advanced audit policies for AD object access
+5. Harden trusts — SID filtering, selective authentication
+6. Remove unconstrained delegation — migrate to constrained/RBCD
+7. Implement a tiered access model, separating Tier-0 accounts
+8. Run this audit monthly to track posture over time
 
 ## Automation & Integration
 
-### Scheduled Audits
-Create a scheduled task to run audits automatically:
-
-powershell
+**Scheduled task:**
+```powershell
 $action = New-ScheduledTaskAction -Execute "PowerShell.exe" `
     -Argument "-NoProfile -ExecutionPolicy Bypass -Command `"Import-Module ADSecurityAudit; Start-ADSecurityAudit -OutputPath 'C:\ADReports'`""
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 2am
 Register-ScheduledTask -TaskName "AD Security Audit" -Action $action -Trigger $trigger -RunLevel Highest
+```
 
-
-### SIEM Integration
-Import JSON reports into your SIEM for correlation and alerting:
-powershell
-# Example: Send findings to Splunk HEC
+**SIEM integration** (e.g. Splunk HEC):
+```powershell
 $findings = Get-Content "C:\ADReports\AD_Security_Findings_*.json" | ConvertFrom-Json
-foreach ($finding in $findings) {
-    Send-SplunkEvent -Finding $finding
-}
+foreach ($finding in $findings) { Send-SplunkEvent -Finding $finding }
+```
 
-## Visual dashboard for JSON outputs
+**Dashboard for JSON outputs:**
+```bash
+cd ui
+python3 -m http.server 8000
+```
+Open `http://localhost:8000`, then upload a JSON file, paste JSON, load from a URL, or use the bundled sample.
 
-An interactive, responsive frontend is available in `ui/` to explore audit JSON exports without additional tooling.
+## Contributing / License / Disclaimer
 
-1. Start a simple static server (prevents browser CORS blocks):
-   ```bash
-   cd ui
-   python3 -m http.server 8000
-   ```
-2. Open `http://localhost:8000` in your browser.
-3. Choose an ingestion method:
-   - **Upload audit JSON** directly from disk.
-   - **Load from URL** by pasting a reachable HTTPS link to your exported JSON.
-   - **Paste JSON** into the provided text area (no files leave your browser).
-   - Or choose **Use bundled sample** to preview the experience.
+**Contributing:** contributions welcome.
 
-The interface highlights Computer Account Delegation, Fine-Grained Password Policies, DNS Security Configuration, and other categories with severity-aware tiles, progress indicators, and remediation context.
+**License:** MIT — use at your own risk, test in non-production first.
 
-## Contributing
-
-Contributions are welcome! Seriously, I'm good at this stuff, but I know others are better. 
-
-## License
-
-MIT License - Use at your own risk. Always test in non-production environments first.
-
-## Disclaimer
-
-This tool performs read-only operations but requires elevated privileges. 
-
-Always:
-- Review the code before running in production
-- Test in a lab environment first
-- Ensure you have proper authorization
-- Backup your environment before making remediation changes
-- Understand the impact of recommended remediations
+**Disclaimer:** this tool is read-only but requires elevated privileges. Always review the code before running in production, test in a lab first, confirm authorization, back up before remediating, and understand each remediation's impact.
 
 ## Version History
 
-Full details for every release live in [CHANGELOG.md](./CHANGELOG.md). Recent highlights:
+Full details in [CHANGELOG.md](./CHANGELOG.md). Recent highlights:
 
-- **v1.20.3** - Fixed a real, user-reported dashboard bug: the finding-detail modal rendered open and empty on every page load (and its close button appeared broken) because `.modal { display: grid; }` had the same CSS specificity as the browser's built-in `[hidden]` rule and was winning the cascade regardless of the `hidden` attribute - a pre-existing bug that predates v1.20.0 and went unnoticed since nothing in earlier testing loaded the page without deliberately opening the modal first. Added an explicit `.modal[hidden] { display: none; }` override. Every other `hidden`-toggled element in the dashboard was audited and does not share this problem.
-- **v1.20.2** - Bug-fix release found via review of a real generated report. Fixed the "Risk by Category" chart rendering with oversized text - its SVG lacked a `max-width` rule and was stretching to the full container width, inflating its 700-unit viewBox by ~1.9x; capped it the same way the score gauge and control-path diagram already were. Also unified all code/monospace styling (hop-chain text, affected-object references) onto one `--font-mono` token and two shared classes (`.code-block`, `.meta-code`) across both the static report and the dashboard, replacing a mix of ad-hoc inline styles and inconsistent `em`-relative sizing.
-- **v1.20.1** - Follow-up polish on the v1.20.0 visual overhaul: removed all remaining decorative emoji from both HTML surfaces in favor of solid-color "severity dots" (same palette as the severity badges, print-safe and platform-consistent); added a sticky mini table-of-contents and an in-page "Print / Save as PDF" button to the static report (plus an equivalent print button on the dashboard); added a "Technical Findings - Full Detail" divider separating the leadership-facing front section from the technical detail; and fixed long category/object names overflowing their fixed-width SVG boxes by truncating with a full-text hover tooltip.
-- **v1.20.0** - Presentation-layer only: unified the static HTML report (`Reporting.ps1`) and the JSON-upload dashboard (`ui/`) onto one shared, professional visual design - a single light theme (no dark/light toggle), a system font stack (dropping the dashboard's Google Fonts CDN dependency), and no `linear-gradient` anywhere status/severity is shown. Added inline hand-built SVG visuals (risk-score ring gauge, per-category risk bars, a simplified source-to-Tier-0 control-path diagram) with no chart library or external asset. Added a "Prioritized Remediation Order" section ranking existing findings worst-first by severity then category risk score - no new scoring logic. Brought the dashboard up to parity with the static report (it now renders Risk Score, ANSSI maturity, and MITRE ATT&CK summary) and corrected its sample data/schema, which had drifted from the current `ADSecurityFinding`/`Get-ADRiskScore` contract and still carried a stale pre-AD-only-scope Entra field.
-- **v1.19.1** - Bug-fix release for v1.19.0, found via a real audit transcript review and a full-codebase sweep. Fixed `Test-ADControlPaths` crashing on every run (a `Mandatory`/empty-`ArrayList` PowerShell parameter-binding quirk on `Add-ADControlPathEdge`). Hardened `-FromSnapshot` to mean literally **zero outbound connections**, no exceptions: several v1.19.0 checks (`Test-ADGroupPolicies`, `Test-AuditPolicyConfiguration`, `Test-ADGpoDeployedSecrets`, `Test-ADRodcSecurity`, `Test-ADStaleObjectDepth`) were still silently falling back to live DC connections under `-Snapshot` despite the "no live AD access" contract - all now hard skips instead, plus a narrower anti-pattern found via a full-codebase sweep (most notably in `Get-ADControlPathGraph`, which could make one live ACL read per group in an escalation chain). Also closed two real online/offline finding-count parity gaps (`Test-ADCSExtended`'s ESC4 and NTAuth/AIA/Root sweep now run fully offline) and added "Offline Mode Coverage Notes" throughout - every skipped sub-check now records a structured note, and the HTML report shows an explicit table of what wasn't scanned and why, instead of a blanket "no live access was made" claim. See CHANGELOG for the full list.
-- **v1.19.0** - Offline/`-Snapshot` parity for the remaining 12 live-only modules (`Test-ADPrivilegedGroups`, `Test-AdminSDHolder`, `Test-ADReplicationSecurity`, `Test-ADDangerousPermissions`, `Test-ADGroupPolicies`, `Test-LAPSDeployment`, `Test-ConstrainedDelegation`, `Test-ADDomainTrusts`, `Test-AuditPolicyConfiguration`, `Test-ADDomainSecurity`, `Test-ADCertificateServices`, `Test-ADDomainAdminEquivalence`). All 27 registered tests now support `-Snapshot`, fully or partially. New shared `Resolve-ADSnapshotGroupMember` helper for in-memory recursive group-membership resolution; additive-only `Snapshot.*` schema extensions (new ACL targets, `HasAuditRules`, GPO `LinkedTo`, LAPS schema presence, password policy/forest mode/Recycle Bin, extended trust attributes, delegation/RBCD/shadow-credential presence flags, per-object ADCS ACLs). A few sub-checks (SYSVOL file-share ACLs, per-DC `auditpol`) were intended to remain live-only by design, but shipped with a bug that made them fall back to live DC connections instead of skipping - corrected in v1.19.1 above.
-
-- **v1.18.0** - `Test-ADKnownDCVulnerabilities`: added a new check for CVE-2026-41089 (critical, unauthenticated Netlogon RCE against Domain Controllers, patched May 12, 2026, actively exploited since June 2026), and refined the BadSuccessor/dMSA finding to classify each Windows Server 2025-level DC as Patched/Unpatched/Unknown for CVE-2025-53779 via a per-DC UBR (Update Build Revision) registry read, instead of flagging every Server 2025 DC identically regardless of patch level. The finding still fires for confirmed-patched DCs (at reduced severity once every affected DC is patched) since the underlying dMSA-linking primitive remains partially abusable post-patch. Both additions are read-only version/patch-level checks - no exploitation or protocol traffic of any kind.
-- **v1.17.0** - Added `Get-ADForestConsolidation` / `Export-ADForestConsolidationHTML`: an offline, file-based multi-domain/forest consolidation feature that reads this module's own prior per-domain JSON exports and rolls them up into a forest score, per-category heatmap, domain comparison table, and cross-domain trust-risk enrichment - a free equivalent to PingCastle's paid "Conso" report. Not a live-AD check; no additional AD access required.
-- **v1.16.2** - HTML report: findings that fire once per affected object (e.g. `AdminSDHolder ACL Compromise` across several principals) are now consolidated into a single collapsible entry per Category+Issue, with Impact/Remediation/MITRE/ANSSI shown once and every affected object listed underneath with its own specific detail - instead of one repeated top-level finding per object. Report-rendering change only; JSON/CSV exports are unaffected.
-- **v1.16.1** - Bug-fix release: corrected several PowerShell errors surfaced by real-world runs (see CHANGELOG for the full list), rebalanced the risk-score model to use diminishing returns instead of a hard 100-point cap, tightened default retry/backoff timing, added a progress bar to the audit run and export steps, and reworked the HTML report (collapsible findings, working category bars, clickable executive summary, fixed character encoding).
-- **v1.16.0** - Added `Get-ADControlPathGraph` / `Test-ADControlPaths`: an attack-path graph that traces indirect privilege-escalation routes (dangerous ACEs, group membership, ownership) from any non-Tier-0 principal to a Tier-0 target, plus an optional BloodHound-compatible export.
-- **v1.0.0 - v1.15.0** - Built up from core AD hygiene checks (privileged groups, AdminSDHolder, GPOs, trusts, certificate services) to a full parity backlog against known AD security assessment methodologies: risk scoring/ANSSI maturity/MITRE tagging, a collect-once snapshot mode for offline analysis, and dedicated modules for DNS security, Kerberos hardening, legacy-auth exposure, GPO-deployed secrets, known CVEs by patch level, Exchange escalation paths, and RODC posture.
+- **v1.24.0** — Added Test Coverage tracking: every report now shows which checks ran clean, found something, failed, or were excluded, instead of a clean run being indistinguishable from an incomplete one. New `Export-ADSecurityReportCSVFromJson` (CSV equivalent of the HTML JSON-rebuild path); both JSON-rebuild functions now accept a folder for `-OutputPath` and auto-name the file. Closed the same "under-testing looks like improvement" blind spot in `Get-ADRetestComparison` (a new `UnconfirmedFindings` bucket replaces false "Resolved" claims when the relevant check didn't actually run), `Get-ADMaturityTrend`, and `Get-ADForestConsolidation` (both flag incomplete/missing coverage rather than letting it silently skew a trend or cross-domain comparison). Fixed `-FromSnapshot` mode never tracking test coverage at all (it dispatches through a separate code path, `Invoke-ADRuleSet`, that Test Coverage tracking hadn't reached yet - every offline report rendered a nonsensical "0 check(s) tracked" box regardless of what actually ran). A full audit of the findings pipeline confirmed every check correctly populates the JSON/HTML/CSV outputs, with one latent gap fixed defensively: an unexpected `Severity` value (not currently produced by any check, but previously unhandled) would have been invisible in the HTML report - now rendered in a dedicated "Other / Unclassified Severity" section with a warning, so a finding can never silently disappear. Also fixed a scoring bug where a JSON-recreated finding missing MITRE/ANSSI/Weight metadata silently scored 0 instead of its real weight, two Kerberoasting findings having no supporting-information backfill at all due to a conditionally-named Issue the extraction tool didn't recognize, a general PowerShell null-vs-empty-array bug affecting several offline analysis functions, and both `Export-ADSecurityReportCSVFromJson` and `Export-ADSecurityReportHTML` itself having been defined but never actually exported by the module.
+- **v1.23.9** — Added a "Run Scope Information" report section (and console notice) for whenever `-Server` names a specific DC that isn't the domain's actual PDC Emulator, so "PDC-only" checks (Machine Account Quota, domain security settings) don't silently query a different DC than a reader might assume.
+- **v1.23.8** — Fixed "Insufficient Domain Controller Count" undercounting (and a related primaryGroupID false-positive) whenever `-Server` named one specific DC; both now use an always-unscoped DC inventory (`Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope`) independent of per-DC-probe scoping. Also fixed `Get-ADTargetDomainController` to deterministically prefer the domain's PDC rather than an arbitrary enumerated DC.
+- **v1.23.7** — Closed the four forest/forest-root coverage gaps: `Test-ADDomainSecurity` gained its own Outdated Forest Functional Level finding (previously only a `Details` sidecar under the domain-level check) and a Short Tombstone Lifetime check; `Test-ADDangerousPermissions` gained non-standard-permissions checks on the Schema and Configuration naming context head objects. All four are fully offline-capable.
+- **v1.23.6** — Added `Test-ADCSChaseFallback`: detects CA chase-fallback exposure (CVE-2026-54121 "Certighost") by reading each Enterprise CA's `policy\EditFlags` for the `EDITF_ENABLECHASECLIENTDC` bit, which an unpatched CA uses to resolve certificate-request identity data from an attacker-controlled host — enabling DC impersonation. Flags Critical independent of patch level, since the flag itself is the exposure indicator.
+- **Unreleased** — Fixed a multi-domain-forest bug: no query passed `-Server`, so results could silently resolve against the *auditor's* logon domain instead of the target. Added `-Server` to `Start-ADSecurityAudit`, `Get-ADSnapshot`, and `Test-ADMachineAccountQuota`, applied module-wide via a shared helper.
+- **v1.20.5** — Added a null-session (unauthenticated pipe/share access) check to `Test-ADDomainHardeningFlags`, reusing the existing GPO-then-registry-fallback resolver.
+- **v1.20.4** — Added a check for GPO-granted `SeNetworkLogonRight`/`SeRemoteInteractiveLogonRight` to broad principals (always Critical).
+- **v1.20.0 – v1.20.3** — Dashboard/report visual overhaul: unified light theme, hand-built inline SVG visuals (risk gauge, category bars, control-path diagram), a Prioritized Remediation Order section, and several rendering bug fixes (modal display bug, oversized chart text, inconsistent monospace styling).
+- **v1.19.0 – v1.19.1** — Full offline/`-Snapshot` parity across all 27 registered tests; hardened `-FromSnapshot` to mean literally zero live access, with explicit "Offline Mode Coverage Notes" in the report.
+- **v1.18.0** — Added CVE-2026-41089 (Netlogon RCE) detection and per-DC CVE-2025-53779 (BadSuccessor/dMSA) patch classification.
+- **v1.17.0** — Added `Get-ADForestConsolidation` — offline multi-domain rollup, a free equivalent to PingCastle's "Conso" report.
+- **v1.16.0 – v1.16.2** — Added the attack-path graph (`Get-ADControlPathGraph`/`Test-ADControlPaths`); consolidated repeated per-object findings into single collapsible entries; rebalanced the risk-score model.
+- **v1.0.0 – v1.15.0** — Built up from core AD hygiene checks to a full parity backlog: risk scoring, ANSSI maturity, MITRE tagging, snapshot mode, DNS security, Kerberos hardening, legacy-auth exposure, GPO-deployed secrets, known CVEs, Exchange escalation paths, and RODC posture.
 
 See [CHANGELOG.md](./CHANGELOG.md) for the complete, version-by-version history.
 
 ## Support
 
-For issues, questions, or feature requests:
-- Review the Troubleshooting section
-- Check PowerShell event logs for detailed error messages
-- Ensure all prerequisites are met
-- Test with `-Verbose` flag for detailed output
+Review the [Troubleshooting](#troubleshooting) section, check PowerShell event logs, confirm prerequisites are met, and re-run with `-Verbose` for detail.
 
 ## Acknowledgments
 
-Built upon industry-standard Active Directory security assessment methodologies and inspired by:
-- Microsoft Security Best Practices
-- MITRE ATT&CK Framework (Active Directory techniques)
-- Purple Knight Active Directory Security Assessment Tool
-- BloodHound graph theory for AD privilege escalation paths
-- [PingCastle](https://github.com/netwrix/pingcastle) (Netwrix) - many of this project's checks are independently-implemented comparisons to detection concepts PingCastle popularized; see the Independence note at the top of this README
+Built on industry-standard AD security assessment methodologies, inspired by Microsoft Security Best Practices, the MITRE ATT&CK Framework, Purple Knight, BloodHound's graph theory, and [PingCastle](https://github.com/netwrix/pingcastle) (Netwrix) — see the Independence note at the top of this README.
 
-Thanks also to Claude (Anthropic) for AI-assisted source analysis, feature-gap research, and implementation/bug-fix work across this project's v1.2.0-v1.18.0 backlog.
+Thanks to Claude (Anthropic) for AI-assisted source analysis and implementation/bug-fix work across v1.2.0–v1.18.0, and to [denandz](https://github.com/denandz) for the patch that independently identified and fixed the `-Server` reliability issue.

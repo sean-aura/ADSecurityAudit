@@ -140,7 +140,7 @@ function renderSummary(findings) {
   if (lastUpdatedEl) {
     lastUpdatedEl.textContent = latest
       ? `Updated ${formatDate(latest)}`
-      : 'Waiting for data…';
+      : 'Waiting for data...';
   }
 }
 
@@ -151,7 +151,7 @@ function renderAdminCounts(metadata) {
     { id: 'schema-admins-count', value: metadata.schemaAdmins },
   ];
   entries.forEach((entry) => {
-    const display = entry.value ?? '—';
+    const display = entry.value ?? '-';
     setText(entry.id, display);
   });
 }
@@ -242,6 +242,35 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// Change-management enrichment (v1.24.0) - EstimatedEffort/KnownRisks/
+// BackupRollback/OperationalNotes, per Finding-Enrichment-Prompt.md.
+// OperationalNotes is genuinely optional and omitted entirely when blank,
+// mirroring how Reporting.ps1's Get-FindingHTML handles the same fields.
+function buildEnrichmentHtml(finding) {
+  const effort = finding.EstimatedEffort || '';
+  const risks = finding.KnownRisks || '';
+  const rollback = finding.BackupRollback || '';
+  const notes = finding.OperationalNotes || '';
+
+  if (!effort && !risks && !rollback) return '';
+
+  let html = '<div class="enrichment-block">';
+  if (effort) {
+    html += `<p class="enrichment-item"><strong>Estimated Effort:</strong> ${escapeHtml(effort)}</p>`;
+  }
+  if (risks) {
+    html += `<p class="enrichment-item"><strong>Known Risks:</strong> ${escapeHtml(risks)}</p>`;
+  }
+  if (rollback) {
+    html += `<p class="enrichment-item"><strong>Backup / Rollback:</strong> ${escapeHtml(rollback)}</p>`;
+  }
+  if (notes) {
+    html += `<p class="enrichment-item"><strong>Operational Notes:</strong> ${escapeHtml(notes)}</p>`;
+  }
+  html += '</div>';
+  return html;
+}
+
 function renderFindings(findings) {
   const container = document.getElementById('findings-list');
   if (!container) return;
@@ -295,6 +324,9 @@ function renderFindings(findings) {
     remediation.className = 'remediation';
     remediation.innerHTML = `<strong>Remediation:</strong> ${escapeHtml(finding.Remediation || 'No remediation provided.')}`;
 
+    const enrichment = document.createElement('div');
+    enrichment.innerHTML = buildEnrichmentHtml(finding);
+
     const references = buildReferences(finding.RemediationReference || finding.References);
 
     const button = document.createElement('button');
@@ -302,7 +334,7 @@ function renderFindings(findings) {
     button.textContent = 'View details & evidence';
     button.addEventListener('click', () => openModal(finding));
 
-    card.append(header, meta, description, impact, remediation, references, button);
+    card.append(header, meta, description, impact, remediation, enrichment, references, button);
     container.appendChild(card);
   });
 }
@@ -336,7 +368,7 @@ function renderRiskCallouts(findings) {
         <strong>${escapeHtml(finding.Issue || 'Unknown Issue')}</strong>
         <div class="meta-row">
           <span>${escapeHtml(finding.Category || 'Uncategorized')}</span>
-          <span>• Affected: <span class="meta-code">${escapeHtml(finding.AffectedObject || 'Unknown')}</span></span>
+          <span>- Affected: <span class="meta-code">${escapeHtml(finding.AffectedObject || 'Unknown')}</span></span>
         </div>
       `;
 
@@ -718,9 +750,9 @@ function renderMeta(metadata) {
   
   container.innerHTML = '';
   const entries = [
-    { label: 'Privileged Accounts', value: metadata.privilegedAccounts ?? '—', hint: 'High-risk identities to lock down' },
-    { label: 'Domain Controllers', value: metadata.domainControllers ?? '—', hint: 'Visibility across replication scope' },
-    { label: 'Audit generated', value: metadata.auditGenerated ? formatDate(metadata.auditGenerated) : '—', hint: 'Report timestamp' },
+    { label: 'Privileged Accounts', value: metadata.privilegedAccounts ?? '-', hint: 'High-risk identities to lock down' },
+    { label: 'Domain Controllers', value: metadata.domainControllers ?? '-', hint: 'Visibility across replication scope' },
+    { label: 'Audit generated', value: metadata.auditGenerated ? formatDate(metadata.auditGenerated) : '-', hint: 'Report timestamp' },
   ];
 
   entries.forEach((entry) => {
@@ -860,10 +892,13 @@ function buildModalFinding(finding) {
   remediation.className = 'remediation';
   remediation.innerHTML = `<strong>Remediation:</strong> ${escapeHtml(finding.Remediation || 'No remediation provided.')}`;
 
+  const enrichment = document.createElement('div');
+  enrichment.innerHTML = buildEnrichmentHtml(finding);
+
   const references = buildReferences(finding.RemediationReference || finding.References);
   const details = buildDetailsGrid(finding.Details);
 
-  wrapper.append(header, meta, description, impact, remediation, references, details);
+  wrapper.append(header, meta, description, impact, remediation, enrichment, references, details);
   return wrapper;
 }
 

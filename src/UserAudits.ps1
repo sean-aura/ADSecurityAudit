@@ -17,11 +17,33 @@ function Test-ADUserSecurity {
         # compatible: when omitted, this function queries AD live exactly as
         # before.
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
     
     Write-Verbose "Starting user account security audit..."
     $findings = @()
+
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        # Resolve-ADSecurityAuditTargetServer, not the raw -Server value:
+        # resolves to the domain's PDC Emulator specifically, so this
+        # standalone call targets the exact same single, deterministic DC
+        # Start-ADSecurityAudit itself would use for this domain, not an
+        # arbitrary DC-locator pick.
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
     
     try {
         if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
@@ -45,6 +67,12 @@ function Test-ADUserSecurity {
             }
         }
         else {
+        # Resolved once, explicitly passed to every live AD call below -
+        # not relying on Set-ADSecurityAuditTargetServer's
+        # $PSDefaultParameterValues injection alone. $__adServer is $null
+        # when no override is active, which Get-AD*/Get-GP* cmdlets treat
+        # identically to -Server being omitted entirely.
+        $__adServer = Get-ADSecurityAuditActiveServerOverride
         $getUserParams = @{
             Filter = '*'
             ErrorAction = 'Stop'
@@ -56,6 +84,7 @@ function Test-ADUserSecurity {
                 'msDS-SupportedEncryptionTypes', 'userAccountControl'
             )
         }
+        if ($__adServer) { $getUserParams['Server'] = $__adServer }
         
         if ($SearchBase) {
             $getUserParams['SearchBase'] = $SearchBase
@@ -80,7 +109,12 @@ function Test-ADUserSecurity {
         }
         else {
             try {
-                $protectedUsersGroup = Get-ADGroup -Filter "Name -eq 'Protected Users'" -ErrorAction Stop
+                $protectedUsersGroup = if ($__adServer) {
+                    Get-ADGroup -Filter "Name -eq 'Protected Users'" -Server $__adServer -ErrorAction Stop
+                }
+                else {
+                    Get-ADGroup -Filter "Name -eq 'Protected Users'" -ErrorAction Stop
+                }
             }
             catch {
                 Write-Verbose "Failed to get Protected Users group: $_"
@@ -109,6 +143,9 @@ function Test-ADUserSecurity {
                 $finding.Description = "User account has Kerberos pre-authentication disabled, making it vulnerable to AS-REP Roasting attacks."
                 $finding.Impact = "Attackers can request authentication data for this account and crack the password offline without any authentication."
                 $finding.Remediation = "Enable Kerberos pre-authentication: Set-ADUser -Identity '$($user.SamAccountName)' -DoesNotRequirePreAuth `$false"
+                $finding.EstimatedEffort = 'Low - a single userAccountControl flag (DONT_REQ_PREAUTH) per account.'
+                $finding.KnownRisks = 'Disabling pre-auth exposes the account to offline AS-REP roasting; re-enabling pre-auth has no legitimate compatibility impact unless a genuinely pre-auth-incompatible legacy Kerberos client depends on that specific account, which is rare.'
+                $finding.BackupRollback = 'Easy - revert the DONT_REQ_PREAUTH flag; effective at next Kerberos authentication attempt, no data loss.'
                 $finding.Details = @{
                     DistinguishedName = $user.DistinguishedName
                     UserPrincipalName = $user.UserPrincipalName
@@ -128,6 +165,9 @@ function Test-ADUserSecurity {
                 $finding.Description = "User account is configured to use DES encryption, which is deprecated and easily crackable."
                 $finding.Impact = "DES encryption provides minimal security and can be cracked quickly by modern tools."
                 $finding.Remediation = "Disable DES encryption: Set-ADUser -Identity '$($user.SamAccountName)' -UseDESKeyOnly `$false"
+                $finding.EstimatedEffort = 'Low - a single msDS-SupportedEncryptionTypes attribute per account.'
+                $finding.KnownRisks = 'DES for Kerberos is only relevant to genuinely ancient clients (pre-Windows-7/Server-2008 era); removing it will break authentication only for such a legacy client if one still depends on this specific account, which is rare in a modern environment.'
+                $finding.BackupRollback = 'Easy - revert msDS-SupportedEncryptionTypes to its prior value; effective at next Kerberos ticket renewal, no data loss.'
                 $finding.Details = @{
                     DistinguishedName = $user.DistinguishedName
                 }
@@ -145,6 +185,9 @@ function Test-ADUserSecurity {
                 $finding.Description = "User account has reversible password encryption enabled, storing passwords in a format equivalent to plaintext."
                 $finding.Impact = "An attacker with access to the AD database can easily retrieve the plaintext password."
                 $finding.Remediation = "Disable reversible encryption: Set-ADUser -Identity '$($user.SamAccountName)' -AllowReversiblePasswordEncryption `$false; Then force password change."
+                $finding.EstimatedEffort = 'Low - a single userAccountControl flag (ENCRYPTED_TEXT_PWD_ALLOWED) per account.'
+                $finding.KnownRisks = 'The existing reversibly-encrypted copy of the password persists until the account''s next password change, so disabling the flag alone doesn''t retroactively protect the current password.'
+                $finding.BackupRollback = 'Easy - revert the flag; no data loss, though not retroactive to the already-stored reversible copy.'
                 $finding.Details = @{
                     DistinguishedName = $user.DistinguishedName
                 }
@@ -164,6 +207,9 @@ function Test-ADUserSecurity {
                 $finding.Description = "User account is configured with a password that never expires."
                 $finding.Impact = "Stale passwords increase the risk of compromise and violate security best practices."
                 $finding.Remediation = "Set password to expire: Set-ADUser -Identity '$($user.SamAccountName)' -PasswordNeverExpires `$false"
+                $finding.EstimatedEffort = 'Low - a single userAccountControl flag (DONT_EXPIRE_PASSWD) per account.'
+                $finding.KnownRisks = 'Removing "password never expires" starts the account''s normal expiration clock, which for a service account can cause an unexpected outage later when the password expires unless the account is migrated to a gMSA or someone tracks the new expiration date; confirm which type of account this is first.'
+                $finding.BackupRollback = 'Easy - revert the DONT_EXPIRE_PASSWD flag; effective immediately, no data loss.'
                 $finding.Details = @{
                     DistinguishedName = $user.DistinguishedName
                     IsPrivileged = $isPrivileged
@@ -183,6 +229,9 @@ function Test-ADUserSecurity {
                 $finding.Description = "User account has unconstrained delegation enabled, which can be exploited for privilege escalation."
                 $finding.Impact = "Attackers can use this account to impersonate any user in the domain and escalate privileges to Domain Admin."
                 $finding.Remediation = "Disable unconstrained delegation: Set-ADUser -Identity '$($user.SamAccountName)' -TrustedForDelegation `$false; Consider using constrained delegation instead."
+                $finding.EstimatedEffort = 'Medium - removing unconstrained delegation without configuring an equivalent constrained/RBCD replacement first can break the legitimate double-hop authentication scenario it was supporting, so this needs discovery of what the account/computer actually delegates to.'
+                $finding.KnownRisks = 'Unconstrained delegation is one of the most consequential AD misconfigurations (a compromised host with this flag can capture and reuse TGTs of any user who authenticates to it), but removing it without a replacement delegation model will break whatever legitimate multi-hop authentication currently depends on it.'
+                $finding.BackupRollback = 'Easy - revert the TRUSTED_FOR_DELEGATION flag; effective at next Kerberos ticket request, no data loss.'
                 $finding.Details = @{
                     DistinguishedName = $user.DistinguishedName
                     ServicePrincipalNames = $user.ServicePrincipalNames -join '; '
@@ -203,6 +252,9 @@ function Test-ADUserSecurity {
                     $finding.Description = "Enabled user account has not logged in for $($daysSinceLogon.Days) days."
                     $finding.Impact = "Inactive accounts increase attack surface and may have weak or compromised credentials."
                     $finding.Remediation = "Disable or delete the account: Disable-ADAccount -Identity '$($user.SamAccountName)'"
+                    $finding.EstimatedEffort = 'Low - disabling (not deleting) one account, a single attribute change.'
+                    $finding.KnownRisks = 'Low risk disabling a genuinely inactive account; confirm it isn''t a seasonal or infrequently-used legitimate account (e.g. an annual-process service account) before disabling.'
+                    $finding.BackupRollback = 'Easy - re-enable the account; effective immediately, no data loss.'
                     $finding.Details = @{
                         DistinguishedName = $user.DistinguishedName
                         LastLogonDate = $user.LastLogonDate
@@ -225,6 +277,9 @@ function Test-ADUserSecurity {
                     $finding.Description = "User password has not been changed in $($passwordAge.Days) days."
                     $finding.Impact = "Old passwords are more likely to be compromised through various attack vectors."
                     $finding.Remediation = "Force password change: Set-ADUser -Identity '$($user.SamAccountName)' -ChangePasswordAtLogon `$true"
+                    $finding.EstimatedEffort = 'Low - a single password reset/expiration action per account, though service accounts may need coordinated rotation everywhere the password is configured.'
+                    $finding.KnownRisks = 'Forcing a password change requires the account owner to set a new password at next logon, a routine (if sometimes disruptive for service accounts) operational step; for service accounts, the manual rotation must be coordinated everywhere that account is configured.'
+                    $finding.BackupRollback = 'Hard/Limited - a password can only be reset again, not restored to its previous (already known/old) value.'
                     $finding.Details = @{
                         DistinguishedName = $user.DistinguishedName
                         PasswordLastSet = $user.PasswordLastSet
@@ -322,6 +377,9 @@ function Test-ADUserSecurity {
                 }
                 $stepNumber = 0
                 $finding.Remediation = ($remediationSteps | ForEach-Object { $stepNumber++; "$stepNumber. $_" }) -join "`n"
+                $finding.EstimatedEffort = if ($isPrivileged) { 'Medium - same as the non-privileged version, but the higher blast radius (a privileged account) makes coordinating the gMSA migration or password rotation with the service owner more urgent.' } else { 'Medium - the real fix (migrating to a gMSA, or ensuring a long random password) is a bigger step than removing the SPN, since the SPN is what makes the service reachable via Kerberos; needs coordination with whoever manages the service.' }
+                $finding.KnownRisks = if ($isPrivileged) { 'A privileged service account with an SPN and a weak/crackable password is a high-value Kerberoasting target, since cracking it yields privileged access directly; migrating to a gMSA is the standard fix but requires the hosting application to support it.' } else { 'A service account with an SPN and a weak/crackable password is vulnerable to Kerberoasting; migrating to a gMSA (which manages its own long, automatically-rotated password) is the standard fix but requires the hosting application to support gMSA authentication.' }
+                $finding.BackupRollback = if ($isPrivileged) { 'Easy - if gMSA migration isn''t viable, revert to the original account with a long/complex manually-set password; no data loss, though any ticket captured before the change remains crackable until the old password is retired.' } else { 'Easy - if gMSA migration isn''t viable for the application, revert to the original account with a manually-set long/complex password; no data loss, though any ticket captured before the change remains crackable until the old password is retired.' }
                 $finding.Details = @{
                     DistinguishedName = $user.DistinguishedName
                     ServicePrincipalNames = $user.ServicePrincipalNames -join '; '
@@ -351,6 +409,9 @@ function Test-ADUserSecurity {
                     $finding.Description = "Highly privileged account is not a member of the Protected Users security group."
                     $finding.Impact = "Account lacks additional protections against credential theft attacks like pass-the-hash."
                     $finding.Remediation = "Add to Protected Users group: Add-ADGroupMember -Identity 'Protected Users' -Members '$($user.SamAccountName)'"
+                    $finding.EstimatedEffort = 'Medium - Protected Users enforces several non-configurable protections (no NTLM, no DES/RC4, no delegation, no long-lived TGT renewal) that can break dependent legitimate functionality, so Microsoft''s own guidance is to pilot it on a test group first.'
+                    $finding.KnownRisks = 'Protected Users membership blocks NTLM authentication and Kerberos delegation for that account outright; any legitimate use of the account that relies on NTLM or delegation will break the moment it''s added.'
+                    $finding.BackupRollback = 'Easy - remove the account from Protected Users; effective on next logon/ticket renewal, no data loss.'
                     $finding.Details = @{
                         DistinguishedName = $user.DistinguishedName
                         PrivilegedGroups = $isHighlyPrivileged -join '; '
@@ -367,6 +428,11 @@ function Test-ADUserSecurity {
     catch {
         Write-Error "Error during user account audit: $_"
         throw
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
     }
 }
 

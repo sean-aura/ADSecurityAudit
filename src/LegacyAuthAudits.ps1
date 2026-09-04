@@ -56,15 +56,20 @@ function Get-ADLinkedGposOrdered {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$TargetDn
+        [string]$TargetDn,
+
+        [Parameter()]
+        [string]$Server
     )
 
     try {
-        $inheritance = Get-GPInheritance -Target $TargetDn -ErrorAction Stop
+        $inheritance = if ($Server) { Get-GPInheritance -Target $TargetDn -Server $Server -ErrorAction Stop } else { Get-GPInheritance -Target $TargetDn -ErrorAction Stop }
         return @($inheritance.GpoLinks |
             Sort-Object -Property Order |
             ForEach-Object {
-                try { Get-GPO -Guid $_.GpoId -ErrorAction Stop } catch { $null }
+                try {
+                    if ($Server) { Get-GPO -Guid $_.GpoId -Server $Server -ErrorAction Stop } else { Get-GPO -Guid $_.GpoId -ErrorAction Stop }
+                } catch { $null }
             } |
             Where-Object { $_ })
     }
@@ -90,12 +95,15 @@ function Get-ADPolicyRegistryValue {
         [string]$Key,
 
         [Parameter(Mandatory)]
-        [string]$ValueName
+        [string]$ValueName,
+
+        [Parameter()]
+        [string]$Server
     )
 
     foreach ($gpo in $Gpos) {
         try {
-            $regValue = Get-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName $ValueName -ErrorAction Stop
+            $regValue = if ($Server) { Get-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName $ValueName -Server $Server -ErrorAction Stop } else { Get-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName $ValueName -ErrorAction Stop }
             if ($regValue -and $null -ne $regValue.Value) {
                 return [PSCustomObject]@{
                     Value  = $regValue.Value
@@ -161,6 +169,7 @@ function Test-ADLegacyAuthSurface {
 
     Write-Verbose "Starting Legacy Auth & Name-Poisoning Surface audit..."
     $findings = @()
+    $__adServer = Get-ADSecurityAuditTargetServerValue
 
     if ($Snapshot) {
         Write-Verbose "Test-ADLegacyAuthSurface: -Snapshot supplied; GPO-linked registry policy state and live per-DC registry reads are not part of the snapshot schema, so this audit is skipped entirely (offline mode performs no live AD/network access)."
@@ -178,7 +187,7 @@ function Test-ADLegacyAuthSurface {
     }
 
     try {
-        $domain = Get-ADDomain -ErrorAction Stop
+        $domain = Get-ADDomain -Server $__adServer -ErrorAction Stop
     }
     catch {
         Write-Warning "Test-ADLegacyAuthSurface: failed to query domain: $_"
@@ -187,8 +196,11 @@ function Test-ADLegacyAuthSurface {
 
     $domainControllers = @()
     try {
-        $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Filter * (legacy-auth audit)' -Query {
-            Get-ADDomainController -Filter * -ErrorAction Stop
+        # Get-ADSecurityAuditDomainController, not a bare
+        # Get-ADDomainController -Filter * - the latter is forest-wide
+        # regardless of -Server; see Common.ps1 for why.
+        $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (legacy-auth audit)' -Query {
+            Get-ADSecurityAuditDomainController -Server $__adServer
         })
     }
     catch {
@@ -218,50 +230,25 @@ function Test-ADLegacyAuthSurface {
         Write-Verbose "Test-ADLegacyAuthSurface: falling back to default Domain Controllers OU path '$dcOuDn'."
     }
 
-    $dcOuGpos   = Get-ADLinkedGposOrdered -TargetDn $dcOuDn
-    $domainGpos = Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName
+    $dcOuGpos   = Get-ADLinkedGposOrdered -TargetDn $dcOuDn -Server $__adServer
+    $domainGpos = Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName -Server $__adServer
     # DC OU precedence first (most specific to the DCs being evaluated),
     # domain root as fallback.
     $dcScopeGpos = @($dcOuGpos + $domainGpos)
 
-    # -------------------------------------------------------------------
-    # Live per-DC registry fallback helper. Only invoked for settings that
-    # no linked GPO defines, so a locally configured (non-policy) value is
-    # still caught rather than silently skipped.
-    # -------------------------------------------------------------------
-    function Get-ADLiveRegistryValuePerDc {
-        param(
-            [array]$DomainControllers,
-            [string]$Key,
-            [string]$ValueName
-        )
-        $results = [System.Collections.ArrayList]::new()
-        $regPath = "Registry::$Key"
-        foreach ($dc in $DomainControllers) {
-            $dcName = if ($dc.HostName) { $dc.HostName } else { $dc.Name }
-            try {
-                $value = Invoke-ADQueryWithRetry -OperationName "Read '$Key\$ValueName' on $dcName" -Query {
-                    Invoke-Command -ComputerName $dcName -ErrorAction Stop -ScriptBlock {
-                        param($p, $vn)
-                        (Get-ItemProperty -Path $p -Name $vn -ErrorAction SilentlyContinue).$vn
-                    } -ArgumentList $regPath, $ValueName
-                }
-                [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $value; Error = $null })
-            }
-            catch {
-                Write-Verbose "Get-ADLiveRegistryValuePerDc: could not read '$Key\$ValueName' on '$dcName': $_"
-                [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $null; Error = "$_" })
-            }
-        }
-        return $results
-    }
+    # Live per-DC registry fallback (only invoked for settings that no
+    # linked GPO defines, so a locally configured/non-policy value is still
+    # caught rather than silently skipped) is Get-ADLiveRegistryValuePerDc,
+    # promoted to Common.ps1 in v1.20.5 so DomainHardeningAudits.ps1's
+    # null-session check can share this exact logic instead of carrying a
+    # second copy of it.
 
     # -------------------------------------------------------------------
     # Check 1: SMBv1 Enabled / Not Disabled by Policy
     # -------------------------------------------------------------------
     try {
         $target = $Script:LegacyAuthRegistryTargets.Smb1
-        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
         $isEnabled  = $false
         $source     = $null
@@ -290,6 +277,9 @@ function Test-ADLegacyAuthSurface {
             $finding.Description = "SMBv1 is permitted ($source)."
             $finding.Impact = "SMBv1 is an obsolete, unauthenticated-by-default protocol with known remote code execution vulnerabilities (e.g. EternalBlue/MS17-010) and no protection against relay/MITM. Its continued availability materially increases the blast radius of any foothold on the network."
             $finding.Remediation = "Disable the SMBv1 server (and client) component (`Set-SmbServerConfiguration -EnableSMB1Protocol $false`, or the 'Configure SMBv1 client/server' GPO setting) and confirm via a GPO enforced on Domain Controllers and workstations alike."
+            $finding.EstimatedEffort = 'Medium - disabling SMBv1 requires confirming no legacy device (old NAS, printer, embedded scanner, very old OS) still requires it, since this is a widely documented historical dependency.'
+            $finding.KnownRisks = 'Many legacy or embedded devices (older printers/scanners/NAS, very old Windows/Samba versions) only support SMBv1 and will lose file/print connectivity once it''s disabled.'
+            $finding.BackupRollback = 'Easy - re-enable the SMBv1 feature/GPO setting; effective after a restart/policy refresh, no data loss.'
             $finding.Details = $detail
             $findings += $finding
         }
@@ -306,7 +296,7 @@ function Test-ADLegacyAuthSurface {
     # -------------------------------------------------------------------
     try {
         $target = $Script:LegacyAuthRegistryTargets.SmbSigning
-        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
         $notRequired = $false
         $source      = $null
@@ -335,6 +325,9 @@ function Test-ADLegacyAuthSurface {
             $finding.Description = "SMB server signing is not required ($source)."
             $finding.Impact = "Without required SMB signing, a coerced or captured NTLM authentication can be relayed to SMB on this host to execute commands or access shares as the relayed identity - the classic coerce-then-relay-to-SMB path."
             $finding.Remediation = "Enable and enforce 'Microsoft network server: Digitally sign communications (always)' (`RequireSecuritySignature` = 1) via a GPO linked to the Domain Controllers OU (and ideally domain-wide)."
+            $finding.EstimatedEffort = 'Medium - requiring SMB signing domain/DC-wide can affect performance and legacy client compatibility, so validate with a monitoring window per Microsoft''s own guidance.'
+            $finding.KnownRisks = 'Requiring SMB signing adds CPU overhead per SMB packet and can break or slow legacy SMB clients or devices that don''t support it.'
+            $finding.BackupRollback = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
             $finding.Details = $detail
             $findings += $finding
         }
@@ -351,7 +344,7 @@ function Test-ADLegacyAuthSurface {
     # -------------------------------------------------------------------
     try {
         $target = $Script:LegacyAuthRegistryTargets.LmCompatibilityLevel
-        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
         $isWeak = $false
         $source = $null
@@ -384,6 +377,9 @@ function Test-ADLegacyAuthSurface {
             $finding.Description = "`LmCompatibilityLevel` permits sending LM and/or NTLMv1 authentication ($source)."
             $finding.Impact = "LM and NTLMv1 use weak, crackable hashing and are vulnerable to well-known downgrade, relay, and offline cracking attacks (e.g. via Responder). Permitting them anywhere in the domain undermines NTLMv2-only defences elsewhere."
             $finding.Remediation = "Set 'Network security: LAN Manager authentication level' (`LmCompatibilityLevel`) to 5 (Send NTLMv2 response only, refuse LM & NTLM) via a GPO, after confirming no legacy clients/applications still require LM/NTLMv1."
+            $finding.EstimatedEffort = 'Medium - raising the LAN Manager authentication level domain-wide can break very old clients/devices, so audit NTLM usage first, per Microsoft''s own documented audit-before-enforce guidance.'
+            $finding.KnownRisks = 'Enforcing NTLMv2-only will break authentication for legacy devices or applications that only support LM or NTLMv1 (older network appliances, some legacy SMB/CIFS-based systems).'
+            $finding.BackupRollback = 'Easy - revert the LAN Manager authentication level GPO setting; effective at next Group Policy refresh, no data loss.'
             $finding.Details = $detail
             $findings += $finding
         }
@@ -404,7 +400,7 @@ function Test-ADLegacyAuthSurface {
         # domain-wide, so only the domain root and DC OU links are
         # consulted; a policy linked exclusively to some other OU will not
         # be seen by this check (see function help).
-        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
         $isEnabled = $true
         $source    = $null
@@ -436,6 +432,9 @@ function Test-ADLegacyAuthSurface {
             $finding.Description = "No GPO could be confirmed to disable LLMNR ($source)."
             $finding.Impact = "LLMNR (and, typically alongside it, NBT-NS) answers name-resolution requests for names that don't exist in DNS, allowing an attacker on the local network to spoof responses and capture/relay NTLM authentication attempts (Responder-style poisoning)."
             $finding.Remediation = "Disable 'Turn off Multicast Name Resolution' setting to Enabled (which sets `EnableMulticast` = 0) via a GPO linked at the domain root (or broadly enough to cover all workstations and servers), and disable NBT-NS via DHCP options or NetBIOS settings as a complementary control."
+            $finding.EstimatedEffort = 'Low - a single GPO setting (Turn Off Multicast Name Resolution) applied domain-wide.'
+            $finding.KnownRisks = 'Disabling LLMNR removes a fallback name-resolution mechanism used when DNS fails to resolve a name, so environments with intermittent DNS issues could see minor resolution failures surface that LLMNR was previously masking.'
+            $finding.BackupRollback = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
             $finding.Details = $detail
             $findings += $finding
         }
@@ -452,7 +451,7 @@ function Test-ADLegacyAuthSurface {
     # -------------------------------------------------------------------
     try {
         $target = $Script:LegacyAuthRegistryTargets.WsusServer
-        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
         $wuServer = $null
         $source   = $null
@@ -483,6 +482,9 @@ function Test-ADLegacyAuthSurface {
             $finding.Description = "WSUS is configured to deliver updates over unencrypted HTTP ($source): $wuServer."
             $finding.Impact = "Updates delivered over plain HTTP can be intercepted and swapped for attacker-supplied packages by an on-path attacker (WSUS package-injection MITM, e.g. WSUXploit/WSUSpect), leading to SYSTEM-level code execution on every client that checks in against this WSUS server."
             $finding.Remediation = "Reconfigure WSUS for HTTPS (`WUServer`/`WUStatusServer` set to an https:// URL backed by a valid certificate) via the 'Specify intranet Microsoft update service location' GPO setting, and reissue the policy to all managed clients."
+            $finding.EstimatedEffort = 'Medium - converting WSUS to HTTPS requires a certificate, an IIS binding change, and reconfiguring every client''s WSUS GPO to the new URL, a coordinated multi-step change across the fleet.'
+            $finding.KnownRisks = 'A botched certificate or binding change can temporarily break update delivery to every client pointed at that WSUS server until corrected; switching to HTTPS itself carries no other legitimate compatibility risk.'
+            $finding.BackupRollback = 'Moderate - revert the WSUS client GPO to the HTTP URL and the IIS binding to HTTP; requires a Group Policy refresh across clients to fully take effect.'
             $finding.Details = $detail
             $findings += $finding
         }

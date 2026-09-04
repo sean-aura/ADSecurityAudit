@@ -53,6 +53,11 @@ function Test-ADCertificateServices {
                     }
                 }
             }
+            # A template can grant the same low-priv principal enrollment
+            # via more than one ACE (e.g. separate Enroll and AutoEnroll
+            # extended-right ACEs) - dedupe so the same name doesn't appear
+            # twice in one finding's principal list.
+            $enrollmentPrincipals = @($enrollmentPrincipals | Select-Object -Unique)
 
             $enrollmentFlag = $template.'msPKI-Enrollment-Flag'
             $certNameFlag = $template.'msPKI-Certificate-Name-Flag'
@@ -68,6 +73,9 @@ function Test-ADCertificateServices {
                     $finding.Description = "Certificate template '$templateName' allows enrollees to specify Subject Alternative Names AND allows enrollment by low-privileged principals ($($enrollmentPrincipals -join ', ')). This is a critical ESC1 vulnerability."
                     $finding.Impact = "Attackers can request certificates for arbitrary accounts (including Domain Admins) and authenticate as those users."
                     $finding.Remediation = "Remove CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT flag OR restrict enrollment permissions to only trusted administrators. Current low-priv enrollers: $($enrollmentPrincipals -join ', ')"
+                    $finding.EstimatedEffort = 'Medium - requires disabling "supply subject in request" or restricting enrollment rights, and confirming which systems currently request from this template before changing it.'
+                    $finding.KnownRisks = 'Disabling attacker-controllable SAN (CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT) can break legitimate workflows that rely on supplying a SAN at request time, such as some non-Windows or automated enrollment clients.'
+                    $finding.BackupRollback = 'Moderate - AD CS templates are versioned, so a prior version''s settings can be restored and republished; however, any certificates already issued during the vulnerable window remain valid until revoked or expired, so this isn''t a full rollback of the exposure itself.'
                     $finding.Details = @{
                         DistinguishedName = $template.DistinguishedName
                         CertificateNameFlag = $certNameFlag
@@ -87,6 +95,9 @@ function Test-ADCertificateServices {
                     $finding.Description = "Certificate template '$templateName' allows enrollees to specify Subject Alternative Names, but enrollment appears restricted to privileged users."
                     $finding.Impact = "If enrollment permissions are weakened, this template could become an ESC1 vulnerability."
                     $finding.Remediation = "Consider removing the CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT flag if not required. Monitor enrollment permissions."
+                    $finding.EstimatedEffort = 'Medium - same underlying mechanism as the unrestricted ESC1 finding, but exposure is narrower (fewer principals can enroll), so validate the smaller set of dependent systems before changing.'
+                    $finding.KnownRisks = 'Disabling attacker-controllable SAN can break legitimate workflows among the restricted set of principals that currently rely on supplying a SAN at request time.'
+                    $finding.BackupRollback = 'Moderate - restore a prior template version if a legitimate workflow breaks; certificates already issued remain valid until revoked or expired.'
                     $finding.Details = @{
                         DistinguishedName = $template.DistinguishedName
                         CertificateNameFlag = $certNameFlag
@@ -114,6 +125,9 @@ function Test-ADCertificateServices {
                 $finding.Description = "Certificate template '$templateName' has no Extended Key Usage (EKU) restrictions or allows 'Any Purpose', allowing certificates to be used for any purpose including authentication."
                 $finding.Impact = "Certificates can be used for unintended purposes including client authentication, code signing, or encryption."
                 $finding.Remediation = "Configure specific EKUs for the template to limit certificate usage to intended purposes only."
+                $finding.EstimatedEffort = 'Medium - requires validating which application relies on the current broad EKU set (e.g. a cert used for both client authentication and code signing) before narrowing it.'
+                $finding.KnownRisks = 'Restricting EKUs can break legitimate uses that rely on the current broad EKU set.'
+                $finding.BackupRollback = 'Moderate - restore the template''s prior EKU configuration (via a template export/backup, e.g. PSPKI or certutil) if a legitimate use breaks; certificates already issued remain valid until revoked or expired.'
                 $finding.Details = @{
                     DistinguishedName = $template.DistinguishedName
                     HasNoEKU = $hasNoEKU
@@ -135,6 +149,9 @@ function Test-ADCertificateServices {
                 $finding.Description = "Certificate template '$templateName' is an Enrollment Agent template that allows enrollment by low-privileged principals."
                 $finding.Impact = "Attackers can obtain an Enrollment Agent certificate and use it to enroll for certificates on behalf of other users, including privileged accounts."
                 $finding.Remediation = "Restrict enrollment permissions to only trusted Enrollment Agents. Implement enrollment agent restrictions at the CA level."
+                $finding.EstimatedEffort = 'Medium - restricting who can enroll for the enrollment-agent template requires confirming which automated on-behalf-of enrollment process currently uses it.'
+                $finding.KnownRisks = 'Restricting enrollment agent template access can break an automated on-behalf-of enrollment process that currently relies on the broader access.'
+                $finding.BackupRollback = 'Easy - restore the enrollment permission on the template if needed; effective immediately.'
                 $finding.Details = @{
                     DistinguishedName = $template.DistinguishedName
                     EnrollmentPrincipals = $enrollmentPrincipals -join '; '
@@ -154,6 +171,9 @@ function Test-ADCertificateServices {
                 $finding.Description = "Certificate template '$templateName' does not require Registration Authority signatures and allows low-privileged enrollment."
                 $finding.Impact = "Reduces oversight for certificate issuance and increases risk of unauthorized certificate requests."
                 $finding.Remediation = "For sensitive templates, require at least one RA signature to add an approval layer."
+                $finding.EstimatedEffort = 'Medium - enforcing a required-signature count needs coordination with whichever process actually enrolls from this template, since that process may not yet have an authorized enrollment-agent certificate in its chain.'
+                $finding.KnownRisks = 'Enforcing an RA signature requirement will break any enrollment workflow that doesn''t already have an authorized enrollment-agent certificate, until that workflow is updated.'
+                $finding.BackupRollback = 'Easy - revert the required-signature count to 0 on the template; effective immediately for new requests.'
                 $finding.Details = @{
                     DistinguishedName = $template.DistinguishedName
                     RASignaturesRequired = $raSignatures
@@ -164,31 +184,49 @@ function Test-ADCertificateServices {
 
         $certAuthorities = @($Snapshot.ADCS.CertificateAuthorities)
         foreach ($ca in $certAuthorities) {
+            # A CA's ACL can grant the same principal the same dangerous
+            # right via more than one ACE (one per object type) - dedupe
+            # per check so a repeated ACE doesn't produce a repeated
+            # finding.
+            $__seenEsc7Hit = @{}
+            $__seenLowPrivCaHit = @{}
             foreach ($access in @($ca.Access)) {
                 if ($access.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner' -and
                     $access.IdentityReference -notmatch 'Enterprise Admins|Domain Admins|SYSTEM|Administrators') {
 
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'Certificate Services'
-                    $finding.Issue = 'Overly Permissive CA Permissions (ESC7)'
-                    $finding.Severity = 'Critical'
-                    $finding.SeverityLevel = 4
-                    $finding.AffectedObject = $ca.Name
-                    $finding.Description = "Certificate Authority '$($ca.Name)' has overly permissive access granted to $($access.IdentityReference)."
-                    $finding.Impact = "Unauthorized users could modify CA configuration, enable vulnerable templates, issue fraudulent certificates, or compromise the entire PKI infrastructure."
-                    $finding.Remediation = "Remove excessive permissions and ensure only Enterprise Admins and CA administrators have full control."
-                    $finding.Details = @{
-                        DistinguishedName = $ca.DistinguishedName
-                        Identity = $access.IdentityReference
-                        Rights = $access.ActiveDirectoryRights
-                        ESCType = 'ESC7'
+                    $__esc7Key = "$($access.IdentityReference)|$($access.ActiveDirectoryRights)"
+                    if (-not $__seenEsc7Hit.ContainsKey($__esc7Key)) {
+                        $__seenEsc7Hit[$__esc7Key] = $true
+
+                        $finding = [ADSecurityFinding]::new()
+                        $finding.Category = 'Certificate Services'
+                        $finding.Issue = 'Overly Permissive CA Permissions (ESC7)'
+                        $finding.Severity = 'Critical'
+                        $finding.SeverityLevel = 4
+                        $finding.AffectedObject = $ca.Name
+                        $finding.Description = "Certificate Authority '$($ca.Name)' has overly permissive access granted to $($access.IdentityReference)."
+                        $finding.Impact = "Unauthorized users could modify CA configuration, enable vulnerable templates, issue fraudulent certificates, or compromise the entire PKI infrastructure."
+                        $finding.Remediation = "Remove excessive permissions and ensure only Enterprise Admins and CA administrators have full control."
+                        $finding.EstimatedEffort = 'Medium - removing Manage CA / Manage Certificates rights from an unexpected principal on the CA object''s own ACL; confirm with the PKI team it isn''t a legitimate delegated administrator.'
+                        $finding.KnownRisks = 'Procedural - confirm the principal isn''t an active, legitimate delegated CA administrator before removing their rights.'
+                        $finding.BackupRollback = 'Easy - re-add the removed permission via the CA console''s Security tab; effective immediately, no data loss.'
+                        $finding.Details = @{
+                            DistinguishedName = $ca.DistinguishedName
+                            Identity = $access.IdentityReference
+                            Rights = $access.ActiveDirectoryRights
+                            ESCType = 'ESC7'
+                        }
+                        $findings += $finding
                     }
-                    $findings += $finding
                 }
 
                 if ($access.ActiveDirectoryRights -match 'ExtendedRight') {
                     foreach ($lowPriv in $lowPrivilegedPrincipals) {
                         if ($access.IdentityReference -match [regex]::Escape($lowPriv)) {
+                            $__lowPrivCaKey = "$($access.IdentityReference)|$($access.ActiveDirectoryRights)"
+                            if ($__seenLowPrivCaHit.ContainsKey($__lowPrivCaKey)) { break }
+                            $__seenLowPrivCaHit[$__lowPrivCaKey] = $true
+
                             $finding = [ADSecurityFinding]::new()
                             $finding.Category = 'Certificate Services'
                             $finding.Issue = 'Low-Privilege CA Management Rights'
@@ -198,6 +236,9 @@ function Test-ADCertificateServices {
                             $finding.Description = "Certificate Authority '$($ca.Name)' grants extended rights to low-privileged principal '$($access.IdentityReference)'."
                             $finding.Impact = "Low-privileged users may be able to manage the CA or certificates, potentially approving pending requests or modifying CA configuration."
                             $finding.Remediation = "Review and remove CA management rights from low-privileged principals."
+                            $finding.EstimatedEffort = 'Medium - removing the CA Manager role assignment from an unexpected principal via the Certification Authority console; confirm the principal doesn''t actively perform day-to-day CA management first.'
+                            $finding.KnownRisks = 'Procedural - low technical risk unless the principal genuinely manages CA operations, in which case they lose that capability until re-added.'
+                            $finding.BackupRollback = 'Easy - re-add the role assignment via the CA console; effective immediately, no data loss.'
                             $finding.Details = @{
                                 DistinguishedName = $ca.DistinguishedName
                                 Identity = $access.IdentityReference
@@ -217,11 +258,18 @@ function Test-ADCertificateServices {
 
     try {
         # Check if AD CS is installed
-        $configContext = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
         
         try {
-            $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -Filter * -Properties * -ErrorAction Stop
+            # -SearchScope OneLevel, not the default Subtree - see the
+            # matching comment in CertificateServicesExtendedAudits.ps1.
+            # Subtree would also return the "Certificate Templates"
+            # container object itself, which has no template attributes
+            # and would otherwise be silently iterated as if it were a
+            # real template.
+            $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
         }
         catch {
             Write-Verbose "AD Certificate Services not found or accessible. Skipping AD CS audit."
@@ -231,7 +279,7 @@ function Test-ADCertificateServices {
         Write-Verbose "Analyzing $($certTemplates.Count) certificate templates..."
         
         # Get the domain for checking enrollment permissions
-        $domain = Get-ADDomain
+        $domain = Get-ADDomain -Server $__adServer
         
         # Define low-privileged enrollment principals that make ESC1 exploitable
         $lowPrivilegedPrincipals = @(
@@ -249,9 +297,19 @@ function Test-ADCertificateServices {
             }
             
             # Get enrollment permissions
+            #
+            # Get-ADObject -Properties nTSecurityDescriptor, not
+            # Get-Acl -Path "AD:...": Get-Acl against the "AD:" PSDrive
+            # has NO -Server parameter at all and reads via whatever
+            # domain/DC the AD: drive itself defaults to (the calling
+            # session's ambient domain) - completely bypassing this
+            # module's -Server override, unlike every other AD read here.
+            # nTSecurityDescriptor returns the identical
+            # ActiveDirectorySecurity object type (.Access, etc.) via a
+            # real Get-AD* cmdlet, which IS -Server-aware.
             $templateAcl = $null
             try {
-                $templateAcl = Get-Acl -Path "AD:$($template.DistinguishedName)" -ErrorAction Stop
+                $templateAcl = (Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor
             }
             catch {
                 Write-Verbose "Could not get ACL for template '$templateName': $_"
@@ -279,6 +337,11 @@ function Test-ADCertificateServices {
                     }
                 }
             }
+            # A template can grant the same low-priv principal enrollment
+            # via more than one ACE (e.g. separate Enroll and AutoEnroll
+            # extended-right ACEs) - dedupe so the same name doesn't appear
+            # twice in one finding's principal list.
+            $enrollmentPrincipals = @($enrollmentPrincipals | Select-Object -Unique)
             
             # ESC1: Template allows SAN AND has overly permissive enrollment rights
             $enrollmentFlag = $template.'msPKI-Enrollment-Flag'
@@ -298,6 +361,9 @@ function Test-ADCertificateServices {
                     $finding.Description = "Certificate template '$templateName' allows enrollees to specify Subject Alternative Names AND allows enrollment by low-privileged principals ($($enrollmentPrincipals -join ', ')). This is a critical ESC1 vulnerability."
                     $finding.Impact = "Attackers can request certificates for arbitrary accounts (including Domain Admins) and authenticate as those users."
                     $finding.Remediation = "Remove CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT flag OR restrict enrollment permissions to only trusted administrators. Current low-priv enrollers: $($enrollmentPrincipals -join ', ')"
+                    $finding.EstimatedEffort = 'Medium - requires disabling "supply subject in request" or restricting enrollment rights, and confirming which systems currently request from this template before changing it.'
+                    $finding.KnownRisks = 'Disabling attacker-controllable SAN (CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT) can break legitimate workflows that rely on supplying a SAN at request time, such as some non-Windows or automated enrollment clients.'
+                    $finding.BackupRollback = 'Moderate - AD CS templates are versioned, so a prior version''s settings can be restored and republished; however, any certificates already issued during the vulnerable window remain valid until revoked or expired, so this isn''t a full rollback of the exposure itself.'
                     $finding.Details = @{
                         DistinguishedName = $template.DistinguishedName
                         CertificateNameFlag = $certNameFlag
@@ -318,6 +384,9 @@ function Test-ADCertificateServices {
                     $finding.Description = "Certificate template '$templateName' allows enrollees to specify Subject Alternative Names, but enrollment appears restricted to privileged users."
                     $finding.Impact = "If enrollment permissions are weakened, this template could become an ESC1 vulnerability."
                     $finding.Remediation = "Consider removing the CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT flag if not required. Monitor enrollment permissions."
+                    $finding.EstimatedEffort = 'Medium - same underlying mechanism as the unrestricted ESC1 finding, but exposure is narrower (fewer principals can enroll), so validate the smaller set of dependent systems before changing.'
+                    $finding.KnownRisks = 'Disabling attacker-controllable SAN can break legitimate workflows among the restricted set of principals that currently rely on supplying a SAN at request time.'
+                    $finding.BackupRollback = 'Moderate - restore a prior template version if a legitimate workflow breaks; certificates already issued remain valid until revoked or expired.'
                     $finding.Details = @{
                         DistinguishedName = $template.DistinguishedName
                         CertificateNameFlag = $certNameFlag
@@ -348,6 +417,9 @@ function Test-ADCertificateServices {
                 $finding.Description = "Certificate template '$templateName' has no Extended Key Usage (EKU) restrictions or allows 'Any Purpose', allowing certificates to be used for any purpose including authentication."
                 $finding.Impact = "Certificates can be used for unintended purposes including client authentication, code signing, or encryption."
                 $finding.Remediation = "Configure specific EKUs for the template to limit certificate usage to intended purposes only."
+                $finding.EstimatedEffort = 'Medium - requires validating which application relies on the current broad EKU set (e.g. a cert used for both client authentication and code signing) before narrowing it.'
+                $finding.KnownRisks = 'Restricting EKUs can break legitimate uses that rely on the current broad EKU set.'
+                $finding.BackupRollback = 'Moderate - restore the template''s prior EKU configuration (via a template export/backup, e.g. PSPKI or certutil) if a legitimate use breaks; certificates already issued remain valid until revoked or expired.'
                 $finding.Details = @{
                     DistinguishedName = $template.DistinguishedName
                     HasNoEKU = $hasNoEKU
@@ -372,6 +444,9 @@ function Test-ADCertificateServices {
                 $finding.Description = "Certificate template '$templateName' is an Enrollment Agent template that allows enrollment by low-privileged principals."
                 $finding.Impact = "Attackers can obtain an Enrollment Agent certificate and use it to enroll for certificates on behalf of other users, including privileged accounts."
                 $finding.Remediation = "Restrict enrollment permissions to only trusted Enrollment Agents. Implement enrollment agent restrictions at the CA level."
+                $finding.EstimatedEffort = 'Medium - restricting who can enroll for the enrollment-agent template requires confirming which automated on-behalf-of enrollment process currently uses it.'
+                $finding.KnownRisks = 'Restricting enrollment agent template access can break an automated on-behalf-of enrollment process that currently relies on the broader access.'
+                $finding.BackupRollback = 'Easy - restore the enrollment permission on the template if needed; effective immediately.'
                 $finding.Details = @{
                     DistinguishedName = $template.DistinguishedName
                     EnrollmentPrincipals = $enrollmentPrincipals -join '; '
@@ -392,6 +467,9 @@ function Test-ADCertificateServices {
                 $finding.Description = "Certificate template '$templateName' does not require Registration Authority signatures and allows low-privileged enrollment."
                 $finding.Impact = "Reduces oversight for certificate issuance and increases risk of unauthorized certificate requests."
                 $finding.Remediation = "For sensitive templates, require at least one RA signature to add an approval layer."
+                $finding.EstimatedEffort = 'Medium - enforcing a required-signature count needs coordination with whichever process actually enrolls from this template, since that process may not yet have an authorized enrollment-agent certificate in its chain.'
+                $finding.KnownRisks = 'Enforcing an RA signature requirement will break any enrollment workflow that doesn''t already have an authorized enrollment-agent certificate, until that workflow is updated.'
+                $finding.BackupRollback = 'Easy - revert the required-signature count to 0 on the template; effective immediately for new requests.'
                 $finding.Details = @{
                     DistinguishedName = $template.DistinguishedName
                     RASignaturesRequired = $raSignatures
@@ -402,39 +480,63 @@ function Test-ADCertificateServices {
         
         # Check Certificate Authority permissions (ESC7)
         try {
-            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -Filter * -Properties * -ErrorAction Stop
+            # -SearchScope OneLevel, not the default Subtree - a Subtree
+            # search also returns the "Enrollment Services" container
+            # object itself (no dNSHostName/cACertificate/real ACL of
+            # interest), which was previously iterated here as if it were
+            # a real CA, producing a bogus/confusing ACL check and
+            # potential finding attributed to a "CA" named "Enrollment
+            # Services" that isn't actually a Certificate Authority.
+            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
             
             foreach ($ca in $certAuthorities) {
                 $acl = $null
                 try {
-                    $acl = Get-Acl -Path "AD:$($ca.DistinguishedName)" -ErrorAction Stop
+                    # Get-ADObject -Properties nTSecurityDescriptor, not
+                    # Get-Acl -Path "AD:..." - see the matching comment
+                    # above on the template ACL read for why.
+                    $acl = (Get-ADObject -Identity $ca.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor
                 }
                 catch {
                     Write-Verbose "Could not get ACL for CA '$($ca.Name)': $_"
                 }
 
                 if ($acl) {
+                    # A CA's ACL can grant the same principal the same
+                    # dangerous right via more than one ACE (one per object
+                    # type) - dedupe per check so a repeated ACE doesn't
+                    # produce a repeated finding.
+                    $__seenEsc7Hit = @{}
+                    $__seenLowPrivCaHit = @{}
                     foreach ($access in $acl.Access) {
                         # Check for dangerous permissions on CA
                         if ($access.ActiveDirectoryRights -match 'GenericAll|WriteDacl|WriteOwner' -and 
                             $access.IdentityReference -notmatch 'Enterprise Admins|Domain Admins|SYSTEM|Administrators') {
                             
-                            $finding = [ADSecurityFinding]::new()
-                            $finding.Category = 'Certificate Services'
-                            $finding.Issue = 'Overly Permissive CA Permissions (ESC7)'
-                            $finding.Severity = 'Critical'
-                            $finding.SeverityLevel = 4
-                            $finding.AffectedObject = $ca.Name
-                            $finding.Description = "Certificate Authority '$($ca.Name)' has overly permissive access granted to $($access.IdentityReference)."
-                            $finding.Impact = "Unauthorized users could modify CA configuration, enable vulnerable templates, issue fraudulent certificates, or compromise the entire PKI infrastructure."
-                            $finding.Remediation = "Remove excessive permissions and ensure only Enterprise Admins and CA administrators have full control."
-                            $finding.Details = @{
-                                DistinguishedName = $ca.DistinguishedName
-                                Identity = $access.IdentityReference.Value
-                                Rights = $access.ActiveDirectoryRights.ToString()
-                                ESCType = 'ESC7'
+                            $__esc7Key = "$($access.IdentityReference)|$($access.ActiveDirectoryRights)"
+                            if (-not $__seenEsc7Hit.ContainsKey($__esc7Key)) {
+                                $__seenEsc7Hit[$__esc7Key] = $true
+
+                                $finding = [ADSecurityFinding]::new()
+                                $finding.Category = 'Certificate Services'
+                                $finding.Issue = 'Overly Permissive CA Permissions (ESC7)'
+                                $finding.Severity = 'Critical'
+                                $finding.SeverityLevel = 4
+                                $finding.AffectedObject = $ca.Name
+                                $finding.Description = "Certificate Authority '$($ca.Name)' has overly permissive access granted to $($access.IdentityReference)."
+                                $finding.Impact = "Unauthorized users could modify CA configuration, enable vulnerable templates, issue fraudulent certificates, or compromise the entire PKI infrastructure."
+                                $finding.Remediation = "Remove excessive permissions and ensure only Enterprise Admins and CA administrators have full control."
+                                $finding.EstimatedEffort = 'Medium - removing Manage CA / Manage Certificates rights from an unexpected principal on the CA object''s own ACL; confirm with the PKI team it isn''t a legitimate delegated administrator.'
+                                $finding.KnownRisks = 'Procedural - confirm the principal isn''t an active, legitimate delegated CA administrator before removing their rights.'
+                                $finding.BackupRollback = 'Easy - re-add the removed permission via the CA console''s Security tab; effective immediately, no data loss.'
+                                $finding.Details = @{
+                                    DistinguishedName = $ca.DistinguishedName
+                                    Identity = $access.IdentityReference.Value
+                                    Rights = $access.ActiveDirectoryRights.ToString()
+                                    ESCType = 'ESC7'
+                                }
+                                $findings += $finding
                             }
-                            $findings += $finding
                         }
                         
                         # Check for ManageCA or ManageCertificates permissions
@@ -443,6 +545,10 @@ function Test-ADCertificateServices {
                             # ManageCertificates: a05b8cc2-17bc-4802-a710-e7c15ab866a2
                             foreach ($lowPriv in $lowPrivilegedPrincipals) {
                                 if ($access.IdentityReference.Value -match [regex]::Escape($lowPriv)) {
+                                    $__lowPrivCaKey = "$($access.IdentityReference)|$($access.ActiveDirectoryRights)"
+                                    if ($__seenLowPrivCaHit.ContainsKey($__lowPrivCaKey)) { break }
+                                    $__seenLowPrivCaHit[$__lowPrivCaKey] = $true
+
                                     $finding = [ADSecurityFinding]::new()
                                     $finding.Category = 'Certificate Services'
                                     $finding.Issue = 'Low-Privilege CA Management Rights'
@@ -452,6 +558,9 @@ function Test-ADCertificateServices {
                                     $finding.Description = "Certificate Authority '$($ca.Name)' grants extended rights to low-privileged principal '$($access.IdentityReference)'."
                                     $finding.Impact = "Low-privileged users may be able to manage the CA or certificates, potentially approving pending requests or modifying CA configuration."
                                     $finding.Remediation = "Review and remove CA management rights from low-privileged principals."
+                                    $finding.EstimatedEffort = 'Medium - removing the CA Manager role assignment from an unexpected principal via the Certification Authority console; confirm the principal doesn''t actively perform day-to-day CA management first.'
+                                    $finding.KnownRisks = 'Procedural - low technical risk unless the principal genuinely manages CA operations, in which case they lose that capability until re-added.'
+                                    $finding.BackupRollback = 'Easy - re-add the role assignment via the CA console; effective immediately, no data loss.'
                                     $finding.Details = @{
                                         DistinguishedName = $ca.DistinguishedName
                                         Identity = $access.IdentityReference.Value

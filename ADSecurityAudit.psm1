@@ -35,6 +35,14 @@ catch {
 $moduleScripts = @(
     'src/Common.ps1',
     'src/Scoring.ps1',
+    # Data-only: the current EstimatedEffort/KnownRisks/BackupRollback/
+    # OperationalNotes text per Issue name, used by
+    # Merge-ADFindingNarrativeGaps (Common.ps1) to backfill those fields
+    # when recreating a report from an older JSON export. Must load after
+    # Common.ps1 (defines the function that reads it) but has no
+    # dependency on load order relative to the check files below - it's
+    # pure data, referenced only by Issue name string.
+    'src/FindingNarrativeLibrary.ps1',
     'src/Snapshot.ps1',
     'src/UserAudits.ps1',
     'src/GroupAudits.ps1',
@@ -65,6 +73,9 @@ $moduleScripts = @(
     'src/RodcSecurityAudits.ps1',
     'src/ControlPaths.ps1',
     'src/ForestConsolidation.ps1',
+    'src/RetestComparison.ps1',
+    'src/RemediationState.ps1',
+    'src/MaturityTrend.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
 )
@@ -91,6 +102,7 @@ Export-ModuleMember -Function @(
     'Get-ADPrivilegedUsers',
     'Test-ADCertificateServices',
     'Test-ADCSExtended',
+    'Test-ADCSChaseFallback',
     'Test-KRBTGTAccount',
     'Test-ADDomainTrusts',
     'Test-LAPSDeployment',
@@ -113,6 +125,15 @@ Export-ModuleMember -Function @(
     'Export-ADControlPathGraphBloodHound',
     'Get-ADForestConsolidation',
     'Export-ADForestConsolidationHTML',
+    'Get-ADRetestComparison',
+    'Export-ADRetestComparisonHTML',
+    'Set-ADRemediationState',
+    'Get-ADRemediationState',
+    'Get-ADMaturityTrend',
+    'Export-ADMaturityTrendHTML',
+    'Export-ADSecurityReportHTML',
+    'Export-ADSecurityReportHTMLFromJson',
+    'Export-ADSecurityReportCSVFromJson',
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',

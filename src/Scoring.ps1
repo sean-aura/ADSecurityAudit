@@ -59,6 +59,7 @@ $Script:MitreTechniqueNames = @{
     'T1098'      = 'Account Manipulation'
     'T1110'      = 'Brute Force'
     'T1134.005'  = 'Access Token Manipulation: SID-History Injection'
+    'T1135'      = 'Network Share Discovery'
     'T1136.002'  = 'Create Account: Domain Account'
     'T1187'      = 'Forced Authentication'
     'T1210'      = 'Exploitation of Remote Services'
@@ -128,9 +129,20 @@ $Script:ADFindingMetadataMap = @{
     'Password Complexity Disabled'                         = @{ Mitre = 'T1110';     Anssi = 'vuln2_pwd_complexity_disabled'; Weight = 20 }
     'Reversible Encryption Enabled Domain-Wide'            = @{ Mitre = 'T1003';     Anssi = 'vuln1_reversible_domain_wide';  Weight = 40 }
     'Outdated Domain Functional Level'                     = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_outdated_dfl';            Weight = 4  }
+    'Outdated Forest Functional Level'                     = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_outdated_ffl';            Weight = 4  }
+    # Lower weight than the "Outdated" pair above (4): Windows2016 is fully
+    # supported and not itself insecure - this is an opportunity/roadmap
+    # item (Windows Server 2025 introduced the first new functional level
+    # since 2016), not a vulnerability, so it scores like the other Low-
+    # severity hygiene items (AD Recycle Bin Not Enabled, Short Tombstone
+    # Lifetime) rather than the security-relevant "actually deprecated"
+    # levels.
+    'Domain Functional Level Could Be Raised'              = @{ Mitre = '';          Anssi = 'vuln4_upgradable_dfl';          Weight = 1  }
+    'Forest Functional Level Could Be Raised'               = @{ Mitre = '';          Anssi = 'vuln4_upgradable_ffl';          Weight = 1  }
     'AD Recycle Bin Not Enabled'                           = @{ Mitre = 'T1485';     Anssi = 'vuln5_recycle_bin_disabled';    Weight = 1  }
     'Legacy Operating Systems in Domain'                   = @{ Mitre = 'T1210';     Anssi = 'vuln3_legacy_os';               Weight = 10 }
     'Stale AzureADSSOACC Kerberos Key'                     = @{ Mitre = 'T1558.002'; Anssi = 'vuln2_azuread_sso_key';         Weight = 20 }
+    'Short Tombstone Lifetime'                             = @{ Mitre = '';          Anssi = 'vuln5_short_tombstone_lifetime'; Weight = 1  }
 
     # --- Domain Trusts ---
     'Bidirectional Domain Trust'                           = @{ Mitre = 'T1482';     Anssi = 'vuln4_bidirectional_trust';     Weight = 4  }
@@ -151,6 +163,7 @@ $Script:ADFindingMetadataMap = @{
     'CA Web Enrollment over HTTP (ESC8)'                               = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_esc8';        Weight = 40 }
     'ROCA-Vulnerable Certificate Key'                                  = @{ Mitre = 'T1649'; Anssi = 'vuln2_adcs_roca';        Weight = 20 }
     'Weak Signature Algorithm in PKI Trust Store'                      = @{ Mitre = 'T1649'; Anssi = 'vuln3_adcs_weak_signature'; Weight = 10 }
+    'CA Chase-Fallback Enabled (CVE-2026-54121 / Certighost Exposure)' = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_certighost_chase'; Weight = 40 }
 
     # --- Kerberos Security (KRBTGT) ---
     'KRBTGT Password Age Exceeds Recommended Threshold'   = @{ Mitre = 'T1558.001'; Anssi = 'vuln1_krbtgt_age';              Weight = 40 }
@@ -177,6 +190,8 @@ $Script:ADFindingMetadataMap = @{
     'Enterprise Key Admins Over-Privileged (Misconfiguration Bug)'              = @{ Mitre = 'T1556'; Anssi = 'vuln2_enterprise_key_admins'; Weight = 20 }
     'Enterprise Key Admins Permissions Not Scoped to msDS-KeyCredentialLink'    = @{ Mitre = 'T1556'; Anssi = 'vuln3_enterprise_key_admins_scope'; Weight = 10 }
     'Dangerous Rights on Critical OU'                    = @{ Mitre = 'T1098';     Anssi = 'vuln1_dangerous_ou_rights';      Weight = 40 }
+    'Non-Standard Permissions on Schema Naming Context'         = @{ Mitre = 'T1098'; Anssi = 'vuln1_schema_nc_acl'; Weight = 40 }
+    'Non-Standard Permissions on Configuration Naming Context'  = @{ Mitre = 'T1098'; Anssi = 'vuln1_config_nc_acl'; Weight = 40 }
 
     # --- Legacy Attack Vector / Admin Equivalence ---
     'Shadow Credentials Detected'                        = @{ Mitre = 'T1556';     Anssi = 'vuln1_shadow_credentials';       Weight = 40 }
@@ -193,6 +208,7 @@ $Script:ADFindingMetadataMap = @{
     'Dangerous dsHeuristics Flag Set'                    = @{ Mitre = 'T1556';     Anssi = 'vuln2_dsheuristics_dangerous';  Weight = 20 }
     'Broad Membership in Pre-Windows 2000 Compatible Access' = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_prewin2000_broad';    Weight = 20 }
     'Anonymous LDAP / RootDSE Binding Permitted'         = @{ Mitre = 'T1087.002'; Anssi = 'vuln3_anonymous_bind';          Weight = 10 }
+    'Null-Session Pipe/Share Access Permitted'           = @{ Mitre = 'T1135';     Anssi = 'vuln3_null_session_access';     Weight = 10 }
 
     # --- Coercion & NTLM Relay Exposure ---
     'Print Spooler Running on Domain Controller'         = @{ Mitre = 'T1187';     Anssi = 'vuln1_dc_spooler_running';      Weight = 40 }
@@ -205,6 +221,7 @@ $Script:ADFindingMetadataMap = @{
     'DNS Zone Transfer Allowed'                               = @{ Mitre = 'T1590.002'; Anssi = 'vuln3_dns_zone_transfer';        Weight = 10 }
     'Insecure Dynamic DNS Updates Enabled'                    = @{ Mitre = 'T1557';     Anssi = 'vuln3_dns_insecure_updates';     Weight = 10 }
     'Authenticated Users Can Create Child Objects in DNS Zone' = @{ Mitre = 'T1557';    Anssi = 'vuln2_dns_adidns_createchild';   Weight = 20 }
+    'Stale/Dangling DNS Zone Delegation'                      = @{ Mitre = 'T1590.002'; Anssi = 'vuln2_dns_stale_delegation';     Weight = 20 }
 
     # --- Legacy Auth & Name Poisoning (SMBv1, signing, LM/NTLMv1, LLMNR, WSUS-HTTP) ---
     'SMBv1 Enabled / Not Disabled by Policy'              = @{ Mitre = 'T1210';     Anssi = 'vuln1_smbv1_enabled';          Weight = 40 }
@@ -229,6 +246,7 @@ $Script:ADFindingMetadataMap = @{
     'GPP cpassword Found in SYSVOL'                       = @{ Mitre = 'T1552.006'; Anssi = 'vuln1_gpp_cpassword';          Weight = 40 }
     'Credentials Referenced in Logon/Startup Script'      = @{ Mitre = 'T1552.001'; Anssi = 'vuln2_script_credentials';     Weight = 20 }
     'Insecure Setting Deployed via GPO'                   = @{ Mitre = 'T1484.001'; Anssi = 'vuln3_gpo_insecure_setting';   Weight = 10 }
+    'GPO Grants Sensitive Logon Right to Broad Principal'  = @{ Mitre = 'T1078';     Anssi = 'vuln1_gpo_anonymous_logon_right'; Weight = 40 }
 
     # --- Known DC Vulnerabilities by Patch/Build (MS14-068, MS17-010, ZeroLogon, PrintNightmare, CVE-2026-41089 Netlogon RCE, BadSuccessor) ---
     'DC Missing ZeroLogon Patch'                          = @{ Mitre = 'T1068';     Anssi = 'vuln1_zerologon_unpatched';    Weight = 40 }
@@ -269,41 +287,80 @@ function Get-ADFindingMetadataMap {
 function Set-ADFindingMetadata {
     <#
     .SYNOPSIS
-        Tags an ADSecurityFinding with MITRE / ANSSI / Weight from the central map.
+        Tags a finding with MITRE / ANSSI / Weight from the central map.
     .DESCRIPTION
         Looks the finding's Issue string up in $Script:ADFindingMetadataMap and
         populates MitreTechnique, AnssiControl, and Weight. Idempotent. For
         issues not yet in the table, falls back to severity-derived defaults so
         scoring still degrades gracefully (and emits a verbose warning so the
         gap can be closed by adding a table entry).
+
+        FIXED (reported): -Finding used to be typed [ADSecurityFinding].
+        That's correct for a live run (Main.ps1 passes genuine
+        [ADSecurityFinding] instances, a reference type, so mutations
+        inside this function correctly persisted back to the caller's
+        object) - but Export-ADSecurityReportHTMLFromJson and
+        Get-ADRetestComparison instead pass PSCustomObjects deserialized
+        from a findings JSON export. Passing a PSCustomObject to a
+        parameter typed as a specific class forces PowerShell to
+        implicitly CONSTRUCT A NEW, SEPARATE [ADSecurityFinding] instance
+        at the call boundary (a copy), tag THAT copy, and then discard it
+        when the function returns - the caller's original PSCustomObject
+        was never touched. The bug was invisible for a live run (already
+        the right type, no conversion happens) and invisible for a
+        recent-enough JSON export (Main.ps1 already tags every finding
+        with real Weight/AnssiControl before ConvertTo-Json, so the
+        IsNullOrEmpty/-le 0 guard in Get-ADRiskScore's caller skips
+        re-tagging entirely) - but for any finding whose JSON export
+        genuinely lacks this metadata (an old export from before v1.2.0
+        added tagging, or any Issue not yet in the map at export time),
+        Get-ADRiskScore's rescore call silently computed a correct-looking
+        score against a copy that was thrown away, then read Weight back
+        off the STILL-UNTAGGED original as 0 - understating (sometimes to
+        literally zero) that finding's contribution to the recomputed
+        risk score, maturity level, and MITRE summary, with no error or
+        warning of any kind.
+
+        -Finding is now untyped, so PowerShell passes the actual object
+        reference through unchanged - whatever its shape (a live
+        [ADSecurityFinding], or a JSON-deserialized PSCustomObject) - and
+        mutations below persist to the caller's own object. Property
+        writes go through Set-ADFindingProperty (not plain dot-assignment)
+        because a PSCustomObject from a JSON export that predates a given
+        property (e.g. Weight didn't exist in the schema yet) doesn't
+        have that property to assign to at all; plain "$Finding.Weight =
+        4" throws "the property 'Weight' cannot be found" in that case,
+        where a live [ADSecurityFinding] (which always has every property
+        the class declares) would not.
     .PARAMETER Finding
-        The finding to tag. Mutated in place and also returned for pipelining.
+        The finding to tag. Mutated in place and also returned for
+        pipelining. Deliberately untyped - see FIXED note above.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, ValueFromPipeline)]
-        [ADSecurityFinding]$Finding
+        $Finding
     )
 
     process {
         $meta = $Script:ADFindingMetadataMap[$Finding.Issue]
 
         if ($null -ne $meta) {
-            $Finding.MitreTechnique = $meta.Mitre
-            $Finding.AnssiControl   = $meta.Anssi
-            $Finding.Weight         = $meta.Weight
+            Set-ADFindingProperty -Object $Finding -Name 'MitreTechnique' -Value $meta.Mitre
+            Set-ADFindingProperty -Object $Finding -Name 'AnssiControl'   -Value $meta.Anssi
+            Set-ADFindingProperty -Object $Finding -Name 'Weight'         -Value $meta.Weight
         }
         else {
             Write-Verbose "Set-ADFindingMetadata: no mapping for Issue '$($Finding.Issue)'; using severity-derived defaults."
             $sev = $Finding.SeverityLevel
             if (-not $Script:ADScoreSeverityWeights.ContainsKey($sev)) { $sev = 0 }
 
-            if ($Finding.Weight -le 0) {
-                $Finding.Weight = $Script:ADScoreSeverityWeights[$sev]
+            if (-not ($Finding.Weight -gt 0)) {
+                Set-ADFindingProperty -Object $Finding -Name 'Weight' -Value $Script:ADScoreSeverityWeights[$sev]
             }
             if ([string]::IsNullOrEmpty($Finding.AnssiControl)) {
                 $lvl = $Script:ADScoreSeverityAnssiLevel[$sev]
-                $Finding.AnssiControl = "vuln${lvl}_unmapped"
+                Set-ADFindingProperty -Object $Finding -Name 'AnssiControl' -Value "vuln${lvl}_unmapped"
             }
         }
 
@@ -348,6 +405,20 @@ function Get-ADRiskScore {
         [array]$Findings
     )
 
+    # Defensive guard: flatten in case $Findings is jagged (an element that
+    # is itself a sub-array of several findings rather than one) - e.g. from
+    # a findings JSON re-read offline by Get-ADRetestComparison. Without
+    # this, a jagged element makes every property read below return an
+    # array instead of a scalar (PowerShell member-enumeration), producing a
+    # confusing "cannot convert System.Object[] to Int32" deep in the loop
+    # rather than working findings data. A no-op when $Findings is already
+    # flat (the normal case for a live audit run). @() wrap is load-bearing
+    # for a genuinely empty (zero-finding) call - see
+    # ConvertTo-ADFlatFindingsArray's own docs: without it, a clean run
+    # would silently reassign this already-validated parameter to a real
+    # $null mid-function, rather than keeping it a valid empty array.
+    $Findings = @(ConvertTo-ADFlatFindingsArray -Findings $Findings)
+
     $maturityLabels = @{
         1 = 'Level 1 - Critical gaps (basic hygiene not met)'
         2 = 'Level 2 - Partial hygiene'
@@ -367,6 +438,14 @@ function Get-ADRiskScore {
             FindingCount   = 0
             WeightedPoints = 0
             SeverityCounts = [PSCustomObject]@{ Critical = 0; High = 0; Medium = 0; Low = 0; Info = 0 }
+            # Stored as an ISO-8601 STRING, not a raw [datetime]. ConvertTo-Json
+            # expands a raw [datetime] using its own DisplayHint/DateTime/value
+            # note properties rather than a plain string, so anything that
+            # later reads this back with ConvertFrom-Json (e.g.
+            # Get-ADRetestComparison's score-sidecar metadata) would otherwise
+            # get "@{value=...; DisplayHint=2; DateTime=...}" instead of a date.
+            GeneratedDate  = (Get-Date).ToString('o')
+            ModuleVersion  = $script:ModuleVersion
         }
     }
 
@@ -479,6 +558,10 @@ function Get-ADRiskScore {
         FindingCount   = $Findings.Count
         WeightedPoints = $totalPoints
         SeverityCounts = [PSCustomObject]$sevCounts
+        # See the empty-environment branch above for why this is a string,
+        # not a raw [datetime].
+        GeneratedDate  = (Get-Date).ToString('o')
+        ModuleVersion  = $script:ModuleVersion
     }
 }
 

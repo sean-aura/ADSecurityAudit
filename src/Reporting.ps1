@@ -1,7 +1,399 @@
+function Format-ADFindingDetectedDate {
+    <#
+    .SYNOPSIS
+        Formats a finding's DetectedDate for display, tolerating a missing/
+        $null value instead of throwing.
+    .DESCRIPTION
+        FIXED (reported): DetectedDate.ToString('yyyy-MM-dd HH:mm') was
+        called directly inline. On a live [ADSecurityFinding] this always
+        works (the class always sets it at construction), but a finding
+        loaded from an older JSON export that predates DetectedDate being
+        added to the schema deserializes with no DetectedDate property at
+        all - PSCustomObject property access then returns $null, and
+        calling .ToString() on $null throws "You cannot call a method on
+        a null-valued expression." for every single such finding, visibly
+        on the console, while the "Detected:" field itself silently
+        rendered blank regardless (the error was non-fatal to the overall
+        report, just noisy and wrong-looking).
+    .PARAMETER DetectedDate
+        The finding's DetectedDate. May be $null, a [datetime], or (from
+        some JSON round-trips) a date-like [string].
+    .OUTPUTS
+        [string]
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        $DetectedDate
+    )
+    if ($null -eq $DetectedDate -or $DetectedDate -eq '') {
+        return 'Unknown (not present in this export)'
+    }
+    if ($DetectedDate -is [datetime]) {
+        return $DetectedDate.ToString('yyyy-MM-dd HH:mm')
+    }
+    # ConvertFrom-Json can hand back a date as a string rather than
+    # [datetime] depending on PowerShell version/format; try to parse it
+    # before giving up, so a well-formed date string still displays
+    # nicely rather than falling through to the raw string as-is.
+    $parsed = $null
+    if ([datetime]::TryParse($DetectedDate, [ref]$parsed)) {
+        return $parsed.ToString('yyyy-MM-dd HH:mm')
+    }
+    return [string]$DetectedDate
+}
+
+function Export-ADSecurityReportHTMLFromJson {
+    <#
+    .SYNOPSIS
+        Recreates the main HTML audit report from a previously-exported
+        AD_Security_Audit_<timestamp>.json findings file, with no live
+        Active Directory access.
+    .DESCRIPTION
+        Start-ADSecurityAudit's HTML report (Export-ADSecurityReportHTML) is
+        normally built once, in-memory, at the end of a live run - it needs
+        Findings plus several run-time-only values (Domain, Summary,
+        Duration, RunMode, SnapshotCollectedDate, OfflineSkipNotes,
+        PrivilegedUsers) that Start-ADSecurityAudit never persists to disk
+        on their own. Only two files survive a run for later offline use:
+        the flat findings export (AD_Security_Audit_<timestamp>.json) and,
+        optionally, its AD_Security_Score_<timestamp>.json sidecar.
+
+        This function is the "I only kept/have the JSON, not the original
+        HTML" recovery path: point it at a findings export (or a folder -
+        same newest-file resolution idiom as Get-ADRetestComparison's
+        -BaselinePath/-RetestPath) and it rebuilds the HTML report from
+        that alone. Because most of Export-ADSecurityReportHTML's other
+        inputs simply don't exist in the findings JSON, this comes with
+        real, spelled-out gaps versus the original report - see LIMITATIONS
+        below. If you still have the original HTML, that one file has
+        everything and this function has nothing to add for it.
+
+        If a sibling AD_Security_TestCoverage_<timestamp>.json sidecar
+        exists next to the findings file (same naming convention as the
+        Score sidecar - written automatically by a live/snapshot run),
+        its contents populate the recreated report's "Test Coverage"
+        section too (see Get-ADTestCoverageSidecar). An export that
+        predates coverage tracking simply omits that section.
+
+        The risk score shown is always freshly RECOMPUTED from the
+        findings via Get-ADRiskScore, never read back from a score sidecar
+        (same "never trust a stored sidecar score" philosophy as
+        Get-ADRetestComparison) - so a JSON export originally scored under
+        an older module version is rescored under whatever version you run
+        this function with.
+    .PARAMETER FindingsPath
+        Either an explicit AD_Security_Audit_<timestamp>.json file, or a
+        folder to search for the newest one (same resolution idiom as
+        Get-ADRetestComparison's -BaselinePath/-RetestPath).
+    .PARAMETER OutputPath
+        Path to write the recreated HTML report to - either an exact
+        file path, or a folder (an auto-named
+        "AD_Security_Audit_<timestamp>-recreated.html" is created inside
+        it, timestamp matched to the findings export being rebuilt from;
+        deliberately not the same name a live run would use for that
+        timestamp, so pointing this at the same folder the original
+        report already lives in can't silently overwrite it).
+    .PARAMETER Domain
+        Not present in the findings JSON (the ADSecurityFinding schema
+        doesn't carry a Domain field - see the note in
+        ForestConsolidation.ps1). Defaults to a clearly-labeled placeholder;
+        pass the actual domain name if you know it, so the recreated report
+        doesn't read as if the domain were unknown at scan time.
+    .PARAMETER Duration
+        Not present in the findings JSON (Start-ADSecurityAudit only times
+        a run in-memory). Defaults to zero; the recreated report's SCAN
+        DURATION will read as "0 seconds" unless you supply the real value.
+    .PARAMETER RunMode
+        Not recoverable from the findings JSON alone. Defaults to 'Live'.
+        Pass 'Offline (Snapshot)' (plus -SnapshotCollectedDate) if you know
+        the original run used -FromSnapshot and want that reflected.
+    .PARAMETER SnapshotCollectedDate
+        Only meaningful with -RunMode 'Offline (Snapshot)'; see
+        Export-ADSecurityReportHTML.
+    .OUTPUTS
+        None. Writes the HTML file to -OutputPath.
+    .EXAMPLE
+        Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00.json" `
+            -OutputPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00-recreated.html" `
+            -Domain "contoso.com"
+    .EXAMPLE
+        # Folder form - picks the newest AD_Security_Audit_*.json in it:
+        Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports\recreated.html"
+    .EXAMPLE
+        # Folder form for BOTH arguments - resolves the newest export and
+        # writes an auto-named "...-recreated.html" into the given folder:
+        Export-ADSecurityReportHTMLFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports"
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FindingsPath,
+
+        [Parameter(Mandatory)]
+        [string]$OutputPath,
+
+        [Parameter()]
+        [string]$Domain = 'Unknown (recreated from JSON export - Domain was not persisted in AD_Security_Audit_*.json)',
+
+        [Parameter()]
+        [timespan]$Duration = [timespan]::Zero,
+
+        [Parameter()]
+        [ValidateSet('Live', 'Offline (Snapshot)')]
+        [string]$RunMode = 'Live',
+
+        [Parameter()]
+        [Nullable[datetime]]$SnapshotCollectedDate = $null
+    )
+
+    $findingsFile = Resolve-ADRetestReportFile -Path $FindingsPath
+    $OutputPath = Resolve-ADRebuiltReportOutputPath -OutputPath $OutputPath -FindingsFile $findingsFile -Extension 'html'
+
+    try {
+        $findings = @(Get-Content -Path $findingsFile.FullName -Raw | ConvertFrom-Json)
+    }
+    catch {
+        throw "Failed to parse findings export '$($findingsFile.FullName)': $_"
+    }
+
+    # Defensive flatten, same reasoning as Get-ADRetestComparison - a no-op
+    # for a normal, already-flat export. @() wrap is load-bearing for a
+    # genuinely empty (zero-finding) export - see
+    # ConvertTo-ADFlatFindingsArray's own docs.
+    $findings = @(ConvertTo-ADFlatFindingsArray -Findings $findings)
+
+    # Reported gap: a report recreated from an older JSON export was
+    # missing the "Estimated Effort" / "Known Risks" / "Backup / Rollback"
+    # / "Operational Notes" sections entirely for any finding whose export
+    # predates those fields, with no indication anything was missing - it
+    # just silently read as a thinner report than a fresh run would
+    # produce. Backfills those fields (and MITRE/ANSSI/Weight) from
+    # current guidance where the loaded finding is missing them and a
+    # library entry exists; never overwrites real data the export already
+    # had. See Merge-ADFindingNarrativeGaps's own docs for exactly what
+    # this does and doesn't do.
+    $backfilledCount = Merge-ADFindingNarrativeGaps -Findings $findings
+    $runScopeNotes = @(Get-ADRunScopeNotes)
+    if ($backfilledCount -gt 0) {
+        $runScopeNotes += [PSCustomObject]@{
+            Category = 'Recreated From JSON'
+            Message  = "This report was recreated from a JSON findings export, not from a live/snapshot run. $backfilledCount finding(s) in this export were missing supporting information (Estimated Effort / Known Risks / Backup-Rollback / Operational Notes) that the current module version normally provides - this typically happens when the export predates that field being added, or predates that specific finding's current wording. Those sections were backfilled with CURRENT guidance for the finding's Issue type where available; this is representative guidance, not necessarily an exact reproduction of what the original run's module version would have shown. Any finding that still shows one of these sections missing has no current guidance available to backfill from."
+        }
+    }
+
+    Write-Verbose "Recomputing risk score for the recreated report under the current Get-ADRiskScore mapping table (never the original sidecar value, if one exists)..."
+    $riskScore = Get-ADRiskScore -Findings $findings
+
+    # Reported gap: neither this recreated report nor a live one gave any
+    # indication of which checks did NOT run (excluded, or attempted and
+    # failed) or which ran and found nothing. For a live/snapshot run,
+    # Main.ps1 now writes this alongside the findings JSON as
+    # AD_Security_TestCoverage_<timestamp>.json; pick it up here by the
+    # same sibling-filename convention the Score sidecar already uses, if
+    # it exists. An export from before this tracking existed (or one
+    # where the sidecar wasn't kept alongside the findings file) simply
+    # has no Test Coverage section - Get-ADTestCoverageSidecar returns an
+    # empty array for that case, not an error.
+    # @(...) wrapping here is load-bearing, not decorative: when
+    # Get-ADTestCoverageSidecar returns @() (no sidecar found), PowerShell
+    # represents that as an internal "nothing" value that compares equal
+    # to $null but wraps to a genuinely empty array under @(). Passing
+    # that value across ANOTHER function's parameter boundary (-TestCoverage
+    # below, and again inside Export-ADSecurityReportHTML) normalizes it to
+    # a real $null - and @($null).Count is 1, not 0. Without this @()
+    # here, a findings export with no coverage sidecar rendered a "Test
+    # Coverage" section claiming "0 check(s) tracked" instead of omitting
+    # the section entirely as intended.
+    $testCoverage = @(Get-ADTestCoverageSidecar -FindingsFile $findingsFile)
+
+    # Requested: make it explicit, in the report itself, when a JSON
+    # export has no coverage information because it predates the feature
+    # entirely - not just silently omit the Test Coverage section, which
+    # reads ambiguously (did nothing get excluded/fail, or was coverage
+    # simply never recorded for this run?). Test coverage tracking was
+    # introduced in module v1.24.0 (AD_Security_TestCoverage_*.json first
+    # written by Main.ps1 at that version) - an export from a version
+    # before that, or the rare case where the sidecar file itself was
+    # lost/not kept alongside the findings JSON, has NO data on which
+    # checks ran, passed, failed, or were excluded for this specific run.
+    # That's a real, total blank for the whole run - not "some checks
+    # were untested" (which is what an empty/zero Test Coverage section
+    # could otherwise be misread as).
+    if ($testCoverage.Count -eq 0) {
+        $runScopeNotes += [PSCustomObject]@{
+            Category = 'Test Coverage Not Available'
+            Message  = "No test coverage information is available for this run - this report cannot say which checks ran, passed, failed, or were excluded. Test coverage tracking was introduced in module version 1.24.0; this export either predates that version, or its AD_Security_TestCoverage_<timestamp>.json sidecar was not kept alongside the findings JSON being recreated from. This is a limitation of the export itself, not evidence that every check ran cleanly - if you need coverage information for this run, it does not exist and cannot be reconstructed from the findings alone."
+        }
+    }
+
+    # Mirrors Main.ps1's own $summary construction exactly, so the recreated
+    # report's Executive Summary counts match what a live run would have shown.
+    $summary = @{
+        Critical = @($findings | Where-Object { $_.Severity -eq 'Critical' }).Count
+        High     = @($findings | Where-Object { $_.Severity -eq 'High' }).Count
+        Medium   = @($findings | Where-Object { $_.Severity -eq 'Medium' }).Count
+        Low      = @($findings | Where-Object { $_.Severity -eq 'Low' }).Count
+    }
+
+    Write-Verbose "Recreating HTML report from '$($findingsFile.FullName)' ($($findings.Count) finding(s))..."
+    Export-ADSecurityReportHTML -Findings $findings -OutputPath $OutputPath -Domain $Domain -Summary $summary `
+        -Duration $Duration -RiskScore $riskScore -RunMode $RunMode -SnapshotCollectedDate $SnapshotCollectedDate `
+        -PrivilegedUsers $null -OfflineSkipNotes @() -RunScopeNotes $runScopeNotes -TestCoverage $testCoverage
+
+    Write-Verbose "Recreated HTML report written to '$OutputPath'."
+}
+
+function Export-ADSecurityReportCSVFromJson {
+    <#
+    .SYNOPSIS
+        Recreates the flat findings CSV (and, if a coverage sidecar is
+        available, a Test Coverage CSV alongside it) from a previously-
+        exported AD_Security_Audit_<timestamp>.json findings file, with no
+        live Active Directory access.
+    .DESCRIPTION
+        Reported gap: Export-ADSecurityReportHTMLFromJson existed to
+        rebuild the HTML report from an old JSON export, but there was no
+        equivalent for the CSV - so a CSV regenerated by hand (or not
+        regenerated at all) could silently drift out of date relative to
+        the JSON it's meant to be a flat view of, with no supported way
+        to bring it back in sync short of re-running the whole audit.
+
+        This function is that equivalent: point it at a findings export
+        (or a folder - same newest-file resolution idiom as
+        Get-ADRetestComparison's -BaselinePath/-RetestPath and
+        Export-ADSecurityReportHTMLFromJson's -FindingsPath) and it writes
+        a fresh AD_Security_Audit_<timestamp>-recreated.csv using
+        ConvertTo-ADFindingsCsvRows - the SAME column-construction
+        function Start-ADSecurityAudit's live export uses (Common.ps1),
+        so this can never independently drift from the live CSV's column
+        list. Supporting-information fields
+        (EstimatedEffort/KnownRisks/BackupRollback/OperationalNotes) and
+        MITRE/ANSSI/Weight metadata are backfilled the same way as the
+        HTML rebuild path (Merge-ADFindingNarrativeGaps) before being
+        written, so an old export's CSV benefits from the same "current
+        guidance" backfill as its HTML counterpart, not a lesser version
+        of it.
+
+        If a sibling AD_Security_TestCoverage_<timestamp>.json sidecar
+        exists next to the findings file, this ALSO writes a
+        <OutputPath>-coverage.csv alongside the findings CSV, using the
+        exact same rows Main.ps1's live export writes to
+        AD_Security_TestCoverage_<timestamp>.csv. An export that predates
+        coverage tracking (module v1.24.0) still gets a
+        <OutputPath>-coverage.csv, but with a single explanatory row
+        (Status = 'NotAvailable') instead of real per-check data - made
+        visible in the output artifact itself, not just a verbose log
+        line, since a genuinely-missing file is easy to read as "the tool
+        forgot" rather than "no data exists for this run".
+    .PARAMETER FindingsPath
+        Either an explicit AD_Security_Audit_<timestamp>.json file, or a
+        folder to search for the newest one.
+    .PARAMETER OutputPath
+        Path to write the recreated findings CSV to - either an exact
+        file path, or a folder (an auto-named
+        "AD_Security_Audit_<timestamp>-recreated.csv" is created inside
+        it, timestamp matched to the findings export being rebuilt from;
+        deliberately not the same name a live run would use for that
+        timestamp, so pointing this at the same folder the original
+        report already lives in can't silently overwrite it). If a
+        test-coverage sidecar is found, a second file is written
+        alongside it with "-coverage" inserted before the extension
+        (e.g. "recreated.csv" -> "recreated-coverage.csv").
+    .OUTPUTS
+        None. Writes the CSV file(s) to disk.
+    .EXAMPLE
+        Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00.json" `
+            -OutputPath "C:\Reports\AD_Security_Audit_2026-08-01_00-00-00-recreated.csv"
+    .EXAMPLE
+        # Folder form - picks the newest AD_Security_Audit_*.json in it:
+        Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports\recreated.csv"
+    .EXAMPLE
+        # Folder form for BOTH arguments - resolves the newest export and
+        # writes an auto-named "...-recreated.csv" into the given folder:
+        Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports"
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FindingsPath,
+
+        [Parameter(Mandatory)]
+        [string]$OutputPath
+    )
+
+    $findingsFile = Resolve-ADRetestReportFile -Path $FindingsPath
+    $OutputPath = Resolve-ADRebuiltReportOutputPath -OutputPath $OutputPath -FindingsFile $findingsFile -Extension 'csv'
+
+    try {
+        $findings = @(Get-Content -Path $findingsFile.FullName -Raw | ConvertFrom-Json)
+    }
+    catch {
+        throw "Failed to parse findings export '$($findingsFile.FullName)': $_"
+    }
+
+    # Same defensive flatten + narrative/metadata backfill as
+    # Export-ADSecurityReportHTMLFromJson, so the two rebuild paths never
+    # show different "current guidance" text for the same underlying
+    # export - see Merge-ADFindingNarrativeGaps's own docs. @() wrap is
+    # load-bearing for a genuinely empty export - see
+    # ConvertTo-ADFlatFindingsArray's own docs.
+    $findings = @(ConvertTo-ADFlatFindingsArray -Findings $findings)
+    $backfilledCount = Merge-ADFindingNarrativeGaps -Findings $findings
+    if ($backfilledCount -gt 0) {
+        Write-Verbose "Export-ADSecurityReportCSVFromJson: backfilled supporting-information fields on $backfilledCount finding(s) from current guidance before writing the CSV (see Merge-ADFindingNarrativeGaps)."
+    }
+
+    Write-Verbose "Recreating findings CSV from '$($findingsFile.FullName)' ($($findings.Count) finding(s))..."
+    ConvertTo-ADFindingsCsvRows -Findings $findings | Export-Csv -Path $OutputPath -NoTypeInformation -Encoding UTF8
+    Write-Verbose "Recreated findings CSV written to '$OutputPath'."
+
+    $testCoverage = @(Get-ADTestCoverageSidecar -FindingsFile $findingsFile)
+    if ($testCoverage.Count -gt 0) {
+        $coverageOutputPath = [System.IO.Path]::Combine(
+            [System.IO.Path]::GetDirectoryName($OutputPath),
+            ([System.IO.Path]::GetFileNameWithoutExtension($OutputPath) + '-coverage' + [System.IO.Path]::GetExtension($OutputPath))
+        )
+        $testCoverage | Sort-Object TestName | ForEach-Object {
+            [PSCustomObject]@{
+                TestName     = $_.TestName | ConvertTo-SafeCsvValue
+                Status       = $_.Status
+                FindingCount = $_.FindingCount
+                ErrorMessage = $_.ErrorMessage | ConvertTo-SafeCsvValue
+            }
+        } | Export-Csv -Path $coverageOutputPath -NoTypeInformation -Encoding UTF8
+        Write-Verbose "Recreated test coverage CSV written to '$coverageOutputPath'."
+    }
+    else {
+        # Requested: make this visible in the actual output artifact, not
+        # just -Verbose logging someone has to remember to check. Writes
+        # the coverage CSV anyway, but with a single explanatory row
+        # (Status = 'NotAvailable', clearly distinct from the real
+        # Completed/Failed/Excluded values) instead of leaving the
+        # coverage CSV entirely absent - a missing file next to one that
+        # DOES have a "-coverage.csv" sibling for other exports is easy
+        # to overlook as "the tool forgot" rather than "no data exists for
+        # this run". Same version-boundary explanation as the HTML
+        # rebuild path's Run Scope Note (see Export-ADSecurityReportHTMLFromJson).
+        $coverageOutputPath = [System.IO.Path]::Combine(
+            [System.IO.Path]::GetDirectoryName($OutputPath),
+            ([System.IO.Path]::GetFileNameWithoutExtension($OutputPath) + '-coverage' + [System.IO.Path]::GetExtension($OutputPath))
+        )
+        [PSCustomObject]@{
+            TestName     = '(no coverage data for this run)'
+            Status       = 'NotAvailable'
+            FindingCount = ''
+            ErrorMessage = 'Test coverage tracking was introduced in module version 1.24.0. This export either predates that version, or its AD_Security_TestCoverage_<timestamp>.json sidecar was not kept alongside the findings JSON being recreated from. This is a limitation of the export itself, not evidence that every check ran cleanly.' | ConvertTo-SafeCsvValue
+        } | Export-Csv -Path $coverageOutputPath -NoTypeInformation -Encoding UTF8
+        Write-Verbose "Export-ADSecurityReportCSVFromJson: no test coverage sidecar found for '$($findingsFile.Name)' - wrote a coverage CSV with a single explanatory 'NotAvailable' row instead of real per-check data."
+    }
+}
+
 function Export-ADSecurityReportHTML {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [array]$Findings,
         
         [Parameter(Mandatory)]
@@ -47,9 +439,48 @@ function Export-ADSecurityReportHTML {
         # go dig through the run's transcript to know what this specific
         # report does and doesn't cover.
         [Parameter()]
-        [array]$OfflineSkipNotes = @()
+        [array]$OfflineSkipNotes = @(),
+
+        # General-purpose "this check ran, but against a narrower/
+        # different target than its normal assumption" notes
+        # (Get-ADRunScopeNotes) - distinct from OfflineSkipNotes, which is
+        # specifically about -Snapshot coverage. So far, populated only
+        # when -Server named an explicit, non-PDC Domain Controller and a
+        # "PDC-only" check (Test-ADMachineAccountQuota,
+        # Test-ADDomainSecurity) ran against it directly. Rendered as a
+        # "Run Scope Information" section, for both live and offline runs
+        # (an offline run's notes come from the snapshot's own
+        # RunScopeNotes field, recorded at collection time).
+        [Parameter()]
+        [array]$RunScopeNotes = @(),
+
+        # Reported gap: neither the HTML nor CSV report gave any
+        # indication of which checks did NOT run (excluded via
+        # -IncludeTests/-ExcludeTests, or attempted and failed - console-
+        # only Write-Warning before this, invisible once you're reading
+        # the report later) or which ran and found nothing (a clean
+        # result was indistinguishable from "never ran" from the findings
+        # list alone). Each entry: TestName, Status ('Completed' |
+        # 'Failed' | 'Excluded'), FindingCount, ErrorMessage. Populated by
+        # Main.ps1 for a live/snapshot run (covers every entry in
+        # $allTests, not just the ones that ran), or recovered from the
+        # AD_Security_TestCoverage_<timestamp>.json sidecar by
+        # Export-ADSecurityReportHTMLFromJson if that sidecar sits next
+        # to the findings JSON being recreated from. Renders a "Test
+        # Coverage" section when non-empty; omitted (with a note as to
+        # why) when this module version's export predates coverage
+        # tracking.
+        [Parameter()]
+        [array]$TestCoverage = @()
     )
     
+    # Second layer of defense (see ConvertTo-ADNormalizedTestCoverage's
+    # own docs, Common.ps1) in case -TestCoverage is ever passed directly
+    # with a malformed "columnar" shape - e.g. a future caller that
+    # doesn't go through Get-ADTestCoverageSidecar, which already applies
+    # this same repair for the JSON-rebuild paths.
+    $TestCoverage = ConvertTo-ADNormalizedTestCoverage -Coverage $TestCoverage
+
     $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $isOfflineRun = ($RunMode -eq 'Offline (Snapshot)')
     $runModeBadgeColor = if ($isOfflineRun) { '#c8590b' } else { '#1a7f4e' }
@@ -60,6 +491,22 @@ function Export-ADSecurityReportHTML {
     $highFindings = $Findings | Where-Object { $_.Severity -eq 'High' } | Sort-Object Category
     $mediumFindings = $Findings | Where-Object { $_.Severity -eq 'Medium' } | Sort-Object Category
     $lowFindings = $Findings | Where-Object { $_.Severity -eq 'Low' } | Sort-Object Category
+    # Defensive catch-all: every check in this module currently only ever
+    # assigns Critical/High/Medium/Low (confirmed by a full source audit),
+    # but Get-ADRiskScore already has its own silent fallback for anything
+    # else (Scoring.ps1's "default { $sevCounts.Info++ }") - a finding
+    # with an unexpected Severity value (a typo, a future check, or a
+    # custom finding fed in from outside this module) would still be
+    # scored and still appear in the JSON/CSV exports (neither of which
+    # filter by severity at all), but would have been completely INVISIBLE
+    # in the HTML report - no section anywhere would ever render it, with
+    # no warning that anything was missing. Route it into its own section
+    # instead of letting it silently disappear, and warn so this is loud
+    # rather than silent if it's ever hit.
+    $otherFindings = @($Findings | Where-Object { $_.Severity -notin @('Critical', 'High', 'Medium', 'Low') } | Sort-Object Category)
+    if ($otherFindings.Count -gt 0) {
+        Write-Warning "Export-ADSecurityReportHTML: $($otherFindings.Count) finding(s) have an unexpected Severity value (not Critical/High/Medium/Low) and would have been invisible in the HTML report's severity sections - rendering them in a separate 'Other / Unclassified Severity' section instead. Affected Issue(s): $(($otherFindings | Select-Object -ExpandProperty Issue -Unique) -join '; ')"
+    }
 
     # Computed early (rather than where it's rendered, further down) so the
     # v1.20.1 sticky nav bar can know up front whether a Control Paths link
@@ -77,6 +524,7 @@ function Export-ADSecurityReportHTML {
     # will actually render for this run, so it's never a dead link.
     $navLinks = New-Object System.Collections.ArrayList
     [void]$navLinks.Add(@{ Href = '#'; Label = 'Executive Summary' })
+    if (@($TestCoverage).Count -gt 0) { [void]$navLinks.Add(@{ Href = '#test-coverage'; Label = 'Test Coverage' }) }
     if ($Findings.Count -gt 0) { [void]$navLinks.Add(@{ Href = '#priority-remediation'; Label = 'Prioritized Remediation' }) }
     if ($RiskScore) { [void]$navLinks.Add(@{ Href = '#risk-score'; Label = 'Risk Score &amp; Maturity' }) }
     if ($controlPathFindings.Count -gt 0) { [void]$navLinks.Add(@{ Href = '#control-paths'; Label = 'Control Paths' }) }
@@ -84,6 +532,7 @@ function Export-ADSecurityReportHTML {
     if ($highFindings) { [void]$navLinks.Add(@{ Href = '#high-findings'; Label = 'High' }) }
     if ($mediumFindings) { [void]$navLinks.Add(@{ Href = '#medium-findings'; Label = 'Medium' }) }
     if ($lowFindings) { [void]$navLinks.Add(@{ Href = '#low-findings'; Label = 'Low' }) }
+    if ($otherFindings.Count -gt 0) { [void]$navLinks.Add(@{ Href = '#other-findings'; Label = 'Other' }) }
     $navLinksHtml = ($navLinks | ForEach-Object { "<a href=`"$($_.Href)`">$($_.Label)</a>" }) -join "`n            "
 
     $html = @"
@@ -319,6 +768,83 @@ $(($OfflineSkipNotes | Sort-Object Test, Check | ForEach-Object {
 })
 "@
 })
+$(if (@($RunScopeNotes).Count -gt 0) {
+@"
+        <div class="warning-box" style="background:#eef3fb; border-color:#2f5fa8;">
+            <p><strong>RUN SCOPE INFORMATION</strong> - $(@($RunScopeNotes).Count) note(s) about how this run was scoped that may affect how to read specific findings below.</p>
+            <table class="mitre-table">
+                <tr><th>Category</th><th>Note</th></tr>
+$(($RunScopeNotes | Sort-Object Category | ForEach-Object {
+    "                <tr><td>$(HtmlEncode $_.Category)</td><td>$(HtmlEncode $_.Message)</td></tr>"
+}) -join "`n")
+            </table>
+        </div>
+"@
+})
+$(if (@($TestCoverage).Count -gt 0) {
+    $tcSorted = @($TestCoverage | Sort-Object TestName)
+    if ($tcSorted.Count -eq 0) {
+        # Safety net: $TestCoverage had entries, but Sort-Object somehow
+        # produced none (e.g. every entry's TestName came back $null,
+        # which Sort-Object -Property silently drops rather than erroring
+        # on). Rendering nothing here would otherwise look identical to
+        # the intentional "Test Coverage Not Available" note elsewhere -
+        # this is a DIFFERENT, unexpected case (coverage data existed but
+        # something about its shape broke rendering), so it gets its own
+        # explicit, honest message instead of a table with a header row
+        # and no data, or silently vanishing.
+@"
+        <div class="warning-box" style="background:#fdf8ec; border-color:#8a6200;" id="test-coverage">
+            <p><strong>TEST COVERAGE</strong> - $(@($TestCoverage).Count) coverage entry(ies) were present for this run, but could not be rendered as a per-check list (their data did not match the expected shape even after automatic repair). This is unexpected - if you can, please keep the raw AD_Security_TestCoverage_*.json for this run so the cause can be investigated.</p>
+        </div>
+"@
+    }
+    else {
+    $tcCompleted = @($tcSorted | Where-Object { $_.Status -eq 'Completed' })
+    $tcPassed = @($tcCompleted | Where-Object { $_.FindingCount -eq 0 })
+    $tcWithFindings = @($tcCompleted | Where-Object { $_.FindingCount -gt 0 })
+    $tcFailed = @($tcSorted | Where-Object { $_.Status -eq 'Failed' })
+    $tcExcluded = @($tcSorted | Where-Object { $_.Status -eq 'Excluded' })
+    $tcUntested = $tcFailed.Count + $tcExcluded.Count
+@"
+        <details class="warning-box" style="background:#f2f7ee; border-color:#3f7d3f;" id="test-coverage">
+            <summary style="cursor:pointer; margin:-4px -4px 0 -4px; padding:4px;"><strong>TEST COVERAGE</strong> - $($tcSorted.Count) check(s) tracked for this run: <strong>$($tcPassed.Count) passed clean</strong> (ran, found nothing), $($tcWithFindings.Count) found issue(s), and <strong>$tcUntested untested</strong> ($($tcFailed.Count) failed, $($tcExcluded.Count) excluded). Click to expand the full per-check list.</summary>
+            <p style="margin-top:10px;">"Passed clean" means the check actually ran and found nothing to report - not that it wasn't checked; "untested" checks (failed or excluded) contributed zero findings either way and should not be read as clean.</p>
+            <table class="mitre-table">
+                <tr><th>Check</th><th>Status</th><th>Findings</th><th>Detail</th></tr>
+$(($tcSorted | ForEach-Object {
+    # Deliberately NOT using $_ inside the switch clause bodies below:
+    # `switch` rebinds $_ within its own clauses to the value currently
+    # being matched (here, the STRING $_.Status, e.g. "Completed") - not
+    # the original piped object. $_.FindingCount inside a switch clause
+    # would silently resolve against that string instead (no error, just
+    # $null), always taking the "0 findings" branch and always rendering
+    # the ErrorMessage/TestName columns blank regardless of the real
+    # data. Capturing the object into $entry first and reading BOTH the
+    # switch subject and every field off $entry avoids the rebind.
+    $entry = $_
+    $statusBadge = switch ($entry.Status) {
+        'Completed' {
+            if ($entry.FindingCount -gt 0) { '<span style="background:#c8590b;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.85em;">COMPLETED</span>' }
+            else { '<span style="background:#3f7d3f;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.85em;">CLEAN</span>' }
+        }
+        'Failed' { '<span style="background:#b3261e;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.85em;">FAILED</span>' }
+        'Excluded' { '<span style="background:#5b6472;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.85em;">EXCLUDED</span>' }
+        default { HtmlEncode $entry.Status }
+    }
+    $detail = switch ($entry.Status) {
+        'Failed' { HtmlEncode $entry.ErrorMessage }
+        'Excluded' { 'Not run for this scan (see -IncludeTests/-ExcludeTests used for this run).' }
+        default { '&nbsp;' }
+    }
+    "                <tr><td>$(HtmlEncode $entry.TestName)</td><td>$statusBadge</td><td>$($entry.FindingCount)</td><td>$detail</td></tr>"
+}) -join "`n")
+            </table>
+            <p style="margin-top:10px; font-size:0.9em; color:#5b6472;">"Excluded" checks were deliberately left out of this run's scope; "Failed" checks were attempted but errored before producing a result (see Detail) and contributed zero findings either way - neither should be read as "checked and clean".</p>
+        </details>
+"@
+    }
+})
         
         <div class="header-info">
             <div><strong>DOMAIN</strong><span style="font-size: 1.2em; color: #1f2937;">$(HtmlEncode $Domain)</span></div>
@@ -533,11 +1059,19 @@ $categoryBarsSvg
 "@
         foreach ($cp in $controlPathFindings) {
             $sevClass = $cp.Severity.ToLower()
-            $hopChain = if ($cp.Details -and $cp.Details.ContainsKey('HopChain')) { HtmlEncode "$($cp.Details.HopChain)" } else { HtmlEncode $cp.AffectedObject }
+            # Test-ADFindingDetailsKey, not a bare .Details.ContainsKey():
+            # the latter only exists on a real Hashtable, which Details
+            # always is during a live run - but NOT after a JSON
+            # round-trip (Export-ADSecurityReportHTMLFromJson), where
+            # ConvertFrom-Json turns Details into a PSCustomObject
+            # instead. See Test-ADFindingDetailsKey's own docs (Common.ps1)
+            # for the reported "does not contain a method named
+            # 'ContainsKey'" error this fixes.
+            $hopChain = if ($cp.Details -and (Test-ADFindingDetailsKey -Details $cp.Details -Key 'HopChain')) { HtmlEncode "$($cp.Details.HopChain)" } else { HtmlEncode $cp.AffectedObject }
             $diagramSvg = ''
-            if ($cp.Details -and $cp.Details.ContainsKey('Source') -and $cp.Details.ContainsKey('Target')) {
+            if ($cp.Details -and (Test-ADFindingDetailsKey -Details $cp.Details -Key 'Source') -and (Test-ADFindingDetailsKey -Details $cp.Details -Key 'Target')) {
                 $diagramColor = if ($sevClass -eq 'critical') { '#b3261e' } else { '#c8590b' }
-                $hopCountForDiagram = if ($cp.Details.ContainsKey('HopCount')) { [int]$cp.Details.HopCount } else { 1 }
+                $hopCountForDiagram = if (Test-ADFindingDetailsKey -Details $cp.Details -Key 'HopCount') { [int]$cp.Details.HopCount } else { 1 }
                 $diagramSvg = Get-ADSvgControlPathDiagram -Source "$($cp.Details.Source)" -Target "$($cp.Details.Target)" -HopCount $hopCountForDiagram -Color $diagramColor
             }
             $html += @"
@@ -621,6 +1155,23 @@ $diagramSvg
     <div id="low-findings-body">
 "@
         $groups = @($lowFindings | Group-Object -Property Category, Issue)
+        foreach ($group in $groups) {
+            $html += Get-FindingHTML -FindingGroup $group.Group
+        }
+        $html += "    </div>"
+    }
+
+    if ($otherFindings.Count -gt 0) {
+        $html += @"
+    <h2 id="other-findings"><span class="sev-dot" style="background:#5b6472;"></span>Other / Unclassified Severity Findings</h2>
+    <p style="color:#5b6472; font-size:0.9em; margin-top:-8px;">These findings have a Severity value other than Critical/High/Medium/Low - see the console warning from this run for which check(s) produced them. They are NOT missing findings; they are shown here specifically so an unexpected severity value can never make a finding disappear from this report.</p>
+    <div class="section-toolbar">
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('other-findings', true)">Expand All</button>
+        <button type="button" class="toggle-all-btn" onclick="setSectionFindings('other-findings', false)">Collapse All</button>
+    </div>
+    <div id="other-findings-body">
+"@
+        $groups = @($otherFindings | Group-Object -Property Category, Issue)
         foreach ($group in $groups) {
             $html += Get-FindingHTML -FindingGroup $group.Group
         }
@@ -958,6 +1509,46 @@ function Get-FindingHTML {
     if ([string]::IsNullOrWhiteSpace($impact))      { $impact      = 'Not specified for this finding.' }
     if ([string]::IsNullOrWhiteSpace($remediation)) { $remediation = 'Not specified for this finding.' }
     $remediation = $remediation -replace "`r`n", '<br>' -replace "`n", '<br>'
+
+    # Change-management enrichment (v1.24.0) - EstimatedEffort/KnownRisks/
+    # BackupRollback are shown once per finding group (they're identical for
+    # every item, keyed on Category+Issue like MitreTechnique/AnssiControl
+    # above); OperationalNotes is genuinely optional and omitted entirely
+    # when blank, per Finding-Enrichment-Prompt.md ("omit this field
+    # entirely if there is nothing genuinely additive to say").
+    $estimatedEffort  = HtmlEncode $first.EstimatedEffort
+    $knownRisks       = HtmlEncode $first.KnownRisks
+    $backupRollback   = HtmlEncode $first.BackupRollback
+    $operationalNotes = HtmlEncode $first.OperationalNotes
+    $enrichmentHtml = ''
+    if (-not [string]::IsNullOrWhiteSpace($estimatedEffort) -or
+        -not [string]::IsNullOrWhiteSpace($knownRisks) -or
+        -not [string]::IsNullOrWhiteSpace($backupRollback)) {
+        $opNotesHtml = ''
+        if (-not [string]::IsNullOrWhiteSpace($operationalNotes)) {
+            $opNotesHtml = @"
+                <div class="finding-section">
+                    <h4>Operational Notes</h4>
+                    <p>$operationalNotes</p>
+                </div>
+"@
+        }
+        $enrichmentHtml = @"
+                <div class="finding-section">
+                    <h4>Estimated Effort</h4>
+                    <p>$estimatedEffort</p>
+                </div>
+                <div class="finding-section">
+                    <h4>Known Risks</h4>
+                    <p>$knownRisks</p>
+                </div>
+                <div class="finding-section">
+                    <h4>Backup / Rollback</h4>
+                    <p>$backupRollback</p>
+                </div>
+$opNotesHtml
+"@
+    }
     # Optional metadata tags (v1.2.0) - these come from the shared Issue ->
     # MITRE/ANSSI mapping, so they're identical across every item in the
     # group; render once from the first item rather than once per object.
@@ -1000,7 +1591,7 @@ function Get-FindingHTML {
                 <div class="finding-meta">
                     <span><strong>Category:</strong> $category</span>
                     <span><strong>Affected Object:</strong> <span class="meta-code">$affectedObject</span></span>
-                    <span><strong>Detected:</strong> $($first.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</span>
+                    <span><strong>Detected:</strong> $(Format-ADFindingDetectedDate $first.DetectedDate)</span>
                     $metaTags
                 </div>
                 <div class="finding-section">
@@ -1015,6 +1606,7 @@ function Get-FindingHTML {
                     <h4>Remediation</h4>
                     <p>$remediation</p>
                 </div>
+$enrichmentHtml
             </div>
         </details>
 "@
@@ -1036,7 +1628,7 @@ function Get-FindingHTML {
                     <li class="finding-instance">
                         <div class="finding-instance-object">$objName</div>
                         <div class="finding-instance-desc">$objDesc</div>
-                        <div class="finding-instance-date">Detected: $($f.DetectedDate.ToString('yyyy-MM-dd HH:mm'))</div>
+                        <div class="finding-instance-date">Detected: $(Format-ADFindingDetectedDate $f.DetectedDate)</div>
                     </li>
 "@
     }
@@ -1063,6 +1655,7 @@ function Get-FindingHTML {
                     <h4>Remediation</h4>
                     <p>$remediation</p>
                 </div>
+$enrichmentHtml
                 <div class="finding-section">
                     <h4>Affected Objects ($count)</h4>
                     <ul class="finding-instance-list">

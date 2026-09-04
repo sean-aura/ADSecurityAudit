@@ -6,6 +6,7 @@ AD_Security_Audit_*.html
 AD_Security_Audit_*.csv
 AD_Privileged_Users_*.csv
 ADSecurityAudit_Log_*.txt
+AD_Security_Score_*.json
 
 # PowerShell transcripts
 *_transcript.txt

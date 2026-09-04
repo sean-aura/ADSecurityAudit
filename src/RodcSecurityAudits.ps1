@@ -129,10 +129,40 @@ function Test-ADRodcSecurity {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to - every Get-AD*
+        # call inside fell back to a "serverless" bind. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected; it
+        # never double-installs or clears the parent run's override.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        # Resolve-ADSecurityAuditTargetServer, not the raw -Server value:
+        # resolves to the domain's PDC Emulator specifically, so this
+        # standalone call targets the exact same single, deterministic DC
+        # Start-ADSecurityAudit itself would use for this domain, not an
+        # arbitrary DC-locator pick.
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+
+    try {
     Write-Verbose "Starting Read-Only Domain Controller security posture audit..."
+    # Resolved once, explicitly passed to every live AD call below - not
+    # relying on the $PSDefaultParameterValues injection alone. $null when
+    # no override is active, which Get-AD* cmdlets treat identically to
+    # -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
     $findings = @()
 
     # -------------------------------------------------------------------
@@ -151,8 +181,12 @@ function Test-ADRodcSecurity {
     }
     else {
         try {
-            $rodcs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController RODCs' -Query {
-                Get-ADDomainController -Filter { IsReadOnly -eq $true } -ErrorAction Stop
+            # Get-ADSecurityAuditDomainController, not a bare
+            # Get-ADDomainController -Filter - the latter is forest-wide
+            # regardless of -Server; see Common.ps1 for why. -Filter is
+            # still passed through so this only enumerates RODCs.
+            $rodcs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController RODCs' -Query {
+                Get-ADSecurityAuditDomainController -Filter { IsReadOnly -eq $true } -Server $__adServer
             })
         }
         catch {
@@ -225,9 +259,13 @@ function Test-ADRodcSecurity {
 
         try {
             $rodcObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject RODC attributes ($rodcName)" -Query {
-                Get-ADObject -Identity $computerObjectDN -Properties `
-                    'msDS-RevealedUsers', 'msDS-RevealOnDemandGroup', 'msDS-NeverRevealGroup', `
-                    'msDS-KrbTgtLink' -ErrorAction Stop
+                $params = @{
+                    Identity   = $computerObjectDN
+                    Properties = @('msDS-RevealedUsers', 'msDS-RevealOnDemandGroup', 'msDS-NeverRevealGroup', 'msDS-KrbTgtLink')
+                    ErrorAction = 'Stop'
+                }
+                if ($__adServer) { $params['Server'] = $__adServer }
+                Get-ADObject @params
             }
         }
         catch {
@@ -289,6 +327,9 @@ function Test-ADRodcSecurity {
             $finding.Description = "The RODC '$($detail.Name)' has the Tier-0/privileged principal '$($hit.PrincipalName)' present via $($hit.Source). RODCs are deployed in lower-trust locations (branch offices, perimeter sites) specifically because a compromise of the RODC itself is considered more likely; a Tier-0 account's secrets being revealed to (or eligible to be revealed to) an RODC defeats that trust boundary."
             $finding.Impact = "An attacker who compromises this RODC (physically or remotely) can extract the cached credential material for '$($hit.PrincipalName)', a privileged/Tier-0 account, enabling full domain compromise from what was intended to be a lower-trust, disposable DC."
             $finding.Remediation = "Remove '$($hit.PrincipalName)' from the RODC's allowed password replication list (or, if already revealed, reset its password/credentials and add it to the Denied RODC Password Replication Group / msDS-NeverRevealGroup going forward). Tier-0 principals should never be allowed to authenticate through, or have secrets cached on, an RODC."
+            $finding.EstimatedEffort = 'Medium - the exposed account''s password must be reset and the Password Replication Policy corrected; this is a credential-exposure event on that RODC, not just a config change.'
+            $finding.KnownRisks = 'Once a password has been cached on an RODC it must be treated as exposed to anyone with local admin or physical access to that RODC, per the standard RODC security model (RODCs are assumed to be physically less secure); correcting the policy going forward does not undo the existing cached credential.'
+            $finding.BackupRollback = 'Hard/Limited - the credential exposure itself can''t be rolled back, only remediated by resetting the account''s password; the Password Replication Policy setting itself, however, can be easily reverted.'
             $finding.Details = @{
                 RODC              = $detail.Name
                 ComputerObjectDN  = $detail.ComputerObjectDN
@@ -332,6 +373,9 @@ function Test-ADRodcSecurity {
             $finding.Description = "The RODC '$($detail.Name)' has a password replication policy (PRP) gap:`n$prpIssueBullets"
             $finding.Impact = "A too-broad allowed list lets a much larger set of accounts have their secrets cached on this lower-trust DC than intended; a denied list missing core privileged groups relies solely on the allowed list being correct, with no defense-in-depth if that list is later widened by mistake."
             $finding.Remediation = "Scope msDS-RevealOnDemandGroup (the allowed list) down to only the specific accounts/groups that legitimately need to authenticate through this RODC, and ensure msDS-NeverRevealGroup (the denied list) explicitly includes Domain Admins, Enterprise Admins, Schema Admins, built-in Administrators, Cert Publishers, and the built-in Denied RODC Password Replication Group."
+            $finding.EstimatedEffort = 'Medium - editing the Allowed/Denied RODC Password Replication groups requires understanding which accounts should legitimately authenticate at that branch office, not just applying a blanket deny.'
+            $finding.KnownRisks = 'An overly restrictive policy can cause branch-office authentication failures or slow WAN-dependent logons for legitimate local users; an overly permissive one causes the credential-caching exposure covered by the related finding, so this needs the correct business-appropriate scope rather than simply "more restrictive."'
+            $finding.BackupRollback = 'Easy - revert the Password Replication Policy group membership changes; effective on next RODC password-caching evaluation, no data loss.'
             $finding.Details = @{
                 RODC             = $detail.Name
                 ComputerObjectDN = $detail.ComputerObjectDN
@@ -354,7 +398,9 @@ function Test-ADRodcSecurity {
         }
         else {
             $krbtgtUsers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser krbtgt_* accounts' -Query {
-                Get-ADUser -Filter "SamAccountName -like 'krbtgt_*'" -Properties DistinguishedName, SamAccountName -ErrorAction Stop
+                $params = @{ Filter = "SamAccountName -like 'krbtgt_*'"; Properties = @('DistinguishedName', 'SamAccountName'); ErrorAction = 'Stop' }
+                if ($__adServer) { $params['Server'] = $__adServer }
+                Get-ADUser @params
             })
         }
     }
@@ -374,6 +420,9 @@ function Test-ADRodcSecurity {
             $finding.Description = "The RODC-specific account '$($krbtgtUser.SamAccountName)' exists but no current RODC links back to it via msDS-KrbTgtLink. This typically means the RODC it was provisioned for has since been demoted or removed without its dedicated krbtgt account being cleaned up."
             $finding.Impact = "Orphaned krbtgt_* accounts are unused attack surface: stale privileged-flavoured service accounts that add to hygiene debt and are easy to overlook during account reviews, and their continued presence can also mask genuine RODC decommissioning gaps."
             $finding.Remediation = "Confirm the corresponding RODC no longer exists (or, if it does, that its msDS-KrbTgtLink is correctly set), then disable and remove the orphaned '$($krbtgtUser.SamAccountName)' account following Microsoft's documented RODC krbtgt cleanup guidance."
+            $finding.EstimatedEffort = 'Low - a single account deprovisioning/delete action for a decommissioned RODC.'
+            $finding.KnownRisks = 'Low risk deleting a krbtgt account for a genuinely decommissioned RODC; confirm the RODC is truly gone (not just temporarily offline) before deleting, since each RODC has its own dedicated krbtgt account by design.'
+            $finding.BackupRollback = 'Hard/Limited - a deleted RODC-specific krbtgt account isn''t restored; if the RODC is later reintroduced it needs a new krbtgt account provisioned as part of a fresh RODC installation.'
             $finding.Details = @{
                 SamAccountName    = $krbtgtUser.SamAccountName
                 DistinguishedName = $krbtgtUser.DistinguishedName
@@ -385,6 +434,12 @@ function Test-ADRodcSecurity {
 
     Write-Verbose "Completed Read-Only Domain Controller security posture audit. Findings: $($findings.Count)"
     return $findings
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
+    }
 }
 
 #endregion

@@ -126,9 +126,32 @@ function Test-ADKerberosHardening {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot
+        [hashtable]$Snapshot,
+
+        # Defense-in-depth for multi-domain forests: when this function is
+        # called standalone (not via Start-ADSecurityAudit -Server, which
+        # already installs a session-wide override before this ever runs),
+        # there was previously no way to target a domain other than the
+        # one the calling session ambiently resolves to. Passing -Server
+        # here installs the same Set-ADSecurityAuditTargetServer override
+        # Start-ADSecurityAudit uses, for the duration of this call only,
+        # and only if one isn't ALREADY active - so calling this from
+        # within a Start-ADSecurityAudit -Server run is unaffected.
+        [Parameter()]
+        [string]$Server
     )
 
+    $__adAuditServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+    if ($Server -and -not $__adAuditServerAlreadyActive) {
+        Set-ADSecurityAuditTargetServer -Server (Resolve-ADSecurityAuditTargetServer -Server $Server)
+    }
+    # Resolved once, explicitly passed to every live AD/GPO call below -
+    # not relying on the $PSDefaultParameterValues injection alone. $null
+    # when no override is active, which Get-AD*/Get-GP* cmdlets treat
+    # identically to -Server being omitted entirely.
+    $__adServer = Get-ADSecurityAuditActiveServerOverride
+
+    try {
     Write-Verbose "Starting Kerberos hardening depth audit..."
     $findings = @()
 
@@ -164,14 +187,24 @@ function Test-ADKerberosHardening {
             else {
                 Write-Verbose "Test-ADKerberosHardening: evaluating account-level RC4 permission via live queries."
                 $krbtgt = Invoke-ADQueryWithRetry -OperationName 'Get-ADUser krbtgt (kerberos hardening)' -Query {
-                    Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Properties 'msDS-SupportedEncryptionTypes' -ErrorAction Stop
+                    if ($__adServer) { Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Server $__adServer -Properties 'msDS-SupportedEncryptionTypes' -ErrorAction Stop } else { Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Properties 'msDS-SupportedEncryptionTypes' -ErrorAction Stop }
                 }
                 $watchIdentities = @($tier0 | Where-Object { $_.SID -or $_.DistinguishedName })
                 foreach ($principal in $watchIdentities) {
                     try {
-                        $identity = if ($principal.SID) { $principal.SID } else { $principal.DistinguishedName }
+                        # Prefer DistinguishedName over SID: Get-ADObject
+                        # -Identity accepts either, but in some environments
+                        # (verified during v1.24 lab testing - 8/8 Tier-0
+                        # principals failed with "Cannot find an object with
+                        # identity" when queried by SID, while the same
+                        # objects resolved fine by DN elsewhere in the same
+                        # run) SID-based lookup fails while DN-based lookup
+                        # succeeds. DN is always unambiguous for a specific
+                        # object, so prefer it and fall back to SID only
+                        # when no DN is available.
+                        $identity = if ($principal.DistinguishedName) { $principal.DistinguishedName } else { $principal.SID }
                         $adObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject $identity (kerberos hardening)" -Query {
-                            Get-ADObject -Identity $identity -Properties 'msDS-SupportedEncryptionTypes', 'objectClass' -ErrorAction Stop
+                            if ($__adServer) { Get-ADObject -Identity $identity -Server $__adServer -Properties 'msDS-SupportedEncryptionTypes', 'objectClass' -ErrorAction Stop } else { Get-ADObject -Identity $identity -Properties 'msDS-SupportedEncryptionTypes', 'objectClass' -ErrorAction Stop }
                         }
                         if ($adObject -and $adObject.objectClass -eq 'user' -and (Test-ADKerbRC4Permitted -EncryptionTypes $adObject.'msDS-SupportedEncryptionTypes')) {
                             [void]$rc4Accounts.Add(@{
@@ -207,7 +240,7 @@ function Test-ADKerberosHardening {
             else {
                 Write-Verbose "Test-ADKerberosHardening: evaluating trust encryption via live Get-ADTrust."
                 @(Invoke-ADQueryWithRetry -OperationName 'Get-ADTrust (kerberos hardening)' -Query {
-                    Get-ADTrust -Filter * -Properties * -ErrorAction Stop
+                    if ($__adServer) { Get-ADTrust -Filter * -Server $__adServer -Properties * -ErrorAction Stop } else { Get-ADTrust -Filter * -Properties * -ErrorAction Stop }
                 })
             }
 
@@ -231,9 +264,12 @@ function Test-ADKerberosHardening {
         if (-not $Snapshot) {
             try {
                 Import-Module GroupPolicy -ErrorAction Stop
-                $domain = Get-ADDomain -ErrorAction Stop
-                $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Filter * (kerberos hardening)' -Query {
-                    Get-ADDomainController -Filter * -ErrorAction Stop
+                $domain = if ($__adServer) { Get-ADDomain -Server $__adServer -ErrorAction Stop } else { Get-ADDomain -ErrorAction Stop }
+                # Get-ADSecurityAuditDomainController, not a bare
+                # Get-ADDomainController -Filter * - the latter is
+                # forest-wide regardless of -Server; see Common.ps1.
+                $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (kerberos hardening)' -Query {
+                    if ($__adServer) { Get-ADSecurityAuditDomainController -Server $__adServer } else { Get-ADSecurityAuditDomainController }
                 })
 
                 if ($domainControllers -and $domainControllers.Count -gt 0) {
@@ -249,7 +285,7 @@ function Test-ADKerberosHardening {
                     }
                     if (-not $dcOuDn) { $dcOuDn = "OU=Domain Controllers,$($domain.DistinguishedName)" }
 
-                    $dcScopeGpos = @((Get-ADLinkedGposOrdered -TargetDn $dcOuDn) + (Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName))
+                    $dcScopeGpos = @((Get-ADLinkedGposOrdered -TargetDn $dcOuDn -Server $__adServer) + (Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName -Server $__adServer))
 
                     function Get-ADKerbLiveRegistryValuePerDc {
                         param([array]$DomainControllers, [string]$Key, [string]$ValueName)
@@ -275,7 +311,7 @@ function Test-ADKerberosHardening {
                     }
 
                     $target = $Script:KerbHardeningRegistryTargets.DomainEncTypes
-                    $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName
+                    $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
 
                     $aesOnlyMask = ($Script:KerbEncTypeFlags.AES128 -bor $Script:KerbEncTypeFlags.AES256)
                     $weakMask    = ($Script:KerbEncTypeFlags.DES_CBC_CRC -bor $Script:KerbEncTypeFlags.DES_CBC_MD5 -bor $Script:KerbEncTypeFlags.RC4_HMAC)
@@ -333,6 +369,10 @@ function Test-ADKerberosHardening {
             $finding.Description = "RC4-HMAC Kerberos encryption is still permitted: $($rc4Accounts.Count) privileged/krbtgt account(s), $($rc4Trusts.Count) trust(s) without AES enforced$(if ($domainPolicyWeak) { ', and the domain-wide Kerberos encryption-type policy' })."
             $finding.Impact = "RC4-HMAC uses a key derived directly from the account password's NT hash, making Kerberoasted service tickets and cross-realm referral tickets far cheaper to crack offline than their AES equivalents, and allows downgrade attacks even where AES support exists elsewhere."
             $finding.Remediation = "Set 'msDS-SupportedEncryptionTypes' to AES-only (Set-ADUser -KerberosEncryptionType AES256,AES128) on privileged accounts and krbtgt, enforce 'Network security: Configure encryption types allowed for Kerberos' to AES128/AES256 only via GPO, and enable AES on cross-realm trusts (netdom trust /EnableAes  or ksetup, as appropriate) before removing RC4 domain-wide."
+            $finding.EstimatedEffort = 'Medium - touches multiple privileged/service accounts and cross-realm trust configuration, and needs a short monitoring window before disabling RC4 domain-wide.'
+            $finding.KnownRisks = 'Authentication may break for clients, applications, or devices that cannot negotiate AES - commonly legacy non-Windows Kerberos clients, appliances/printers with RC4-only libraries, or older applications with hardcoded RC4 configs.'
+            $finding.BackupRollback = 'Easy - re-enable RC4 via msDS-SupportedEncryptionTypes/GPO; takes effect at next Kerberos ticket renewal/GPO refresh with no data loss.'
+            $finding.OperationalNotes = 'Enable AES on accounts first and monitor for RC4-ticket issuance in DC logs before enforcing AES-only, so any remaining RC4-dependent client shows up before it''s cut off.'
             $finding.Details = @{
                 PrivilegedAndKrbtgtAccountsPermittingRC4 = @($rc4Accounts)
                 TrustsWithoutAesEnforced                 = @($rc4Trusts)
@@ -359,9 +399,12 @@ function Test-ADKerberosHardening {
     else {
         try {
             Import-Module GroupPolicy -ErrorAction Stop
-            $domain = Get-ADDomain -ErrorAction Stop
-            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController -Filter * (FAST audit)' -Query {
-                Get-ADDomainController -Filter * -ErrorAction Stop
+            $domain = if ($__adServer) { Get-ADDomain -Server $__adServer -ErrorAction Stop } else { Get-ADDomain -ErrorAction Stop }
+            # Get-ADSecurityAuditDomainController, not a bare
+            # Get-ADDomainController -Filter * - the latter is forest-wide
+            # regardless of -Server; see Common.ps1 for why.
+            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (FAST audit)' -Query {
+                if ($__adServer) { Get-ADSecurityAuditDomainController -Server $__adServer } else { Get-ADSecurityAuditDomainController }
             })
 
             if (-not $domainControllers -or $domainControllers.Count -eq 0) {
@@ -380,8 +423,8 @@ function Test-ADKerberosHardening {
                 }
                 if (-not $dcOuDn) { $dcOuDn = "OU=Domain Controllers,$($domain.DistinguishedName)" }
 
-                $dcOuGpos    = Get-ADLinkedGposOrdered -TargetDn $dcOuDn
-                $domainGpos  = Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName
+                $dcOuGpos    = Get-ADLinkedGposOrdered -TargetDn $dcOuDn -Server $__adServer
+                $domainGpos  = Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName -Server $__adServer
                 $dcScopeGpos = @($dcOuGpos + $domainGpos)
 
                 function Get-ADKerbArmorLiveRegistryValuePerDc {
@@ -409,7 +452,7 @@ function Test-ADKerberosHardening {
 
                 # --- KDC-side armoring support ---
                 $kdcTarget = $Script:KerbHardeningRegistryTargets.KdcArmoring
-                $kdcPolicy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $kdcTarget.Key -ValueName $kdcTarget.ValueName
+                $kdcPolicy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $kdcTarget.Key -ValueName $kdcTarget.ValueName -Server $__adServer
 
                 $kdcEnabled = $false
                 $kdcDetail  = @{}
@@ -426,7 +469,7 @@ function Test-ADKerberosHardening {
 
                 # --- Client-side armoring support ---
                 $clientTarget = $Script:KerbHardeningRegistryTargets.ClientArmoring
-                $clientPolicy = Get-ADPolicyRegistryValue -Gpos $domainGpos -Key $clientTarget.Key -ValueName $clientTarget.ValueName
+                $clientPolicy = Get-ADPolicyRegistryValue -Gpos $domainGpos -Key $clientTarget.Key -ValueName $clientTarget.ValueName -Server $__adServer
 
                 $clientEnabled = $false
                 $clientDetail  = @{}
@@ -451,6 +494,9 @@ function Test-ADKerberosHardening {
                     $finding.Description = "Kerberos Armoring (FAST) is not fully enabled: KDC support $(if ($kdcEnabled) { 'enabled' } else { 'NOT enabled' }); client support $(if ($clientEnabled) { 'enabled' } else { 'NOT enabled' })."
                     $finding.Impact = "Without FAST/armoring, the initial AS-REQ exchange is unprotected, leaving pre-authentication data exposed to offline attack and preventing use of compound authentication/claims-based conditional access policies."
                     $finding.Remediation = "Enable 'KDC support for claims, compound authentication, and Kerberos armoring' (set to at least 'Supported') on all Domain Controllers, and 'Kerberos client support for claims, compound authentication, and Kerberos armoring' domain-wide, via GPO."
+                    $finding.EstimatedEffort = 'Medium - enabling requires the domain functional level and all clients to support FAST (Windows 8/Server 2012 R2+); Microsoft''s own guidance recommends a staged "Supported" rollout before "Always provide claims" enforcement.'
+                    $finding.KnownRisks = 'Enforcing Kerberos armoring will break authentication for any client that doesn''t support FAST - older Windows versions and many non-Windows Kerberos implementations - so a "Supported" (not yet enforced) first step is Microsoft''s own documented recommendation.'
+                    $finding.BackupRollback = 'Easy - revert the GPO setting to Not Defined/Supported; effective at next Group Policy refresh and Kerberos ticket renewal, no data loss.'
                     $finding.Details = @{
                         KdcArmoringEnabled    = $kdcEnabled
                         KdcDetail             = $kdcDetail
@@ -480,7 +526,7 @@ function Test-ADKerberosHardening {
         else {
             Write-Verbose "Test-ADKerberosHardening: evaluating cross-trust TGT delegation via live Get-ADTrust."
             @(Invoke-ADQueryWithRetry -OperationName 'Get-ADTrust (TGT delegation audit)' -Query {
-                Get-ADTrust -Filter * -Properties * -ErrorAction Stop
+                if ($__adServer) { Get-ADTrust -Filter * -Server $__adServer -Properties * -ErrorAction Stop } else { Get-ADTrust -Filter * -Properties * -ErrorAction Stop }
             })
         }
 
@@ -509,6 +555,9 @@ function Test-ADKerberosHardening {
             $finding.Description = "$($delegationTrusts.Count) trust(s) have the CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION attribute set, permitting a client's TGT to be forwarded across the trust boundary during constrained delegation: $($targets -join ', ')."
             $finding.Impact = "Allowing TGTs to cross a trust boundary during S4U2Proxy widens the blast radius of a compromise on either side of the trust - a compromised resource on the trusting side can receive and potentially misuse TGT material belonging to principals from the other domain/forest."
             $finding.Remediation = "Review whether cross-organization TGT delegation is actually required for this trust; if not, clear the CROSS_ORGANIZATION_ENABLE_TGT_DELEGATION attribute (Netdom or the appropriate trust-management tooling) so delegation stops at the trust boundary."
+            $finding.EstimatedEffort = 'Medium - disabling this trust attribute requires confirming no legitimate application performs Kerberos delegation across that trust boundary (e.g. a multi-forest SharePoint/SQL double-hop scenario).'
+            $finding.KnownRisks = 'Disabling cross-trust TGT delegation can break any application that legitimately performs Kerberos delegation across that trust boundary.'
+            $finding.BackupRollback = 'Moderate - trust attributes can be reconfigured back via netdom/PowerShell, but requires coordination with the other domain/forest''s admins to re-verify, like any other trust property change.'
             $finding.Details = @{
                 Trusts = @($delegationTrusts)
             }
@@ -524,6 +573,12 @@ function Test-ADKerberosHardening {
 
     Write-Verbose "Kerberos hardening depth audit complete. Found $($findings.Count) issue(s)."
     return $findings
+    }
+    finally {
+        if ($Server -and -not $__adAuditServerAlreadyActive) {
+            Clear-ADSecurityAuditTargetServer
+        }
+    }
 }
 
 #endregion

@@ -139,13 +139,16 @@ function Get-ADCSCertificateBlob {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$ContainerDN
+        [string]$ContainerDN,
+
+        [Parameter()]
+        [string]$Server
     )
 
     $blobs = [System.Collections.ArrayList]::new()
 
     try {
-        $obj = Get-ADObject -Identity $ContainerDN -Properties cACertificate, cn -ErrorAction Stop
+        $obj = Get-ADObject -Identity $ContainerDN -Properties cACertificate, cn -Server $Server -ErrorAction Stop
         foreach ($b in @($obj.cACertificate)) {
             if ($b) { [void]$blobs.Add([PSCustomObject]@{ Source = $obj.Name; Bytes = $b }) }
         }
@@ -155,7 +158,7 @@ function Get-ADCSCertificateBlob {
     }
 
     try {
-        $children = Get-ADObject -SearchBase $ContainerDN -SearchScope OneLevel -Filter * -Properties cACertificate, cn -ErrorAction Stop
+        $children = Get-ADObject -SearchBase $ContainerDN -SearchScope OneLevel -Filter * -Properties cACertificate, cn -Server $Server -ErrorAction Stop
         foreach ($child in $children) {
             foreach ($b in @($child.cACertificate)) {
                 if ($b) { [void]$blobs.Add([PSCustomObject]@{ Source = $child.Name; Bytes = $b }) }
@@ -340,17 +343,32 @@ function Test-ADCSExtended {
     }
     else {
         try {
-            $configContext = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+            $__adServer = Get-ADSecurityAuditTargetServerValue
+            $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
             $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
 
+            # -SearchScope OneLevel, not the default Subtree: a Subtree
+            # search over "CN=Certificate Templates,..."/"CN=Enrollment
+            # Services,..." returns the CONTAINER OBJECT ITSELF alongside
+            # its real children (pKICertificateTemplate/pKIEnrollmentService
+            # objects, which are never nested further than one level under
+            # these containers). Neither loop below filtered by objectClass,
+            # so that container object was silently iterated as if it were
+            # a real template/CA - its own Name IS literally "Certificate
+            # Templates"/"Enrollment Services", it has no dNSHostName or
+            # cACertificate, and every check against it either produced
+            # confusing noise (e.g. "CA 'Enrollment Services' has no
+            # dNSHostName; skipping ESC8 probe" - about the container, not
+            # any real, misconfigured CA) or was silently skipped. OneLevel
+            # returns only the real child objects, never the base container.
             $certTemplates = @(Invoke-ADQueryWithRetry -OperationName 'Get certificate templates (ADCS extended audit)' -Query {
-                Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -Filter * -Properties * -ErrorAction Stop
+                Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
             })
             $adcsInstalled = $true
 
             try {
                 $certAuthorities = @(Invoke-ADQueryWithRetry -OperationName 'Get enrollment services (ADCS extended audit)' -Query {
-                    Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -Filter * -Properties * -ErrorAction Stop
+                    Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
                 })
             }
             catch {
@@ -382,7 +400,16 @@ function Test-ADCSExtended {
         $templateName = if ($template.displayName) { $template.displayName } else { $template.Name }
 
         $templateAces = if ($Snapshot) { @($template.Access) } else {
-            try { @((Get-Acl -Path "AD:$($template.DistinguishedName)" -ErrorAction Stop).Access) }
+            try {
+                # Get-ADObject -Properties nTSecurityDescriptor, not
+                # Get-Acl -Path "AD:..." - the latter has no -Server
+                # parameter and reads via the AD: PSDrive's ambient
+                # default domain/DC, bypassing this module's -Server
+                # override entirely. nTSecurityDescriptor returns the
+                # same ActiveDirectorySecurity object (.Access, etc.) via
+                # a real, -Server-aware Get-AD* cmdlet.
+                @((Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor.Access)
+            }
             catch {
                 Write-Verbose "Test-ADCSExtended: could not get ACL for template '$templateName': $_"
                 @()
@@ -411,6 +438,11 @@ function Test-ADCSExtended {
                 }
             }
         }
+        # A template can grant the same low-priv principal the same
+        # dangerous right via more than one ACE (one per property
+        # set/object type) - dedupe so the same "principal (rights)" line
+        # doesn't appear twice in one finding's bullet list.
+        $dangerousAces = @($dangerousAces | Select-Object -Unique)
 
         if ($dangerousAces.Count -gt 0) {
             $finding = [ADSecurityFinding]::new()
@@ -426,6 +458,9 @@ function Test-ADCSExtended {
             $finding.Description = "Certificate template '$templateName' grants Write/WriteDacl/WriteOwner/GenericAll/GenericWrite rights to low-privileged principal(s):`n$dangerousAceBullets"
             $finding.Impact = "A principal with write access to a certificate template can reconfigure it into an ESC1-style template (enable SAN, remove approval, weaken EKUs) and then enroll for a certificate impersonating any account, including Domain Admins."
             $finding.Remediation = "Remove Write/WriteDacl/WriteOwner/GenericAll/GenericWrite permissions on the template from any principal other than PKI/Domain administrators."
+            $finding.EstimatedEffort = 'Medium - a single-template ACE removal, but confirm the trustee isn''t a legitimate certificate-lifecycle-management tool or service account before removing.'
+            $finding.KnownRisks = 'Procedural - confirm the trustee isn''t an active cert-management automation account before removing; no realistic legitimate technical break otherwise.'
+            $finding.BackupRollback = 'Moderate - export the template''s ACL (certutil -v -template or PSPKI) before changing it so the exact ACE can be restored if needed.'
             $finding.Details = @{
                 DistinguishedName = $template.DistinguishedName
                 DangerousAces     = $dangerousAces -join '; '
@@ -463,6 +498,9 @@ function Test-ADCSExtended {
             $finding.Description = "Certificate template '$templateName' allows $(if ($allowsSan) { 'enrollee-supplied subject/SAN' }) $(if ($allowsSan -and $anyPurpose) { 'and' }) $(if ($anyPurpose) { 'an Any-Purpose EKU' }) without requiring CA manager approval (CT_FLAG_PEND_ALL_REQUESTS is not set)."
             $finding.Impact = "Certificates matching this template are issued automatically with no human review, removing a compensating control that would otherwise catch abuse of the risky template properties."
             $finding.Remediation = "Require manager approval for this template (set CT_FLAG_PEND_ALL_REQUESTS) until the SAN/Any-Purpose properties can be removed or enrollment can be restricted."
+            $finding.EstimatedEffort = 'Low - toggling the "CA certificate manager approval" flag on one template.'
+            $finding.KnownRisks = 'Enabling manager approval adds a manual approval step that will delay or block any automated enrollment workflow (autoenrollment, ACME-style automated issuance) that currently assumes instant issuance.'
+            $finding.BackupRollback = 'Easy - untick the approval requirement; effective immediately for new requests, no data loss.'
             $finding.Details = @{
                 DistinguishedName = $template.DistinguishedName
                 AllowsSan         = $allowsSan
@@ -538,6 +576,10 @@ function Test-ADCSExtended {
                     $finding.Description = "Certificate Authority '$caName' ($caHost) has the CertSrv web enrollment endpoint installed without Extended Protection for Authentication (EPA) enforced."
                     $finding.Impact = "An attacker who coerces a privileged host (e.g. a Domain Controller) to authenticate to them can relay that NTLM authentication to the CA's HTTP enrollment endpoint and obtain a certificate as that host/account, leading to domain compromise."
                     $finding.Remediation = "Disable HTTP(S) web enrollment if unused, or require Extended Protection for Authentication ('Require') on the CertSrv virtual directory and enforce HTTPS with channel binding."
+                    $finding.EstimatedEffort = 'Medium - requires enabling HTTPS web enrollment (certificate + IIS binding) and usually coordination with whoever manages the CA''s IIS instance; confirm no client submits enrollment requests over plain HTTP first.'
+                    $finding.KnownRisks = 'Enforcing HTTPS-only web enrollment can break legacy clients or scripts that submit requests over plain HTTP until they''re updated to the HTTPS endpoint.'
+                    $finding.BackupRollback = 'Moderate - revert the IIS binding/auth settings and re-enable the HTTP endpoint if needed; requires an IIS restart but no data loss.'
+                    $finding.OperationalNotes = 'HTTPS alone doesn''t fully close ESC8''s NTLM relay risk without Extended Protection for Authentication (EPA) also enabled - consider enabling EPA on the enrollment endpoint at the same time.'
                     $finding.Details = @{
                         DistinguishedName = $ca.DistinguishedName
                         CAHost            = $caHost
@@ -606,7 +648,7 @@ function Test-ADCSExtended {
             }
 
             foreach ($storeName in $storeTargets.Keys) {
-                $blobs = Get-ADCSCertificateBlob -ContainerDN $storeTargets[$storeName]
+                $blobs = Get-ADCSCertificateBlob -ContainerDN $storeTargets[$storeName] -Server $__adServer
                 foreach ($blob in $blobs) {
                     $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "$storeName`:$($blob.Source)"
                     if ($result) { [void]$weakCertResults.Add($result) }
@@ -629,6 +671,9 @@ function Test-ADCSExtended {
             $finding.Description = "Certificate '$($weak.Subject)' (thumbprint $($weak.Thumbprint)) from $($weak.Source) matches the ROCA (CVE-2017-15361) weak-key fingerprint for RSA keys generated by the affected Infineon RSALib."
             $finding.Impact = "ROCA-vulnerable RSA keys can, with sufficient compute, have their private key factored from the public key alone, fully compromising anything the certificate protects or authenticates."
             $finding.Remediation = "Confirm with a dedicated ROCA-detection tool, then revoke and reissue the certificate with a key generated by an unaffected library."
+            $finding.EstimatedEffort = 'High - revoking and reissuing a certificate requires coordinating with every consumer of that certificate, since revocation invalidates trust immediately and may need a maintenance window if the certificate is in active use (e.g. smart card logon, TLS).'
+            $finding.KnownRisks = 'ROCA-vulnerable RSA keys can, with sufficient compute, have their private key factored from the public key alone (CVE-2017-15361), so this is a confirmed, documented weakness, not a hypothetical one; revoking the certificate breaks authentication/encryption for everything relying on it until the replacement is deployed.'
+            $finding.BackupRollback = 'Hard/Limited - a revoked certificate cannot be un-revoked; the only path forward is issuing a new one with a key from an unaffected library, so keep the old certificate available read-only for verifying historically-signed artifacts if that''s needed.'
             $finding.Details = @{
                 Source             = $weak.Source
                 Subject            = $weak.Subject
@@ -654,6 +699,9 @@ function Test-ADCSExtended {
             $finding.Description = "Certificate '$($weak.Subject)' (thumbprint $($weak.Thumbprint)) from $($weak.Source) has $($reasons -join ' and ')."
             $finding.Impact = "Weak signature algorithms (MD2/MD4/MD5/SHA0/SHA1) or undersized RSA keys undermine the integrity of the certificate chain and any trust decisions made against it."
             $finding.Remediation = "Reissue the certificate with SHA-256 (or better) and an RSA key of at least 2048 bits (3072+ recommended for CA certificates)."
+            $finding.EstimatedEffort = 'Medium - reissuing affected certificates with a stronger signature algorithm (e.g. SHA-256+) and coordinating with every consumer of the old chain.'
+            $finding.KnownRisks = 'Modern OSes and browsers already reject SHA-1-signed certificates, but legacy embedded devices or older client OSes may only trust the SHA-1 chain and could lose connectivity until they''re updated to trust the new one.'
+            $finding.BackupRollback = 'Hard/Limited - like other certificate revocation/reissuance, this isn''t reversible to the old certificate''s validity; keep the old CA certificate available for verifying already-issued signatures if needed.'
             $finding.Details = @{
                 Source             = $weak.Source
                 Subject            = $weak.Subject
@@ -667,6 +715,209 @@ function Test-ADCSExtended {
     }
 
     Write-Verbose "AD CS extended audit complete. Found $($findings.Count) issues."
+    return $findings
+}
+
+#endregion
+
+#region CA Chase-Fallback Exposure (CVE-2026-54121 / "Certighost")
+
+function Test-ADCSChaseFallback {
+    <#
+    .SYNOPSIS
+        Detects Enterprise CAs with the EDITF_ENABLECHASECLIENTDC policy
+        flag set, the configuration condition CVE-2026-54121 ("Certighost")
+        abuses to obtain a certificate asserting a Domain Controller's
+        identity from a low-privileged, attacker-controlled account.
+    .DESCRIPTION
+        Reads each discovered Enterprise CA's policy\EditFlags registry
+        value (same registry key family as the CA policy-module settings
+        this module already reads) and checks the EDITF_ENABLECHASECLIENTDC
+        bit (0x00100000). When set, the CA honors a requester-supplied
+        client-DC ("cdc") hint during certificate-request identity
+        resolution; on an unpatched CA this hint is used without
+        confirming it actually resolves to a genuine DC object, letting an
+        attacker point the CA at a host they control and obtain a
+        certificate asserting a DC's identity, enabling DC impersonation
+        and DCSync-class domain compromise.
+
+        This is a configuration exposure check, not a patch-level check:
+        the flag is the exposure indicator regardless of whether the CA
+        host has installed Microsoft's July 14, 2026 security update
+        (which validates the chase target before contacting it, but does
+        not clear the flag). A patched CA with the flag still set remains
+        configured in the historically risky state and is still flagged
+        here, as defense-in-depth - the flag can be re-enabled later via
+        policy, imaging, or an admin action independent of patch state.
+
+        Detection only: reads one registry value per discovered CA. No
+        certificate requests, no PoC/exploitation traffic, no coercion.
+    .PARAMETER Snapshot
+        Optional snapshot hashtable (from Get-ADSnapshot). This check has
+        no snapshot representation - policy\EditFlags is a registry value
+        on the CA host itself, not an AD attribute - so it is always
+        skipped under -Snapshot, consistent with this module's other
+        live-only CA-host probe (ESC8 in Test-ADCSExtended).
+    .OUTPUTS
+        [ADSecurityFinding[]]
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [hashtable]$Snapshot
+    )
+
+    Write-Verbose "Starting AD CS chase-fallback exposure audit (CVE-2026-54121 / Certighost)..."
+    $findings = @()
+
+    # Bit value confirmed against independent public technical write-ups of
+    # CVE-2026-54121 (0x00100000 / 1048576) - not redefined ad hoc elsewhere
+    # in this module, since no existing EDITF_* constant was already defined
+    # here to reuse.
+    $editfEnableChaseClientDc = 0x00100000
+
+    $certAuthorities = @()
+    $adcsInstalled = $false
+
+    if ($Snapshot) {
+        if ($Snapshot.ContainsKey('ADCS') -and $Snapshot.ADCS.Installed) {
+            $adcsInstalled = $true
+            $certAuthorities = @($Snapshot.ADCS.CertificateAuthorities)
+        }
+        else {
+            Write-Verbose "Test-ADCSChaseFallback: snapshot indicates AD CS is not installed; no findings."
+            return $findings
+        }
+
+        Write-Verbose "Test-ADCSChaseFallback: -Snapshot supplied; skipping live registry probe (offline mode performs no live AD/network access)."
+        Add-ADOfflineSkipNote -Test 'ADCSChaseFallback' -Check 'EDITF_ENABLECHASECLIENTDC / Certighost (CVE-2026-54121) exposure' `
+            -Reason 'This is a live registry probe against the CA host itself (policy\EditFlags), not an AD attribute - there is no snapshot representation possible. Run this check live (without -Snapshot) if you need this coverage.'
+        return $findings
+    }
+
+    try {
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
+        $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
+
+        $certAuthorities = @(Invoke-ADQueryWithRetry -OperationName 'Get enrollment services (ADCS chase-fallback audit)' -Query {
+            Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties dNSHostName -Server $__adServer -ErrorAction Stop
+        })
+        $adcsInstalled = $true
+    }
+    catch {
+        Write-Verbose "Test-ADCSChaseFallback: AD Certificate Services not found or accessible. Skipping chase-fallback audit."
+        return $findings
+    }
+
+    if (-not $adcsInstalled -or -not $certAuthorities -or @($certAuthorities).Count -eq 0) {
+        Write-Verbose "Test-ADCSChaseFallback: no Enterprise CAs discovered; skipping."
+        return $findings
+    }
+
+    foreach ($ca in $certAuthorities) {
+        $caName = $ca.Name
+        $caHost = $ca.dNSHostName
+        if (-not $caHost) {
+            Write-Verbose "Test-ADCSChaseFallback: CA '$caName' has no dNSHostName; skipping."
+            continue
+        }
+
+        try {
+            $editFlagsResult = Invoke-ADQueryWithRetry -OperationName "Read policy\EditFlags on $caHost" -Query {
+                Invoke-Command -ComputerName $caHost -ErrorAction Stop -ScriptBlock {
+                    param($CaSanitizedName)
+                    $result = [PSCustomObject]@{
+                        EditFlagsRead = $false
+                        EditFlags     = $null
+                        Error         = $null
+                    }
+                    try {
+                        # Same registry family as this module's other CA
+                        # policy-module reads:
+                        # HKLM\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\<CA
+                        # sanitized name>\PolicyModules\CertificateAuthority_MicrosoftDefault.Policy
+                        #
+                        # A CA's registry key name (its "sanitized name") can
+                        # differ from its AD common name if the CN contains
+                        # characters not valid in a registry key. Prefer an
+                        # exact match against the AD-supplied name first;
+                        # fall back to the sole child key when there's only
+                        # one CA configured on the host (by far the common
+                        # case), and otherwise report ambiguity rather than
+                        # silently guessing which CA's flags we're reading.
+                        $caRegNames = @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration' -ErrorAction Stop | Select-Object -ExpandProperty PSChildName)
+                        $matchedRegCaName = $null
+                        if ($caRegNames -contains $CaSanitizedName) {
+                            $matchedRegCaName = $CaSanitizedName
+                        }
+                        elseif (@($caRegNames).Count -eq 1) {
+                            $matchedRegCaName = $caRegNames[0]
+                        }
+
+                        if ($matchedRegCaName) {
+                            $policyPath = "HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\$matchedRegCaName\PolicyModules\CertificateAuthority_MicrosoftDefault.Policy"
+                            if (Test-Path $policyPath) {
+                                $prop = Get-ItemProperty -Path $policyPath -Name 'EditFlags' -ErrorAction Stop
+                                $result.EditFlagsRead = $true
+                                $result.EditFlags = [int]$prop.EditFlags
+                            }
+                            else {
+                                $result.Error = "Policy module registry key not found under CA '$matchedRegCaName'."
+                            }
+                        }
+                        else {
+                            $result.Error = "Could not unambiguously match AD CA name '$CaSanitizedName' to a registry CA key; found: $($caRegNames -join ', ')."
+                        }
+                    }
+                    catch {
+                        $result.Error = "$_"
+                    }
+                    return $result
+                } -ArgumentList $caName
+            }
+        }
+        catch {
+            Write-Verbose "Test-ADCSChaseFallback: could not read policy\EditFlags on CA host '$caHost': $_"
+            $editFlagsResult = $null
+        }
+
+        if (-not $editFlagsResult -or -not $editFlagsResult.EditFlagsRead) {
+            if ($editFlagsResult -and $editFlagsResult.Error) {
+                Write-Verbose "Test-ADCSChaseFallback: EditFlags probe on '$caHost' reported: $($editFlagsResult.Error)"
+            }
+            continue
+        }
+
+        $chaseFallbackEnabled = (($editFlagsResult.EditFlags -band $editfEnableChaseClientDc) -ne 0)
+
+        if ($chaseFallbackEnabled) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Certificate Services'
+            $finding.Issue = 'CA Chase-Fallback Enabled (CVE-2026-54121 / Certighost Exposure)'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = "$caName ($caHost)"
+            $finding.Description = "Certificate Authority '$caName' ($caHost) has the EDITF_ENABLECHASECLIENTDC policy flag set on its policy\EditFlags registry value. This enables the CA's client-DC 'chase' fallback, in which the CA will contact a requester-supplied host to resolve identity data during certificate issuance."
+            $finding.Impact = "CVE-2026-54121 (`"Certighost`", CVSS 8.8) abuses this chase-fallback behavior: an authenticated, low-privileged attacker with network access to the CA can supply a client-DC hint pointing at an attacker-controlled host, causing the CA to obtain and use that host's identity data when issuing a certificate. On an unpatched CA this can result in a certificate asserting a Domain Controller's identity being issued to the attacker, enabling DC impersonation and DCSync-class full domain compromise. The flag is the exposure indicator independent of the CA's patch level: Microsoft's July 14, 2026 update adds chase-target validation but does not clear this flag, so a patched CA with the flag still set remains configured in the historically risky state and can become exploitable again if the flag is re-enabled by policy, imaging, or later admin action."
+            $finding.Remediation = "Apply Microsoft's July 14, 2026 security update for CVE-2026-54121, which adds chase-target validation to the CA. Independently, clear the flag as defense-in-depth (or as an immediate stopgap if the update cannot be applied yet): certutil -config `"$caName`" -setreg policy\EditFlags -EDITF_ENABLECHASECLIENTDC, then restart Certificate Services (Restart-Service CertSvc -Force). Test in staging first if cross-domain/cross-forest enrollment relies on the chase fallback, since disabling it will break that use case until the CA can reach the relevant DCs directly."
+            $finding.EstimatedEffort = 'High - before disabling the flag or patching, requires discovering which cross-domain/cross-forest enrollment workflows (if any) depend on the chase fallback across every CA, since Microsoft''s own advisory notes the registry mitigation was validated only in a lab and should be tested per-CA before production rollout.'
+            $finding.KnownRisks = 'Clearing the flag (or the patch''s added validation) can break certificate enrollment for legitimate cross-domain or cross-forest clients that rely on the CA''s chase behavior to resolve a client-DC hint the CA cannot otherwise reach directly.'
+            $finding.BackupRollback = 'Easy - the change is a single registry value; if a legitimate enrollment workflow breaks, re-enable EDITF_ENABLECHASECLIENTDC via certutil and restart CertSvc to restore the prior behavior immediately, with no data loss.'
+            $finding.OperationalNotes = 'Re-enabling the flag as a rollback restores the CVE-2026-54121 exposure, so treat it as strictly temporary and monitor Certificate Services event ID 4886 (a cert request carrying a client-DC hint that doesn''t match a known DC) while investigating any dependency.'
+            $finding.Details = @{
+                DistinguishedName = $ca.DistinguishedName
+                CAHost            = $caHost
+                EditFlags         = ('0x{0:X}' -f $editFlagsResult.EditFlags)
+                EditFlagBit       = 'EDITF_ENABLECHASECLIENTDC (0x00100000)'
+                CVE               = 'CVE-2026-54121'
+                PatchDate         = '2026-07-14'
+            }
+            $findings += $finding
+        }
+    }
+
+    Write-Verbose "AD CS chase-fallback exposure audit complete. Found $($findings.Count) issues."
     return $findings
 }
 

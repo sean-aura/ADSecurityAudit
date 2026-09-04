@@ -592,6 +592,27 @@ h3 {
   color: var(--ink);
 }
 
+/* Change-management enrichment (v1.24.0) - EstimatedEffort/KnownRisks/
+   BackupRollback/OperationalNotes, per Finding-Enrichment-Prompt.md.
+   Styled as a distinct left-accented block so it reads as supplementary
+   to Impact/Remediation rather than restating them. */
+.enrichment-block {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--brand, #1f4e79);
+  background: var(--surface, #fff);
+  border-radius: 0 4px 4px 0;
+}
+
+.enrichment-item {
+  margin: 6px 0;
+  line-height: 1.6;
+}
+
+.enrichment-item strong {
+  color: var(--ink);
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

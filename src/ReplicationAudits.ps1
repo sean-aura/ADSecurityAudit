@@ -64,56 +64,86 @@ function Test-ADReplicationSecurity {
         }
 
         if ($Snapshot.ACLs -and $Snapshot.ACLs.ContainsKey('DomainRoot')) {
+            # A trustee's DCSync capability can come from more than one ACE
+            # (e.g. one ACE granting DS-Replication-Get-Changes and a
+            # separate ACE granting DS-Replication-Get-Changes-All) - these
+            # combine to grant full DCSync capability just as a single
+            # GenericAll ACE would, so aggregate ALL rights a given
+            # identity holds across every one of its ACEs into ONE finding,
+            # rather than reporting each ACE's single right as its own
+            # finding (which, with a generic Description that doesn't name
+            # the specific right, looked like an exact duplicate).
+            $__dcSyncByIdentity = [ordered]@{}
             foreach ($ace in @($Snapshot.ACLs['DomainRoot'].Access)) {
                 $identityReference = $ace.IdentityReference
 
                 if ($ace.IsInherited -or $identityReference -in $legitimateReplicators) { continue }
 
-                $hasDCSyncRight = $false
                 $rightsFound = @()
 
                 if ($ace.ActiveDirectoryRights -match 'ExtendedRight' -or $ace.ActiveDirectoryRights -match 'GenericAll') {
                     $objectTypeGuid = "$($ace.ObjectType)".ToLower()
                     foreach ($rightName in $dcsyncRights.Keys) {
                         if ($objectTypeGuid -eq $dcsyncRights[$rightName].ToLower() -or $ace.ActiveDirectoryRights -match 'GenericAll') {
-                            $hasDCSyncRight = $true
                             $rightsFound += $rightName
                         }
                     }
                 }
 
-                if ($hasDCSyncRight) {
-                    # Offline identity resolution: cross-reference the
-                    # identity string directly against Snapshot collections
-                    # (strip a NetBIOS-domain prefix if present) or SID -
-                    # no live SID-translate/Get-ADObject lookup available.
-                    $principalClass = 'Unknown'
-                    $bareIdentity = if ($identityReference -match '\\') { ($identityReference -split '\\', 2)[1] } else { $identityReference }
-                    if ($identityReference -match '^S-1-' -and $bySid.ContainsKey($identityReference)) {
-                        $principalClass = $bySid[$identityReference]
-                    }
-                    elseif ($bySam.ContainsKey($bareIdentity)) {
-                        $principalClass = $bySam[$bareIdentity]
-                    }
+                if ($rightsFound.Count -eq 0) { continue }
 
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'Replication Security'
-                    $finding.Issue = 'Unauthorized DCSync Permissions'
-                    $finding.Severity = 'Critical'
-                    $finding.SeverityLevel = 4
-                    $finding.AffectedObject = $identityReference
-                    $finding.Description = "Non-standard principal '$identityReference' has DCSync replication rights on the domain."
-                    $finding.Impact = "This principal can perform DCSync attacks to retrieve password hashes for any account, including KRBTGT and Domain Admins. Attackers can then create Golden Tickets for persistent, unrestricted domain access."
-                    $finding.Remediation = "Remove replication rights immediately: `$acl = Get-Acl 'AD:\`$domainDN'; Find and remove the ACE for '$identityReference'; Set-Acl -Path 'AD:\`$domainDN' -AclObject `$acl"
-                    $finding.Details = @{
-                        Identity = $identityReference
-                        ObjectClass = $principalClass
-                        ActiveDirectoryRights = $ace.ActiveDirectoryRights
-                        Rights = $rightsFound -join ', '
-                        ObjectType = $ace.ObjectType
-                    }
-                    $findings += $finding
+                # Offline identity resolution: cross-reference the
+                # identity string directly against Snapshot collections
+                # (strip a NetBIOS-domain prefix if present) or SID -
+                # no live SID-translate/Get-ADObject lookup available.
+                $principalClass = 'Unknown'
+                $bareIdentity = if ($identityReference -match '\\') { ($identityReference -split '\\', 2)[1] } else { $identityReference }
+                if ($identityReference -match '^S-1-' -and $bySid.ContainsKey($identityReference)) {
+                    $principalClass = $bySid[$identityReference]
                 }
+                elseif ($bySam.ContainsKey($bareIdentity)) {
+                    $principalClass = $bySam[$bareIdentity]
+                }
+
+                if (-not $__dcSyncByIdentity.Contains($identityReference)) {
+                    $__dcSyncByIdentity[$identityReference] = @{
+                        ObjectClass           = $principalClass
+                        Rights                = [System.Collections.ArrayList]::new()
+                        ActiveDirectoryRights = [System.Collections.ArrayList]::new()
+                        ObjectTypes           = [System.Collections.ArrayList]::new()
+                    }
+                }
+                $entry = $__dcSyncByIdentity[$identityReference]
+                foreach ($r in $rightsFound) { if ($r -notin $entry.Rights) { [void]$entry.Rights.Add($r) } }
+                $__adRightsStr = "$($ace.ActiveDirectoryRights)"
+                if ($__adRightsStr -notin $entry.ActiveDirectoryRights) { [void]$entry.ActiveDirectoryRights.Add($__adRightsStr) }
+                $__objTypeStr = "$($ace.ObjectType)"
+                if ($__objTypeStr -notin $entry.ObjectTypes) { [void]$entry.ObjectTypes.Add($__objTypeStr) }
+            }
+
+            foreach ($identityReference in $__dcSyncByIdentity.Keys) {
+                $entry = $__dcSyncByIdentity[$identityReference]
+
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Replication Security'
+                $finding.Issue = 'Unauthorized DCSync Permissions'
+                $finding.Severity = 'Critical'
+                $finding.SeverityLevel = 4
+                $finding.AffectedObject = $identityReference
+                $finding.Description = "Non-standard principal '$identityReference' has DCSync replication rights on the domain ($($entry.Rights -join ', '))."
+                $finding.Impact = "This principal can perform DCSync attacks to retrieve password hashes for any account, including KRBTGT and Domain Admins. Attackers can then create Golden Tickets for persistent, unrestricted domain access."
+                $finding.Remediation = "Remove replication rights immediately: `$acl = Get-Acl 'AD:\`$domainDN'; Find and remove the ACE for '$identityReference'; Set-Acl -Path 'AD:\`$domainDN' -AclObject `$acl"
+                $finding.EstimatedEffort = 'Low - removing two specific extended-right ACEs (Replicating Directory Changes / Replicating Directory Changes All) from one object, a well-scoped ACE change.'
+                $finding.KnownRisks = 'Legitimate DCSync-capable accounts are normally limited to Domain Controllers, Domain/Enterprise Admins, and directory-sync tools like Azure AD Connect; removing an unauthorized grant has no legitimate compatibility impact unless it turns out to be an undocumented, currently-in-use sync or identity-governance tool, so confirm no such tool depends on it.'
+                $finding.BackupRollback = 'Moderate - export the domain object''s ACL before removing the specific extended-right ACEs so they can be restored if a legitimate sync tool is affected; changes follow normal AD replication.'
+                $finding.Details = @{
+                    Identity = $identityReference
+                    ObjectClass = $entry.ObjectClass
+                    ActiveDirectoryRights = ($entry.ActiveDirectoryRights -join ', ')
+                    Rights = ($entry.Rights -join ', ')
+                    ObjectType = ($entry.ObjectTypes -join ', ')
+                }
+                $findings += $finding
             }
         }
         else {
@@ -142,6 +172,9 @@ function Test-ADReplicationSecurity {
                     $finding.Description = "Group '$groupName' has $($members.Count) member(s). These groups have powerful rights that could be leveraged for privilege escalation or data exfiltration."
                     $finding.Impact = "Members of this group may have rights that can be leveraged for privilege escalation or data exfiltration."
                     $finding.Remediation = "Review membership and remove unnecessary accounts. Members: $($members -join ', ')"
+                    $finding.EstimatedEffort = 'Medium - reviewing each member of the operations group (e.g. Backup/Server/Account/Print Operators) for actual ongoing need, rather than a single mechanical change.'
+                    $finding.KnownRisks = 'Removing a member who still has a legitimate operational need for the group''s rights will break their ability to perform that work until re-added, so confirm with each member or their manager first.'
+                    $finding.BackupRollback = 'Easy - re-add any member whose need is confirmed; effective on next Kerberos ticket refresh, no data loss.'
                     $finding.Details = @{
                         GroupDN = $group.DistinguishedName
                         Members = $members
@@ -156,11 +189,12 @@ function Test-ADReplicationSecurity {
     }
 
     try {
-        $domain = Get-ADDomain
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $domain = Get-ADDomain -Server $__adServer
         $domainDN = $domain.DistinguishedName
         
         # Get the domain object with ACL
-        $domainObject = Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor
+        $domainObject = Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor -Server $__adServer
         $acl = $domainObject.nTSecurityDescriptor
         
         # Define legitimate replication principals
@@ -180,6 +214,18 @@ function Test-ADReplicationSecurity {
             'DS-Replication-Get-Changes-In-Filtered-Set' = '89e95b76-444d-4c62-991a-0facbeda640c'
         }
         
+        # A trustee's DCSync capability can come from more than one ACE
+        # (e.g. one ACE granting DS-Replication-Get-Changes and a separate
+        # ACE granting DS-Replication-Get-Changes-All) - these combine to
+        # grant full DCSync capability just as a single GenericAll ACE
+        # would, so aggregate ALL rights a given identity holds across
+        # every one of its ACEs into ONE finding (also resolving the
+        # principal's object class only once per identity instead of once
+        # per ACE), rather than reporting each ACE's single right as its
+        # own finding with a generic Description that doesn't name the
+        # specific right - which looked like an exact duplicate.
+        $__dcSyncByIdentity = [ordered]@{}
+
         # Check each ACE for dangerous replication rights
         foreach ($ace in $acl.Access) {
             $identityReference = $ace.IdentityReference.Value
@@ -190,7 +236,6 @@ function Test-ADReplicationSecurity {
             }
             
             # Check for DCSync-enabling rights
-            $hasDCSyncRight = $false
             $rightsFound = @()
             
             if ($ace.ActiveDirectoryRights -match 'ExtendedRight' -or 
@@ -202,73 +247,94 @@ function Test-ADReplicationSecurity {
                 foreach ($rightName in $dcsyncRights.Keys) {
                     if ($objectTypeGuid -eq $dcsyncRights[$rightName].ToLower() -or 
                         $ace.ActiveDirectoryRights -match 'GenericAll') {
-                        $hasDCSyncRight = $true
                         $rightsFound += $rightName
                     }
                 }
             }
             
-            if ($hasDCSyncRight) {
-                # Try to resolve the identity to determine if it's a user or group
-                $principal = $null
-                $principalClass = 'Unknown'
-                
-                try {
-                    # First try to translate the identity reference to a SID
-                    $sid = $null
-                    
-                    # Check if it's already a SID string
-                    if ($identityReference -match '^S-1-') {
-                        $sid = $identityReference
-                    }
-                    else {
-                        # Try to translate account name to SID
-                        try {
-                            $ntAccount = New-Object System.Security.Principal.NTAccount($identityReference)
-                            $sidObj = $ntAccount.Translate([System.Security.Principal.SecurityIdentifier])
-                            $sid = $sidObj.Value
-                        }
-                        catch {
-                            Write-Verbose "Could not translate '$identityReference' to SID: $_"
-                        }
-                    }
-                    
-                    # If we have a SID, look up the AD object
-                    if ($sid) {
-                        $principal = $null
-                        try {
-                            $principal = Get-ADObject -Filter "objectSid -eq '$sid'" -Properties objectClass -ErrorAction Stop
-                        }
-                        catch {
-                            Write-Verbose "Could not resolve SID '$sid': $_"
-                        }
-                        if ($principal) {
-                            $principalClass = $principal.objectClass
-                        }
-                    }
+            if ($rightsFound.Count -eq 0) { continue }
+
+            if (-not $__dcSyncByIdentity.Contains($identityReference)) {
+                $__dcSyncByIdentity[$identityReference] = @{
+                    Rights                = [System.Collections.ArrayList]::new()
+                    ActiveDirectoryRights = [System.Collections.ArrayList]::new()
+                    ObjectTypes           = [System.Collections.ArrayList]::new()
                 }
-                catch {
-                    Write-Verbose "Could not resolve principal: $identityReference - $_"
-                }
-                
-                $finding = [ADSecurityFinding]::new()
-                $finding.Category = 'Replication Security'
-                $finding.Issue = 'Unauthorized DCSync Permissions'
-                $finding.Severity = 'Critical'
-                $finding.SeverityLevel = 4
-                $finding.AffectedObject = $identityReference
-                $finding.Description = "Non-standard principal '$identityReference' has DCSync replication rights on the domain."
-                $finding.Impact = "This principal can perform DCSync attacks to retrieve password hashes for any account, including KRBTGT and Domain Admins. Attackers can then create Golden Tickets for persistent, unrestricted domain access."
-                $finding.Remediation = "Remove replication rights immediately: `$acl = Get-Acl 'AD:\$domainDN'; Find and remove the ACE for '$identityReference'; Set-Acl -Path 'AD:\$domainDN' -AclObject `$acl"
-                $finding.Details = @{
-                    Identity = $identityReference
-                    ObjectClass = $principalClass
-                    ActiveDirectoryRights = $ace.ActiveDirectoryRights.ToString()
-                    Rights = $rightsFound -join ', '
-                    ObjectType = $ace.ObjectType.ToString()
-                }
-                $findings += $finding
             }
+            $entry = $__dcSyncByIdentity[$identityReference]
+            foreach ($r in $rightsFound) { if ($r -notin $entry.Rights) { [void]$entry.Rights.Add($r) } }
+            $__adRightsStr = $ace.ActiveDirectoryRights.ToString()
+            if ($__adRightsStr -notin $entry.ActiveDirectoryRights) { [void]$entry.ActiveDirectoryRights.Add($__adRightsStr) }
+            $__objTypeStr = $ace.ObjectType.ToString()
+            if ($__objTypeStr -notin $entry.ObjectTypes) { [void]$entry.ObjectTypes.Add($__objTypeStr) }
+        }
+
+        foreach ($identityReference in $__dcSyncByIdentity.Keys) {
+            $entry = $__dcSyncByIdentity[$identityReference]
+
+            # Resolve the identity to determine if it's a user or group -
+            # once per identity, not once per contributing ACE.
+            $principal = $null
+            $principalClass = 'Unknown'
+            
+            try {
+                # First try to translate the identity reference to a SID
+                $sid = $null
+                
+                # Check if it's already a SID string
+                if ($identityReference -match '^S-1-') {
+                    $sid = $identityReference
+                }
+                else {
+                    # Try to translate account name to SID
+                    try {
+                        $ntAccount = New-Object System.Security.Principal.NTAccount($identityReference)
+                        $sidObj = $ntAccount.Translate([System.Security.Principal.SecurityIdentifier])
+                        $sid = $sidObj.Value
+                    }
+                    catch {
+                        Write-Verbose "Could not translate '$identityReference' to SID: $_"
+                    }
+                }
+                
+                # If we have a SID, look up the AD object
+                if ($sid) {
+                    $principal = $null
+                    try {
+                        $principal = Get-ADObject -Filter "objectSid -eq '$sid'" -Properties objectClass -Server $__adServer -ErrorAction Stop
+                    }
+                    catch {
+                        Write-Verbose "Could not resolve SID '$sid': $_"
+                    }
+                    if ($principal) {
+                        $principalClass = $principal.objectClass
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Could not resolve principal: $identityReference - $_"
+            }
+            
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Replication Security'
+            $finding.Issue = 'Unauthorized DCSync Permissions'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = $identityReference
+            $finding.Description = "Non-standard principal '$identityReference' has DCSync replication rights on the domain ($($entry.Rights -join ', '))."
+            $finding.Impact = "This principal can perform DCSync attacks to retrieve password hashes for any account, including KRBTGT and Domain Admins. Attackers can then create Golden Tickets for persistent, unrestricted domain access."
+            $finding.Remediation = "Remove replication rights immediately: `$acl = Get-Acl 'AD:\$domainDN'; Find and remove the ACE for '$identityReference'; Set-Acl -Path 'AD:\$domainDN' -AclObject `$acl"
+            $finding.EstimatedEffort = 'Low - removing two specific extended-right ACEs (Replicating Directory Changes / Replicating Directory Changes All) from one object, a well-scoped ACE change.'
+            $finding.KnownRisks = 'Legitimate DCSync-capable accounts are normally limited to Domain Controllers, Domain/Enterprise Admins, and directory-sync tools like Azure AD Connect; removing an unauthorized grant has no legitimate compatibility impact unless it turns out to be an undocumented, currently-in-use sync or identity-governance tool, so confirm no such tool depends on it.'
+            $finding.BackupRollback = 'Moderate - export the domain object''s ACL before removing the specific extended-right ACEs so they can be restored if a legitimate sync tool is affected; changes follow normal AD replication.'
+            $finding.Details = @{
+                Identity = $identityReference
+                ObjectClass = $principalClass
+                ActiveDirectoryRights = ($entry.ActiveDirectoryRights -join ', ')
+                Rights = ($entry.Rights -join ', ')
+                ObjectType = ($entry.ObjectTypes -join ', ')
+            }
+            $findings += $finding
         }
         
         # Check for accounts with explicit DCSync-enabling group memberships
@@ -281,7 +347,7 @@ function Test-ADReplicationSecurity {
             try {
                 $group = $null
                 try {
-                    $group = Get-ADGroup -Filter "Name -eq '$groupName'" -ErrorAction Stop
+                    $group = Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
                 }
                 catch {
                     Write-Verbose "Could not get group '$groupName': $_"
@@ -289,7 +355,7 @@ function Test-ADReplicationSecurity {
                 if ($group) {
                     $members = $null
                     try {
-                        $members = Get-ADGroupMember -Identity $group -ErrorAction Stop
+                        $members = Get-ADGroupMember -Identity $group -Server $__adServer -ErrorAction Stop
                     }
                     catch {
                         Write-Verbose "Could not get members of group '$groupName': $_"
@@ -305,6 +371,9 @@ function Test-ADReplicationSecurity {
                         $finding.Description = "Group '$groupName' has $($members.Count) member(s). These groups have powerful rights that could be leveraged for privilege escalation or data exfiltration."
                         $finding.Impact = "Members of this group may have rights that can be leveraged for privilege escalation or data exfiltration."
                         $finding.Remediation = "Review membership and remove unnecessary accounts. Members: $($members.SamAccountName -join ', ')"
+                        $finding.EstimatedEffort = 'Medium - reviewing each member of the operations group (e.g. Backup/Server/Account/Print Operators) for actual ongoing need, rather than a single mechanical change.'
+                        $finding.KnownRisks = 'Removing a member who still has a legitimate operational need for the group''s rights will break their ability to perform that work until re-added, so confirm with each member or their manager first.'
+                        $finding.BackupRollback = 'Easy - re-add any member whose need is confirmed; effective on next Kerberos ticket refresh, no data loss.'
                         $finding.Details = @{
                             GroupDN = $group.DistinguishedName
                             Members = ($members | Select-Object Name, SamAccountName, DistinguishedName)

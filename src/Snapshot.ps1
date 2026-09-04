@@ -43,6 +43,7 @@ $Script:ADTestFunctionRegistry = [ordered]@{
     'DangerousPermissions'     = 'Test-ADDangerousPermissions'
     'CertificateServices'      = 'Test-ADCertificateServices'
     'ADCSExtended'             = 'Test-ADCSExtended'
+    'ADCSChaseFallback'        = 'Test-ADCSChaseFallback'
     'KRBTGTAccount'            = 'Test-KRBTGTAccount'
     'DomainTrusts'             = 'Test-ADDomainTrusts'
     'LAPSDeployment'           = 'Test-LAPSDeployment'
@@ -159,6 +160,13 @@ function Get-ADSnapshot {
         Optional path. When supplied, the snapshot is also serialised to
         this path (ConvertTo-Json -Depth 12) for later offline re-analysis
         via Start-ADSecurityAudit -FromSnapshot.
+    .PARAMETER Server
+        Optional override for which domain/DC every query in this
+        collection pass targets - a domain FQDN (e.g. 'domainb.corp.com')
+        or a specific DC FQDN/hostname. When omitted, defaults to the
+        current user's own domain ($env:USERDNSDOMAIN) rather than the
+        ambiguous default serverless bind - pass this explicitly only when
+        collecting a domain OTHER than your own account's domain.
     .OUTPUTS
         [hashtable] with keys: CollectedDate, Domain, DomainControllers,
         Users, Computers, Groups, GPOs, ACLs, ADCS, DnsZones, Trusts,
@@ -171,11 +179,53 @@ function Get-ADSnapshot {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [string]$ToJson
+        [string]$ToJson,
+
+        [Parameter()]
+        [string]$Server
     )
 
     Write-Verbose "Starting collect-once AD snapshot..."
 
+    # See Resolve-ADSecurityAuditTargetServer/Set-ADSecurityAuditTargetServer
+    # in Common.ps1: -Server, if supplied, forces every Get-AD*/Set-AD* call
+    # in this collection pass to explicitly target it. If NOT supplied,
+    # defaults to the current user's own domain ($env:USERDNSDOMAIN)
+    # instead of the ambiguous default serverless bind. Cleared before
+    # every exit point below (including the early return just after this).
+    # Reset run-scope notes (e.g. a "PDC-only" check running against an
+    # explicitly-named non-PDC DC - see Common.ps1) before resolving
+    # -Server below, which is what can add one.
+    Reset-ADRunScopeNotes
+
+    # Tracked BEFORE this call touches anything, so cleanup at every exit
+    # point below only removes an override THIS call installed - not one
+    # a caller already had active (e.g. this collection pass running
+    # nested inside another already-scoped run). Mirrors the
+    # $__adAuditServerAlreadyActive pattern used by the Test-AD* checks in
+    # AdminSDAudits.ps1/DomainAdminEquivalence.ps1/etc.
+    $__snapshotServerAlreadyActive = [bool](Get-ADSecurityAuditActiveServerOverride)
+
+    $effectiveServer = if ($__snapshotServerAlreadyActive) {
+        # An override is already active for this session (e.g. this
+        # collection pass is running inside a Start-ADSecurityAudit run
+        # that already resolved and installed one) - reuse it directly.
+        # Re-running Resolve-ADSecurityAuditTargetServer against an
+        # already-resolved value (a domain's PDC Emulator FQDN) would
+        # misclassify it as an operator-named explicit DC and corrupt the
+        # shared explicit-DC scope flag other checks in the same run rely
+        # on - see Resolve-ADSecurityAuditTargetServer's own idempotency
+        # guard for the full explanation. This was a real, confirmed bug.
+        Get-ADSecurityAuditActiveServerOverride
+    }
+    else {
+        Resolve-ADSecurityAuditTargetServer -Server $Server
+    }
+    if ($effectiveServer) {
+        $serverSource = if ($Server) { 'explicit -Server' } else { "your own domain, `$env:USERDNSDOMAIN" }
+        Write-Verbose "Get-ADSnapshot: all AD queries in this collection pass will explicitly target '$effectiveServer' ($serverSource)."
+        Set-ADSecurityAuditTargetServer -Server $effectiveServer
+    }
     # Auto-create the -ToJson output directory up front, the same way
     # Start-ADSecurityAudit now handles -ExportPath, so a bad/missing path
     # fails fast (or just works) instead of surfacing only at the very end
@@ -189,6 +239,7 @@ function Get-ADSnapshot {
             }
             catch {
                 Write-Error "Get-ADSnapshot: could not create -ToJson output directory '$toJsonDir': $_"
+                if ($effectiveServer -and -not $__snapshotServerAlreadyActive) { Clear-ADSecurityAuditTargetServer }
                 return
             }
         }
@@ -219,6 +270,8 @@ function Get-ADSnapshot {
         CollectedDate     = (Get-Date)
         Domain            = $null
         DomainControllers = @()
+        TotalDomainControllerCount = $null
+        AllDomainControllerComputerObjectDNs = @()
         Users             = @()
         Computers         = @()
         Groups            = @()
@@ -228,6 +281,7 @@ function Get-ADSnapshot {
         DnsZones          = @()
         Trusts            = @()
         MachineAccountQuota = $null
+        RunScopeNotes     = @()
         DsHeuristics        = $null
         DsHeuristicsDN      = $null
         PreWin2000GroupDN   = $null
@@ -244,7 +298,7 @@ function Get-ADSnapshot {
     try {
         Write-Verbose "Get-ADSnapshot: collecting domain info..."
         $rawDomain = Invoke-ADQueryWithRetry -OperationName 'Get-ADDomain (snapshot)' -Query {
-            Get-ADDomain -ErrorAction Stop
+            Get-ADDomain -Server $effectiveServer -ErrorAction Stop
         }
         # Same flattening fix as Users/Computers/DomainControllers above.
         $snapshot.Domain = [PSCustomObject]@{
@@ -262,8 +316,13 @@ function Get-ADSnapshot {
 
     try {
         Write-Verbose "Get-ADSnapshot: collecting domain controllers..."
-        $rawDCs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADDomainController (snapshot)' -Query {
-            Get-ADDomainController -Filter * -ErrorAction Stop
+        # Get-ADSecurityAuditDomainController, not a bare
+        # Get-ADDomainController -Filter * - the latter is forest-wide
+        # regardless of -Server, which would have baked OTHER domains'
+        # DCs permanently into this snapshot with no way to correct it
+        # later at -FromSnapshot re-analysis time. See Common.ps1 for why.
+        $rawDCs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (snapshot)' -Query {
+            Get-ADSecurityAuditDomainController -Server $effectiveServer
         })
         # Same flattening fix as Users/Computers above - ADDomainController
         # objects carry the same class of case-variant property risk.
@@ -286,15 +345,45 @@ function Get-ADSnapshot {
         Write-Warning "Get-ADSnapshot: failed to collect domain controllers: $_"
     }
 
+    # --- True, unscoped domain-wide DC inventory (independent of -Server
+    # narrowing) - for Test-ADStaleObjectDepth's "Insufficient Domain
+    # Controller Count" redundancy check and its primaryGroupID=516
+    # legitimacy check. ---
+    #
+    # snapshot.DomainControllers above is deliberately -Server-scoped (it
+    # feeds live-probe-style consumers that should stay scoped to whichever
+    # DC(s) this run was told to touch). But a DC-count redundancy
+    # assessment and "which computer objects are legitimately DCs" are
+    # properties of the DOMAIN, not of -Server scoping - baking a
+    # -Server-narrowed count/DN-list into the snapshot would silently
+    # undercount the domain's real DC total (or misclassify a real DC as
+    # suspicious) for every future -FromSnapshot analysis of this file,
+    # with no way to correct it after the fact. -IgnoreExplicitDCScope
+    # still uses $effectiveServer as the query target (so this works even
+    # when only one DC was reachable at collection time) but always
+    # returns every DC belonging to the resolved domain.
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting true (unscoped) domain-wide DC count/inventory..."
+        $rawAllDCs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope (snapshot, true count)' -Query {
+            Get-ADSecurityAuditDomainController -Server $effectiveServer -IgnoreExplicitDCScope
+        })
+        $snapshot.TotalDomainControllerCount = @($rawAllDCs).Count
+        $snapshot.AllDomainControllerComputerObjectDNs = @($rawAllDCs | ForEach-Object { $_.ComputerObjectDN } | Where-Object { $_ })
+        Write-Verbose "Get-ADSnapshot: true domain-wide DC count is $($snapshot.TotalDomainControllerCount)."
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect the true (unscoped) domain-wide DC inventory; Test-ADStaleObjectDepth's DC-count/legitimacy checks will fall back to the possibly -Server-scoped DomainControllers list for this snapshot: $_"
+    }
+
     # --- Machine Account Quota (ms-DS-MachineAccountQuota on domain root) ---
     # Get-ADDomain does not expose this attribute directly, so it's read via
     # a separate Get-ADObject call against the domain root DN.
     Step-ADSnapshotProgress -Stage 'Machine Account Quota'
     try {
         Write-Verbose "Get-ADSnapshot: collecting ms-DS-MachineAccountQuota..."
-        $domainForMaq = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -ErrorAction Stop }
+        $domainForMaq = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -Server $effectiveServer -ErrorAction Stop }
         $maqObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject ms-DS-MachineAccountQuota (snapshot)' -Query {
-            Get-ADObject -Identity $domainForMaq.DistinguishedName -Properties 'ms-DS-MachineAccountQuota' -ErrorAction Stop
+            Get-ADObject -Identity $domainForMaq.DistinguishedName -Properties 'ms-DS-MachineAccountQuota' -Server $effectiveServer -ErrorAction Stop
         }
         if ($maqObject) {
             $snapshot.MachineAccountQuota = $maqObject.'ms-DS-MachineAccountQuota'
@@ -309,11 +398,11 @@ function Get-ADSnapshot {
     Step-ADSnapshotProgress -Stage 'dSHeuristics'
     try {
         Write-Verbose "Get-ADSnapshot: collecting dSHeuristics..."
-        $configContextForDsh = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+        $configContextForDsh = Get-ADRootDSEValue -Property configurationNamingContext -Server $effectiveServer
         $dsServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configContextForDsh"
         $snapshot.DsHeuristicsDN = $dsServiceDN
         $dsServiceObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject dSHeuristics (snapshot)' -Query {
-            Get-ADObject -Identity $dsServiceDN -Properties dSHeuristics -ErrorAction Stop
+            Get-ADObject -Identity $dsServiceDN -Properties dSHeuristics -Server $effectiveServer -ErrorAction Stop
         }
         if ($dsServiceObject) {
             $snapshot.DsHeuristics = $dsServiceObject.dSHeuristics
@@ -329,12 +418,12 @@ function Get-ADSnapshot {
     try {
         Write-Verbose "Get-ADSnapshot: collecting Pre-Windows 2000 Compatible Access membership..."
         $preWin2000Group = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup Pre-Windows 2000 Compatible Access (snapshot)' -Query {
-            Get-ADGroup -Filter "Name -eq 'Pre-Windows 2000 Compatible Access'" -ErrorAction Stop
+            Get-ADGroup -Filter "Name -eq 'Pre-Windows 2000 Compatible Access'" -Server $effectiveServer -ErrorAction Stop
         }
         if ($preWin2000Group) {
             $snapshot.PreWin2000GroupDN = $preWin2000Group.DistinguishedName
             $preWin2000Members = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroupMember Pre-Windows 2000 Compatible Access (snapshot)' -Query {
-                Get-ADGroupMember -Identity $preWin2000Group -ErrorAction Stop
+                Get-ADGroupMember -Identity $preWin2000Group -Server $effectiveServer -ErrorAction Stop
             }
             $snapshot.PreWin2000Members = @($preWin2000Members | ForEach-Object { $_.DistinguishedName })
         }
@@ -361,7 +450,7 @@ function Get-ADSnapshot {
     try {
         Write-Verbose "Get-ADSnapshot: collecting users..."
         $rawUsers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser (snapshot)' -Query {
-            Get-ADUser -Filter '*' -ResultPageSize 500 -ErrorAction Stop -Properties `
+            Get-ADUser -Filter '*' -ResultPageSize 500 -Server $effectiveServer -ErrorAction Stop -Properties `
                 DoesNotRequirePreAuth, UseDESKeyOnly, AllowReversiblePasswordEncryption, `
                 PasswordNeverExpires, TrustedForDelegation, LastLogonDate, PasswordLastSet, `
                 ServicePrincipalNames, MemberOf, Enabled, DistinguishedName, `
@@ -380,7 +469,7 @@ function Get-ADSnapshot {
         $shadowCredUserDNs = [System.Collections.Generic.HashSet[string]]::new()
         try {
             @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser shadow-credentials presence (snapshot)' -Query {
-                Get-ADUser -LDAPFilter '(msDS-KeyCredentialLink=*)' -ErrorAction Stop
+                Get-ADUser -LDAPFilter '(msDS-KeyCredentialLink=*)' -Server $effectiveServer -ErrorAction Stop
             }) | ForEach-Object { [void]$shadowCredUserDNs.Add($_.DistinguishedName) }
         }
         catch {
@@ -432,7 +521,7 @@ function Get-ADSnapshot {
     try {
         Write-Verbose "Get-ADSnapshot: collecting ACLs on adminCount=1 users..."
         $adminCountUsersForAcl = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser adminCount=1 ACL (snapshot)' -Query {
-            Get-ADUser -LDAPFilter '(adminCount=1)' -Properties nTSecurityDescriptor -ErrorAction Stop
+            Get-ADUser -LDAPFilter '(adminCount=1)' -Properties nTSecurityDescriptor -Server $effectiveServer -ErrorAction Stop
         })
         $snapshot.PrivilegedUserAcls = @($adminCountUsersForAcl | ForEach-Object {
             [PSCustomObject]@{
@@ -473,15 +562,15 @@ function Get-ADSnapshot {
     $windowsLapsPresent = $false
     try {
         Write-Verbose "Get-ADSnapshot: checking LAPS schema presence..."
-        $schemaNCForLaps = ([ADSI]"LDAP://RootDSE").schemaNamingContext
+        $schemaNCForLaps = Get-ADRootDSEValue -Property schemaNamingContext -Server $effectiveServer
         try {
-            $legacyLapsPresent = [bool](Get-ADObject -Identity "CN=ms-Mcs-AdmPwd,$schemaNCForLaps" -ErrorAction SilentlyContinue)
+            $legacyLapsPresent = [bool](Get-ADObject -Identity "CN=ms-Mcs-AdmPwd,$schemaNCForLaps" -Server $effectiveServer -ErrorAction SilentlyContinue)
         }
         catch {
             Write-Verbose "Get-ADSnapshot: legacy LAPS schema check failed: $_"
         }
         try {
-            $windowsLapsPresent = [bool](Get-ADObject -Identity "CN=ms-LAPS-Password,$schemaNCForLaps" -ErrorAction SilentlyContinue)
+            $windowsLapsPresent = [bool](Get-ADObject -Identity "CN=ms-LAPS-Password,$schemaNCForLaps" -Server $effectiveServer -ErrorAction SilentlyContinue)
         }
         catch {
             Write-Verbose "Get-ADSnapshot: Windows LAPS schema check failed: $_"
@@ -524,7 +613,7 @@ function Get-ADSnapshot {
         $computerProperties = $computerBaseProperties + $computerLapsProperties
 
         $rawComputers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer (snapshot)' -Query {
-            Get-ADComputer -Filter '*' -ResultPageSize 500 -ErrorAction Stop -Properties $computerProperties
+            Get-ADComputer -Filter '*' -ResultPageSize 500 -Server $effectiveServer -ErrorAction Stop -Properties $computerProperties
         } | Where-Object { $_ })
 
         # --- v1.19.0 offline-parity backlog, step 24 ---
@@ -537,7 +626,7 @@ function Get-ADSnapshot {
         $rbcdComputerDNs = [System.Collections.Generic.HashSet[string]]::new()
         try {
             @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer RBCD presence (snapshot)' -Query {
-                Get-ADComputer -LDAPFilter '(msDS-AllowedToActOnBehalfOfOtherIdentity=*)' -ErrorAction Stop
+                Get-ADComputer -LDAPFilter '(msDS-AllowedToActOnBehalfOfOtherIdentity=*)' -Server $effectiveServer -ErrorAction Stop
             }) | ForEach-Object { [void]$rbcdComputerDNs.Add($_.DistinguishedName) }
         }
         catch {
@@ -550,7 +639,7 @@ function Get-ADSnapshot {
         $shadowCredComputerDNs = [System.Collections.Generic.HashSet[string]]::new()
         try {
             @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer shadow-credentials presence (snapshot)' -Query {
-                Get-ADComputer -LDAPFilter '(msDS-KeyCredentialLink=*)' -ErrorAction Stop
+                Get-ADComputer -LDAPFilter '(msDS-KeyCredentialLink=*)' -Server $effectiveServer -ErrorAction Stop
             }) | ForEach-Object { [void]$shadowCredComputerDNs.Add($_.DistinguishedName) }
         }
         catch {
@@ -593,7 +682,7 @@ function Get-ADSnapshot {
     try {
         Write-Verbose "Get-ADSnapshot: collecting groups..."
         $rawGroups = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup (snapshot)' -Query {
-            Get-ADGroup -Filter '*' -ResultPageSize 500 -ErrorAction Stop -Properties `
+            Get-ADGroup -Filter '*' -ResultPageSize 500 -Server $effectiveServer -ErrorAction Stop -Properties `
                 Members, Description, groupType, adminCount, DistinguishedName, SID
         })
         $snapshot.Groups = @($rawGroups | ForEach-Object {
@@ -619,7 +708,7 @@ function Get-ADSnapshot {
     try {
         Write-Verbose "Get-ADSnapshot: collecting GPOs..."
         Import-Module GroupPolicy -ErrorAction Stop
-        $rawGpos = Get-GPO -All
+        $rawGpos = Get-GPO -All -Server $effectiveServer
 
         # --- v1.19.0 offline-parity backlog, step 22 ---
         # Single pass over every OU and the domain root's gPLink attribute,
@@ -631,9 +720,9 @@ function Get-ADSnapshot {
         # than assuming OUs only.
         $linkIndex = @{}
         try {
-            $domainForGpLink = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -ErrorAction Stop }
+            $domainForGpLink = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -Server $effectiveServer -ErrorAction Stop }
             $gpLinkObjects = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADObject gPLink (snapshot)' -Query {
-                Get-ADObject -Filter "gPLink -like '*'" -Properties gPLink, DistinguishedName -ResultPageSize 500 -ErrorAction Stop
+                Get-ADObject -Filter "gPLink -like '*'" -Properties gPLink, DistinguishedName -ResultPageSize 500 -Server $effectiveServer -ErrorAction Stop
             })
             foreach ($linkedObj in $gpLinkObjects) {
                 if (-not $linkedObj.gPLink) { continue }
@@ -655,7 +744,7 @@ function Get-ADSnapshot {
             $gpo = $_
             $permissions = $null
             try {
-                $permissions = Get-GPPermission -Guid $gpo.Id -All -ErrorAction Stop
+                $permissions = Get-GPPermission -Guid $gpo.Id -All -Server $effectiveServer -ErrorAction Stop
             }
             catch {
                 Write-Verbose "Get-ADSnapshot: failed to get permissions for GPO '$($gpo.DisplayName)': $_"
@@ -686,15 +775,24 @@ function Get-ADSnapshot {
     Step-ADSnapshotProgress -Stage 'ACLs on key objects'
     try {
         Write-Verbose "Get-ADSnapshot: collecting ACLs on key objects..."
-        $domainForAcl = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -ErrorAction Stop }
+        $domainForAcl = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -Server $effectiveServer -ErrorAction Stop }
         $aclTargets = @{
             AdminSDHolder = "CN=AdminSDHolder,CN=System,$($domainForAcl.DistinguishedName)"
             DomainRoot    = $domainForAcl.DistinguishedName
         }
 
-        $configContext = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $effectiveServer
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
         $aclTargets['CertificateTemplatesContainer'] = "CN=Certificate Templates,$pkiContainer"
+
+        # --- Forest-level coverage backlog: Schema/Configuration NC head ACLs ---
+        # Two more fixed ACL targets, for Test-ADDangerousPermissions's new
+        # Schema/Configuration naming-context ACL checks. $configContext is
+        # already resolved above; schemaNamingContext needs its own RootDSE
+        # read (same helper already used for the LAPS check).
+        $schemaContext = Get-ADRootDSEValue -Property schemaNamingContext -Server $effectiveServer
+        $aclTargets['SchemaNamingContext'] = $schemaContext
+        $aclTargets['ConfigurationNamingContext'] = $configContext
 
         # --- v1.19.0 offline-parity backlog, step 21 ---
         # Three more fixed ACL targets, added for Test-ADDangerousPermissions's
@@ -709,7 +807,7 @@ function Get-ADSnapshot {
 
         foreach ($targetName in $aclTargets.Keys) {
             try {
-                $obj = Get-ADObject -Identity $aclTargets[$targetName] -Properties nTSecurityDescriptor -ErrorAction Stop
+                $obj = Get-ADObject -Identity $aclTargets[$targetName] -Properties nTSecurityDescriptor -Server $effectiveServer -ErrorAction Stop
 
                 # --- v1.19.0 offline-parity backlog, step 26 ---
                 # Audit-rule (SACL) presence, for Test-AuditPolicyConfiguration's
@@ -753,7 +851,7 @@ function Get-ADSnapshot {
     try {
         Write-Verbose "Get-ADSnapshot: collecting default domain password policy..."
         $pwdPolicy = Invoke-ADQueryWithRetry -OperationName 'Get-ADDefaultDomainPasswordPolicy (snapshot)' -Query {
-            Get-ADDefaultDomainPasswordPolicy -ErrorAction Stop
+            Get-ADDefaultDomainPasswordPolicy -Server $effectiveServer -ErrorAction Stop
         }
         if ($pwdPolicy) {
             $snapshot.PasswordPolicy = @{
@@ -770,7 +868,7 @@ function Get-ADSnapshot {
     try {
         Write-Verbose "Get-ADSnapshot: collecting forest functional level..."
         $forestForSnapshot = Invoke-ADQueryWithRetry -OperationName 'Get-ADForest (snapshot)' -Query {
-            Get-ADForest -ErrorAction Stop
+            Get-ADForest -Server $effectiveServer -ErrorAction Stop
         }
         if ($forestForSnapshot) {
             $snapshot.Forest = @{ ForestMode = "$($forestForSnapshot.ForestMode)" }
@@ -780,10 +878,31 @@ function Get-ADSnapshot {
         Write-Warning "Get-ADSnapshot: failed to collect forest functional level: $_"
     }
 
+    # --- Forest-level coverage backlog: tombstone lifetime ---
+    # Single scalar read off the Directory Service object in the
+    # Configuration NC, for Test-ADDomainSecurity's new Short Tombstone
+    # Lifetime check. An unset tombstoneLifetime attribute means the
+    # effective value is 60 days (per [MS-ADTS] 6.1.1.2.4.1.1), not "no
+    # value to report" - so $null is coerced to 60 here, at collection
+    # time, rather than leaving that interpretation to every consumer.
+    try {
+        Write-Verbose "Get-ADSnapshot: collecting forest tombstone lifetime..."
+        $configContextForTombstone = if ($configContext) { $configContext } else { Get-ADRootDSEValue -Property configurationNamingContext -Server $effectiveServer }
+        $dsObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject Directory Service tombstoneLifetime (snapshot)' -Query {
+            Get-ADObject -Identity "CN=Directory Service,CN=Windows NT,CN=Services,$configContextForTombstone" -Properties tombstoneLifetime -Server $effectiveServer -ErrorAction Stop
+        }
+        if ($dsObject) {
+            $snapshot.TombstoneLifetimeDays = if ($null -ne $dsObject.tombstoneLifetime) { [int]$dsObject.tombstoneLifetime } else { 60 }
+        }
+    }
+    catch {
+        Write-Warning "Get-ADSnapshot: failed to collect forest tombstone lifetime: $_"
+    }
+
     try {
         Write-Verbose "Get-ADSnapshot: checking AD Recycle Bin status..."
         $recycleBinFeature = Invoke-ADQueryWithRetry -OperationName 'Get-ADOptionalFeature Recycle Bin (snapshot)' -Query {
-            Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'" -ErrorAction Stop
+            Get-ADOptionalFeature -Filter "Name -eq 'Recycle Bin Feature'" -Server $effectiveServer -ErrorAction Stop
         }
         $snapshot.RecycleBinEnabled = [bool]($recycleBinFeature -and @($recycleBinFeature.EnabledScopes).Count -gt 0)
     }
@@ -796,7 +915,7 @@ function Get-ADSnapshot {
     try {
         if ($snapshot.Domain) {
             $domainModeObj = Invoke-ADQueryWithRetry -OperationName 'Get-ADDomain DomainMode (snapshot)' -Query {
-                Get-ADDomain -ErrorAction Stop
+                Get-ADDomain -Server $effectiveServer -ErrorAction Stop
             }
             if ($domainModeObj) {
                 $snapshot.Domain = [PSCustomObject]@{
@@ -832,7 +951,7 @@ function Get-ADSnapshot {
     Step-ADSnapshotProgress -Stage 'AD CS configuration'
     try {
         Write-Verbose "Get-ADSnapshot: collecting AD CS configuration..."
-        $configContext = ([ADSI]"LDAP://RootDSE").configurationNamingContext
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $effectiveServer
         $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
 
         $templateProperties = @(
@@ -843,13 +962,24 @@ function Get-ADSnapshot {
         $caProperties = @('dNSHostName', 'cACertificate')
 
         Write-Verbose "Get-ADSnapshot: collecting certificate templates..."
-        $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -Filter * -Properties $templateProperties -ErrorAction Stop
+        # -SearchScope OneLevel, not the default Subtree - see the matching
+        # comment in CertificateServicesExtendedAudits.ps1. This snapshot
+        # is persisted to disk for later offline analysis, so a Subtree
+        # search here would have baked the "Certificate Templates"
+        # container object itself into every snapshot permanently, with no
+        # way to correct it later at -FromSnapshot re-analysis time.
+        $certTemplates = Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties $templateProperties -Server $effectiveServer -ErrorAction Stop
         Write-Verbose "Get-ADSnapshot: collected $(@($certTemplates).Count) certificate template(s)."
 
         $certAuthorities = $null
         try {
             Write-Verbose "Get-ADSnapshot: collecting certificate authorities..."
-            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -Filter * -Properties $caProperties -ErrorAction Stop
+            # Same OneLevel fix - a Subtree search also returns the
+            # "Enrollment Services" container object itself, which has no
+            # dNSHostName/cACertificate and would otherwise be
+            # indistinguishable from a real (but misconfigured) CA once
+            # baked into the snapshot.
+            $certAuthorities = Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties $caProperties -Server $effectiveServer -ErrorAction Stop
             Write-Verbose "Get-ADSnapshot: collected $(@($certAuthorities).Count) certificate authority(ies)."
         }
         catch {
@@ -870,7 +1000,17 @@ function Get-ADSnapshot {
             CertificateTemplates = @($certTemplates | ForEach-Object {
                 $templateAclAccess = $null
                 try {
-                    $templateAclAccess = (Get-Acl -Path "AD:$($_.DistinguishedName)" -ErrorAction Stop).Access
+                    # Get-ADObject -Properties nTSecurityDescriptor, not
+                    # Get-Acl -Path "AD:..." - the latter has no -Server
+                    # parameter and reads via the AD: PSDrive's ambient
+                    # default domain/DC, bypassing $effectiveServer
+                    # entirely and baking the WRONG domain's ACL data into
+                    # this snapshot permanently with no way to correct it
+                    # later at -FromSnapshot re-analysis time.
+                    # nTSecurityDescriptor returns the same
+                    # ActiveDirectorySecurity object (.Access, etc.) via a
+                    # real, -Server-aware Get-AD* cmdlet.
+                    $templateAclAccess = (Get-ADObject -Identity $_.DistinguishedName -Properties nTSecurityDescriptor -Server $effectiveServer -ErrorAction Stop).nTSecurityDescriptor.Access
                 }
                 catch {
                     Write-Verbose "Get-ADSnapshot: could not read ACL for certificate template '$($_.Name)': $_"
@@ -890,7 +1030,10 @@ function Get-ADSnapshot {
             CertificateAuthorities = @($certAuthorities | ForEach-Object {
                 $caAclAccess = $null
                 try {
-                    $caAclAccess = (Get-Acl -Path "AD:$($_.DistinguishedName)" -ErrorAction Stop).Access
+                    # Get-ADObject -Properties nTSecurityDescriptor, not
+                    # Get-Acl -Path "AD:..." - see the matching comment
+                    # above on the certificate template ACL read for why.
+                    $caAclAccess = (Get-ADObject -Identity $_.DistinguishedName -Properties nTSecurityDescriptor -Server $effectiveServer -ErrorAction Stop).nTSecurityDescriptor.Access
                 }
                 catch {
                     Write-Verbose "Get-ADSnapshot: could not read ACL for certificate authority '$($_.Name)': $_"
@@ -913,10 +1056,10 @@ function Get-ADSnapshot {
         # targets (a single object plus its handful of immediate children
         # each), not a domain-wide sweep.
         function Get-ADSnapshotCertBlobSource {
-            param([string]$ContainerDN)
+            param([string]$ContainerDN, [string]$Server)
             $blobs = [System.Collections.ArrayList]::new()
             try {
-                $obj = Get-ADObject -Identity $ContainerDN -Properties cACertificate, cn -ErrorAction Stop
+                $obj = Get-ADObject -Identity $ContainerDN -Properties cACertificate, cn -Server $Server -ErrorAction Stop
                 foreach ($b in @($obj.cACertificate)) {
                     if ($b) { [void]$blobs.Add([PSCustomObject]@{ Source = $obj.Name; Bytes = $b }) }
                 }
@@ -925,7 +1068,7 @@ function Get-ADSnapshot {
                 Write-Verbose "Get-ADSnapshot: could not read '$ContainerDN' directly: $_"
             }
             try {
-                $children = Get-ADObject -SearchBase $ContainerDN -SearchScope OneLevel -Filter * -Properties cACertificate, cn -ErrorAction Stop
+                $children = Get-ADObject -SearchBase $ContainerDN -SearchScope OneLevel -Filter * -Properties cACertificate, cn -Server $Server -ErrorAction Stop
                 foreach ($child in $children) {
                     foreach ($b in @($child.cACertificate)) {
                         if ($b) { [void]$blobs.Add([PSCustomObject]@{ Source = $child.Name; Bytes = $b }) }
@@ -939,9 +1082,9 @@ function Get-ADSnapshot {
         }
 
         if ($snapshot.ADCS.Installed) {
-            $snapshot.ADCS.NTAuthCertificates = @(Get-ADSnapshotCertBlobSource -ContainerDN "CN=NTAuthCertificates,$pkiContainer")
-            $snapshot.ADCS.AIACertificates = @(Get-ADSnapshotCertBlobSource -ContainerDN "CN=AIA,$pkiContainer")
-            $snapshot.ADCS.RootCACertificates = @(Get-ADSnapshotCertBlobSource -ContainerDN "CN=Certification Authorities,$pkiContainer")
+            $snapshot.ADCS.NTAuthCertificates = @(Get-ADSnapshotCertBlobSource -ContainerDN "CN=NTAuthCertificates,$pkiContainer" -Server $effectiveServer)
+            $snapshot.ADCS.AIACertificates = @(Get-ADSnapshotCertBlobSource -ContainerDN "CN=AIA,$pkiContainer" -Server $effectiveServer)
+            $snapshot.ADCS.RootCACertificates = @(Get-ADSnapshotCertBlobSource -ContainerDN "CN=Certification Authorities,$pkiContainer" -Server $effectiveServer)
         }
     }
     catch {
@@ -956,8 +1099,8 @@ function Get-ADSnapshot {
     Step-ADSnapshotProgress -Stage 'DNS zones'
     try {
         Write-Verbose "Get-ADSnapshot: collecting DNS zones..."
-        $domainForDns = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -ErrorAction Stop }
-        $forest = Get-ADForest -ErrorAction SilentlyContinue
+        $domainForDns = if ($snapshot.Domain) { $snapshot.Domain } else { Get-ADDomain -Server $effectiveServer -ErrorAction Stop }
+        $forest = Get-ADForest -Server $effectiveServer -ErrorAction SilentlyContinue
         $dnsPartitions = @(
             "DC=DomainDnsZones,$($domainForDns.DistinguishedName)"
         )
@@ -969,7 +1112,7 @@ function Get-ADSnapshot {
         $zones = @()
         foreach ($partition in $dnsPartitions) {
             try {
-                $zones += Get-ADObject -SearchBase "CN=MicrosoftDNS,$partition" -Filter "objectClass -eq 'dnsZone'" -ErrorAction Stop |
+                $zones += Get-ADObject -SearchBase "CN=MicrosoftDNS,$partition" -Filter "objectClass -eq 'dnsZone'" -Server $effectiveServer -ErrorAction Stop |
                     Select-Object Name, DistinguishedName
             }
             catch {
@@ -999,7 +1142,7 @@ function Get-ADSnapshot {
         # binary/key-history attributes reintroduced.
         $rawTrusts = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADTrust (snapshot)' -Query {
             Get-ADTrust -Filter * -Properties trustAttributes, Direction, TrustType, `
-                SIDFilteringQuarantined, SelectiveAuthentication, Created, Modified -ErrorAction Stop
+                SIDFilteringQuarantined, SelectiveAuthentication, Created, Modified -Server $effectiveServer -ErrorAction Stop
         })
         $snapshot.Trusts = @($rawTrusts | ForEach-Object {
             [PSCustomObject]@{
@@ -1021,6 +1164,13 @@ function Get-ADSnapshot {
 
     Write-Progress -Activity "Collecting AD Snapshot" -Completed
 
+    # Persist any run-scope notes recorded during THIS collection pass
+    # (e.g. -Server named an explicit, non-PDC DC) into the snapshot
+    # itself, so a later -FromSnapshot analysis - which performs no live
+    # resolution of its own - can still surface a scoping condition that
+    # was true at collection time.
+    $snapshot.RunScopeNotes = @(Get-ADRunScopeNotes)
+
     if ($ToJson) {
         try {
             Write-Verbose "Get-ADSnapshot: serialising snapshot to JSON (this can take a while on domains with many users/computers)..."
@@ -1035,6 +1185,7 @@ function Get-ADSnapshot {
     }
 
     Write-Verbose "Get-ADSnapshot: collection pass complete."
+    if ($effectiveServer -and -not $__snapshotServerAlreadyActive) { Clear-ADSecurityAuditTargetServer }
     return $snapshot
 }
 
@@ -1086,7 +1237,12 @@ function Invoke-ADRuleSet {
         AD access unless explicitly opted into.
     .OUTPUTS
         [ADSecurityFinding[]] - the same finding objects the live audit
-        produces; the output/finding schema is unchanged.
+        produces; the output/finding schema is unchanged. Also records
+        per-test outcomes (Completed/Failed/Excluded) via
+        Add-ADTestCoverageEntry (Common.ps1) as a side effect, readable
+        afterward via Get-ADTestCoverageTracker - a caller that doesn't
+        need this (most direct callers) can simply ignore it, same as
+        Get-ADOfflineSkipNotes.
     #>
     [CmdletBinding()]
     param(
@@ -1121,6 +1277,22 @@ function Invoke-ADRuleSet {
     }
     $testKeys = $testKeys | Where-Object { $_ -notin $ExcludeTests }
     $testKeys = @($testKeys)
+
+    # Same "record every registered test, not just the ones that ran"
+    # coverage tracking as Main.ps1's live test loop - see
+    # Add-ADTestCoverageEntry's own docs (Common.ps1) for why this exists
+    # here at all (Invoke-ADRuleSet is a separate dispatch path from that
+    # loop, so $testCoverage was never populated for -FromSnapshot runs
+    # without this). Tests filtered out by -IncludeTests/-ExcludeTests
+    # before ever being attempted are recorded here; Completed/Failed/the
+    # "no -Snapshot support" Excluded case are recorded per-test in the
+    # loop below as each outcome becomes known.
+    foreach ($registryKey in ($Script:ADTestFunctionRegistry.Keys | Sort-Object)) {
+        if ($registryKey -notin $testKeys) {
+            Add-ADTestCoverageEntry -TestName $registryKey -Status 'Excluded' `
+                -ErrorMessage 'Not run for this scan (see -IncludeTests/-ExcludeTests used for this run).'
+        }
+    }
 
     $allFindings = @()
     $skippedTests = [System.Collections.ArrayList]::new()
@@ -1163,12 +1335,16 @@ function Invoke-ADRuleSet {
             Write-Warning "Invoke-ADRuleSet: '$testKey' ($functionName) has no -Snapshot parameter yet; skipping (no live AD access performed). Pass -AllowLiveFallbackForUnsupportedTests to run it live instead."
             Add-ADOfflineSkipNote -Test $testKey -Check "Entire test: $functionName" `
                 -Reason 'This test has not yet been retrofitted with -Snapshot support. Pass -AllowLiveFallbackForUnsupportedTests to run it live instead.'
+            Add-ADTestCoverageEntry -TestName $testKey -Status 'Excluded' `
+                -ErrorMessage 'Not run: no -Snapshot support yet for this test (see Offline Mode Coverage Notes). Pass -AllowLiveFallbackForUnsupportedTests to run it live instead.'
             [void]$skippedTests.Add($testKey)
             continue
         }
 
         try {
             $results = & $functionName @callParams
+            $resultCount = @($results | Where-Object { $_ }).Count
+            Add-ADTestCoverageEntry -TestName $testKey -Status 'Completed' -FindingCount $resultCount
 
             foreach ($result in @($results)) {
                 if (-not $result) { continue }
@@ -1197,6 +1373,10 @@ function Invoke-ADRuleSet {
                     $finding.Description = $result.Description
                     $finding.Impact = $result.Impact
                     $finding.Remediation = $result.Remediation
+                    $finding.EstimatedEffort = $result.EstimatedEffort
+                    $finding.KnownRisks = $result.KnownRisks
+                    $finding.BackupRollback = $result.BackupRollback
+                    $finding.OperationalNotes = $result.OperationalNotes
                     $finding.Details = if ($result.Details) { $result.Details } else { @{} }
                     $allFindings += $finding
                 }
@@ -1207,6 +1387,7 @@ function Invoke-ADRuleSet {
         }
         catch {
             Write-Warning "Invoke-ADRuleSet: test '$testKey' ($functionName) failed: $_"
+            Add-ADTestCoverageEntry -TestName $testKey -Status 'Failed' -ErrorMessage "$_"
         }
     }
 
