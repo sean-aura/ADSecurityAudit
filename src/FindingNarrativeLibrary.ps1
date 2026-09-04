@@ -27,18 +27,6 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - reset adminCount and inheritance back if needed; effective immediately, no data loss.'
         OperationalNotes = ''
     }
-    'No Auditing on AdminSDHolder Object' = @{
-        EstimatedEffort  = 'Low - adding a SACL entry to one object.'
-        KnownRisks       = 'No access-control impact; increases Security event log volume for changes to this specific object.'
-        BackupRollback   = 'Easy - remove the SACL entry; effective immediately, no data loss.'
-        OperationalNotes = ''
-    }
-    'No Auditing on Domain Root Object' = @{
-        EstimatedEffort  = 'Low - adding a SACL entry to one object.'
-        KnownRisks       = 'No access-control impact; increases Security event log volume for changes to this specific object.'
-        BackupRollback   = 'Easy - remove the SACL entry; effective immediately, no data loss.'
-        OperationalNotes = ''
-    }
     'Insufficient Audit Policy Configuration' = @{
         EstimatedEffort  = 'Medium - a domain-wide GPO change validated across every DC.'
         KnownRisks       = 'Purely additive logging; essentially no access-control risk, but increases Security event log volume and may need log-size/SIEM capacity planning.'
@@ -49,6 +37,18 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - a GPO change that must be validated on every DC, and confirmed not to be overridden by the legacy (non-advanced) Audit Policy category, a well-documented conflict between the two models.'
         KnownRisks       = 'Purely additive logging with essentially no access-control impact; the main practical effect is increased Security event log volume, which may require increasing log size/retention or SIEM ingestion capacity.'
         BackupRollback   = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
+        OperationalNotes = ''
+    }
+    'No Auditing on AdminSDHolder Object' = @{
+        EstimatedEffort  = 'Low - adding a SACL entry to one object.'
+        KnownRisks       = 'No access-control impact; increases Security event log volume for changes to this specific object.'
+        BackupRollback   = 'Easy - remove the SACL entry; effective immediately, no data loss.'
+        OperationalNotes = ''
+    }
+    'No Auditing on Domain Root Object' = @{
+        EstimatedEffort  = 'Low - adding a SACL entry to one object.'
+        KnownRisks       = 'No access-control impact; increases Security event log volume for changes to this specific object.'
+        BackupRollback   = 'Easy - remove the SACL entry; effective immediately, no data loss.'
         OperationalNotes = ''
     }
     'Certificate Template Allows Subject Alternative Name (ESC1)' = @{
@@ -441,6 +441,12 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - revert the User Rights Assignment setting in the GPO; effective at next Group Policy refresh, no data loss.'
         OperationalNotes = ''
     }
+    'Cross-Domain Privileged Group Membership' = @{
+        EstimatedEffort  = 'Medium - removing a foreign-domain principal from a local privileged group; confirm with the other domain''s admins it isn''t an intentional, documented cross-domain admin delegation before removing.'
+        KnownRisks       = 'Procedural - confirm with the other domain''s admins that the membership isn''t an intentional cross-domain delegation before removing, since doing so revokes that principal''s privileged access entirely.'
+        BackupRollback   = 'Easy - re-add the principal to the group if needed; effective on next Kerberos ticket refresh, no data loss.'
+        OperationalNotes = ''
+    }
     'Excessive Privileged Group Membership' = @{
         EstimatedEffort  = 'Medium - requires reviewing each member for actual ongoing need rather than a single mechanical change, and coordinating with each member or their manager.'
         KnownRisks       = 'Removing a member who still has a legitimate ongoing need for privileged access will break their ability to perform that work until re-added, so this needs a per-member justification review, not a blanket removal.'
@@ -457,12 +463,6 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Low - removing one already-disabled account from one group.'
         KnownRisks       = 'Essentially none - the account is already disabled and cannot authenticate, so removing its group membership has no functional impact; confirm it isn''t an intentionally disabled-but-provisioned break-glass account first.'
         BackupRollback   = 'Easy - re-add if needed; effective immediately, no functional impact either way since the account is disabled.'
-        OperationalNotes = ''
-    }
-    'Cross-Domain Privileged Group Membership' = @{
-        EstimatedEffort  = 'Medium - removing a foreign-domain principal from a local privileged group; confirm with the other domain''s admins it isn''t an intentional, documented cross-domain admin delegation before removing.'
-        KnownRisks       = 'Procedural - confirm with the other domain''s admins that the membership isn''t an intentional cross-domain delegation before removing, since doing so revokes that principal''s privileged access entirely.'
-        BackupRollback   = 'Easy - re-add the principal to the group if needed; effective on next Kerberos ticket refresh, no data loss.'
         OperationalNotes = ''
     }
     'RC4 Kerberos Encryption Still Permitted' = @{
@@ -568,22 +568,22 @@ $Script:ADFindingNarrativeLibrary = @{
         OperationalNotes = ''
     }
     'Enterprise Key Admins Over-Privileged (Misconfiguration Bug)' = @{
-        EstimatedEffort  = 'Medium - re-scoping the ACE may need to be applied wherever the broader-than-intended grant was introduced (often domain- or forest-wide from a schema-update-era bug), not just one object.'
-        KnownRisks       = 'Key Admins/Enterprise Key Admins is intended to have no members by default, so re-scoping this ACE has no legitimate compatibility risk for typical environments; it only matters if the group unexpectedly has real members.'
-        BackupRollback   = 'Moderate - export the current ACL before re-scoping so it can be restored if needed; changes follow normal AD replication.'
-        OperationalNotes = ''
+        EstimatedEffort  = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+        KnownRisks       = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+        BackupRollback   = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+        OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
     }
     'Enterprise Key Admins Permissions Not Scoped to msDS-KeyCredentialLink' = @{
-        EstimatedEffort  = 'Medium - restricting the existing GenericWrite-style ACE to just the msDS-KeyCredentialLink attribute via an object-specific ACE.'
-        KnownRisks       = 'No legitimate compatibility risk for typical environments, since the group is intended to have no members; only affects any unexpected actual members.'
-        BackupRollback   = 'Moderate - export the current ACL before re-scoping so it can be restored if needed.'
-        OperationalNotes = ''
+        EstimatedEffort  = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+        KnownRisks       = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+        BackupRollback   = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+        OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
     }
     'Dangerous Rights on Critical OU' = @{
-        EstimatedEffort  = 'Medium - a single-object ACE removal, but the OU''s inheritance means the change affects every object beneath it; confirm the trustee isn''t a legitimate delegated-admin or provisioning account for that OU first.'
-        KnownRisks       = 'Procedural - confirm the trustee isn''t a legitimate delegated administrator or provisioning automation for the OU before removing; no realistic legitimate technical break otherwise.'
-        BackupRollback   = 'Moderate - export the OU''s ACL (dsacls or Get-Acl) before changing it so the exact ACE can be restored if a legitimate delegation breaks.'
-        OperationalNotes = ''
+        EstimatedEffort  = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+        KnownRisks       = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+        BackupRollback   = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+        OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
     }
     'Unauthorized DCSync Permissions' = @{
         EstimatedEffort  = 'Low - removing two specific extended-right ACEs (Replicating Directory Changes / Replicating Directory Changes All) from one object, a well-scoped ACE change.'

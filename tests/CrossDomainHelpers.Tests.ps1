@@ -107,12 +107,11 @@ Describe 'Set-ADSecurityAuditTargetServer - GroupPolicy module coverage' {
         GroupPolicy module's cmdlets (Get-GPO, Get-GPInheritance,
         Get-GPPermission, Get-GPRegistryValue - used by
         Test-ADGroupPolicies, Test-ADLegacyAuthSurface,
-        Test-ADDomainHardeningFlags, Test-ADKerberosHardening, and
-        Get-ADSnapshot's GPO collection) start with "Get-GP", not "Get-AD"
-        - the original 'Get-AD*:Server' wildcard never matched them, so
-        every GPO-related check was completely unscoped by -Server this
-        whole time, independent of whether an override was active for AD
-        cmdlets.
+        Test-ADDomainHardeningFlags, Test-ADKerberosHardening) start with
+        "Get-GP", not "Get-AD" - the original 'Get-AD*:Server' wildcard
+        never matched them, so every GPO-related check was completely
+        unscoped by -Server this whole time, independent of whether an
+        override was active for AD cmdlets.
     #>
     AfterEach {
         Clear-ADSecurityAuditTargetServer
@@ -161,7 +160,7 @@ Describe 'AD-object ACL reads avoid the unscoped "AD:" PSDrive' {
         Get-AD* cmdlet call in this module. This affected certificate
         template (ESC4) and CA object (ESC7) ACL reads specifically
         (CertificateServicesAudits.ps1, CertificateServicesExtendedAudits.
-        ps1, Get-ADSnapshot) - AdminSDAudits.ps1/PermissionsAudits.ps1/
+        ps1) - AdminSDAudits.ps1/PermissionsAudits.ps1/
         ControlPaths.ps1 were already doing this correctly via
         Get-ADObject -Properties nTSecurityDescriptor, which IS
         -Server-aware, and were used as the template for this fix.
@@ -179,7 +178,6 @@ Describe 'AD-object ACL reads avoid the unscoped "AD:" PSDrive' {
         $script:AffectedFiles = @(
             (Join-Path $root 'src/CertificateServicesAudits.ps1')
             (Join-Path $root 'src/CertificateServicesExtendedAudits.ps1')
-            (Join-Path $root 'src/Snapshot.ps1')
         )
     }
 

@@ -18,11 +18,7 @@
 # sends an exploit, authentication bypass, ticket forgery, coercion
 # request, or any other PoC traffic to any host; a DC is judged vulnerable
 # purely by whether its patch level/build/config falls below a documented,
-# inline-cited fix threshold. Per the -FromSnapshot contract of performing
-# NO live AD/network access, and because per-DC OS build/hotfix/service
-# state is not part of the current snapshot schema, this entire audit is
-# live-only and is skipped when invoked with -Snapshot (consistent with
-# Test-ADLegacyAuthSurface and Test-ADCoercionAndRelayExposure).
+# inline-cited fix threshold.
 
 # Documented fix thresholds for the legacy, build/patch-detectable CVEs.
 # FixDate is the Patch Tuesday (or out-of-band) release date of the first
@@ -224,33 +220,14 @@ function Test-ADKnownDCVulnerabilities {
         Detection only - every determination is a version/patch/config
         read. No exploitation, authentication bypass, ticket forging,
         coercion, relay, or PoC traffic is ever sent to any host.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot), accepted for
-        interface consistency with other Test-AD* functions. Per-DC OS
-        build, hotfix level, and Spooler service state are live, real-time
-        machine state with no snapshot equivalent, so this audit is
-        entirely live-only: when -Snapshot is supplied, no live AD/network
-        access is performed (per the -FromSnapshot contract) and this
-        function returns no findings, consistent with
-        Test-ADLegacyAuthSurface and Test-ADCoercionAndRelayExposure.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Starting Known DC Vulnerabilities (patch/build) audit..."
     $findings = @()
-
-    if ($Snapshot) {
-        Write-Verbose "Test-ADKnownDCVulnerabilities: -Snapshot supplied; skipping (OS build/hotfix/service state has no snapshot equivalent and offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'KnownDCVulnerabilities' -Check 'Entire test: per-DC OS build/hotfix/Spooler service state' `
-            -Reason 'Real-time per-DC machine state (OS build, installed hotfix level, service state) with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
-        return $findings
-    }
 
     # -------------------------------------------------------------------
     # Enumerate Domain Controllers.

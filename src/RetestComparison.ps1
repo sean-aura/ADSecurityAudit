@@ -136,8 +136,7 @@ function Get-ADRetestComparison {
         Same shape as -BaselinePath, for the later (retest) run.
     .PARAMETER ToJson
         Optional. Also persist the result to this path
-        (AD_Retest_Comparison_<timestamp>.json convention), mirroring
-        Get-ADSnapshot's/Get-ADForestConsolidation's -ToJson convention.
+        (AD_Retest_Comparison_<timestamp>.json convention).
     .PARAMETER RemediationStatePath
         Optional. Path to a remediation-state file (see RemediationState.ps1
         - Get-ADRemediationState/Set-ADRemediationState). When supplied,

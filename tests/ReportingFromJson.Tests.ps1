@@ -225,8 +225,8 @@ Describe 'Export-ADSecurityReportHTMLFromJson' {
             $summary = @{ Critical = 0; High = 1; Medium = 0; Low = 0 }
             $riskScore = Get-ADRiskScore -Findings $liveFindings
             { Export-ADSecurityReportHTML -Findings $liveFindings -OutputPath $outPath -Domain 'contoso.com' -Summary $summary `
-                -Duration ([timespan]::Zero) -RiskScore $riskScore -RunMode 'Live' -SnapshotCollectedDate $null `
-                -PrivilegedUsers $null -OfflineSkipNotes @() } | Should -Not -Throw
+                -Duration ([timespan]::Zero) -RiskScore $riskScore `
+                -PrivilegedUsers $null } | Should -Not -Throw
 
             $content = Get-Content -Path $outPath -Raw
             $content | Should -Match 'user1 -&gt; GroupA -&gt; Domain Admins'
@@ -355,7 +355,7 @@ Describe 'Export-ADSecurityReportHTML - unexpected Severity values are never sil
         $riskScore = Get-ADRiskScore -Findings $findings
         Export-ADSecurityReportHTML -Findings $findings -OutputPath $outPath -Domain 'contoso.com' `
             -Summary @{ Critical = 0; High = 0; Medium = 0; Low = 1 } -Duration ([timespan]::Zero) `
-            -RiskScore $riskScore -RunMode 'Live' -WarningAction SilentlyContinue
+            -RiskScore $riskScore -WarningAction SilentlyContinue
 
         $content = Get-Content -Path $outPath -Raw
         $content | Should -Match 'Something With Unexpected Severity'
@@ -372,7 +372,7 @@ Describe 'Export-ADSecurityReportHTML - unexpected Severity values are never sil
         $warnings = @()
         Export-ADSecurityReportHTML -Findings @($weirdFinding) -OutputPath $outPath -Domain 'x' `
             -Summary @{ Critical = 0; High = 0; Medium = 0; Low = 0 } -Duration ([timespan]::Zero) `
-            -RiskScore $riskScore -RunMode 'Live' -WarningVariable warnings -WarningAction SilentlyContinue
+            -RiskScore $riskScore -WarningVariable warnings -WarningAction SilentlyContinue
 
         $warnings.Count | Should -BeGreaterThan 0
         ($warnings -join ' ') | Should -Match 'Weird'
@@ -384,7 +384,7 @@ Describe 'Export-ADSecurityReportHTML - unexpected Severity values are never sil
         $riskScore = Get-ADRiskScore -Findings @($normalFinding)
         Export-ADSecurityReportHTML -Findings @($normalFinding) -OutputPath $outPath -Domain 'contoso.com' `
             -Summary @{ Critical = 0; High = 0; Medium = 0; Low = 1 } -Duration ([timespan]::Zero) `
-            -RiskScore $riskScore -RunMode 'Live'
+            -RiskScore $riskScore
 
         $content = Get-Content -Path $outPath -Raw
         $content | Should -Not -Match 'Other / Unclassified Severity Findings'

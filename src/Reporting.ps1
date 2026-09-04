@@ -53,8 +53,7 @@ function Export-ADSecurityReportHTMLFromJson {
         Start-ADSecurityAudit's HTML report (Export-ADSecurityReportHTML) is
         normally built once, in-memory, at the end of a live run - it needs
         Findings plus several run-time-only values (Domain, Summary,
-        Duration, RunMode, SnapshotCollectedDate, OfflineSkipNotes,
-        PrivilegedUsers) that Start-ADSecurityAudit never persists to disk
+        Duration, PrivilegedUsers) that Start-ADSecurityAudit never persists to disk
         on their own. Only two files survive a run for later offline use:
         the flat findings export (AD_Security_Audit_<timestamp>.json) and,
         optionally, its AD_Security_Score_<timestamp>.json sidecar.
@@ -104,13 +103,6 @@ function Export-ADSecurityReportHTMLFromJson {
         Not present in the findings JSON (Start-ADSecurityAudit only times
         a run in-memory). Defaults to zero; the recreated report's SCAN
         DURATION will read as "0 seconds" unless you supply the real value.
-    .PARAMETER RunMode
-        Not recoverable from the findings JSON alone. Defaults to 'Live'.
-        Pass 'Offline (Snapshot)' (plus -SnapshotCollectedDate) if you know
-        the original run used -FromSnapshot and want that reflected.
-    .PARAMETER SnapshotCollectedDate
-        Only meaningful with -RunMode 'Offline (Snapshot)'; see
-        Export-ADSecurityReportHTML.
     .OUTPUTS
         None. Writes the HTML file to -OutputPath.
     .EXAMPLE
@@ -137,14 +129,7 @@ function Export-ADSecurityReportHTMLFromJson {
         [string]$Domain = 'Unknown (recreated from JSON export - Domain was not persisted in AD_Security_Audit_*.json)',
 
         [Parameter()]
-        [timespan]$Duration = [timespan]::Zero,
-
-        [Parameter()]
-        [ValidateSet('Live', 'Offline (Snapshot)')]
-        [string]$RunMode = 'Live',
-
-        [Parameter()]
-        [Nullable[datetime]]$SnapshotCollectedDate = $null
+        [timespan]$Duration = [timespan]::Zero
     )
 
     $findingsFile = Resolve-ADRetestReportFile -Path $FindingsPath
@@ -238,8 +223,8 @@ function Export-ADSecurityReportHTMLFromJson {
 
     Write-Verbose "Recreating HTML report from '$($findingsFile.FullName)' ($($findings.Count) finding(s))..."
     Export-ADSecurityReportHTML -Findings $findings -OutputPath $OutputPath -Domain $Domain -Summary $summary `
-        -Duration $Duration -RiskScore $riskScore -RunMode $RunMode -SnapshotCollectedDate $SnapshotCollectedDate `
-        -PrivilegedUsers $null -OfflineSkipNotes @() -RunScopeNotes $runScopeNotes -TestCoverage $testCoverage
+        -Duration $Duration -RiskScore $riskScore `
+        -PrivilegedUsers $null -RunScopeNotes $runScopeNotes -TestCoverage $testCoverage
 
     Write-Verbose "Recreated HTML report written to '$OutputPath'."
 }
@@ -414,43 +399,12 @@ function Export-ADSecurityReportHTML {
         [Parameter()]
         [PSCustomObject]$RiskScore = $null,
 
-        # Added for the -FromSnapshot offline workflow: 'Live' (default) or
-        # 'Offline (Snapshot)'. Surfaced in the report header so a reader
-        # can tell at a glance whether findings came from a live AD pass or
-        # a previously-collected snapshot, without having to check the
-        # generating command.
-        [Parameter()]
-        [ValidateSet('Live', 'Offline (Snapshot)')]
-        [string]$RunMode = 'Live',
-
-        # When -RunMode is 'Offline (Snapshot)', the timestamp the snapshot
-        # was originally collected (Get-ADSnapshot's CollectedDate). Shown
-        # alongside the report-generation date so a reader can see how
-        # stale the underlying data is relative to when the report was run.
-        [Parameter()]
-        [Nullable[datetime]]$SnapshotCollectedDate = $null,
-
-        # Added in v1.19.1: the offline-skip-note list (Get-ADOfflineSkipNotes)
-        # collected during this run. Each entry is a specific sub-check that
-        # either did not run at all under -Snapshot (Mode='Skipped') or ran
-        # anyway over a live connection because it has no possible snapshot
-        # representation (Mode='StillLive'). Rendered as an explicit
-        # "Offline Mode Coverage Notes" section so a reader doesn't have to
-        # go dig through the run's transcript to know what this specific
-        # report does and doesn't cover.
-        [Parameter()]
-        [array]$OfflineSkipNotes = @(),
-
         # General-purpose "this check ran, but against a narrower/
         # different target than its normal assumption" notes
-        # (Get-ADRunScopeNotes) - distinct from OfflineSkipNotes, which is
-        # specifically about -Snapshot coverage. So far, populated only
-        # when -Server named an explicit, non-PDC Domain Controller and a
-        # "PDC-only" check (Test-ADMachineAccountQuota,
-        # Test-ADDomainSecurity) ran against it directly. Rendered as a
-        # "Run Scope Information" section, for both live and offline runs
-        # (an offline run's notes come from the snapshot's own
-        # RunScopeNotes field, recorded at collection time).
+        # (Get-ADRunScopeNotes). So far, populated only when -Server named
+        # an explicit, non-PDC Domain Controller and a "PDC-only" check
+        # (Test-ADMachineAccountQuota, Test-ADDomainSecurity) ran against
+        # it directly. Rendered as a "Run Scope Information" section.
         [Parameter()]
         [array]$RunScopeNotes = @(),
 
@@ -482,9 +436,6 @@ function Export-ADSecurityReportHTML {
     $TestCoverage = ConvertTo-ADNormalizedTestCoverage -Coverage $TestCoverage
 
     $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $isOfflineRun = ($RunMode -eq 'Offline (Snapshot)')
-    $runModeBadgeColor = if ($isOfflineRun) { '#c8590b' } else { '#1a7f4e' }
-    $snapshotCollectedDateText = if ($SnapshotCollectedDate) { $SnapshotCollectedDate.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
     
     # Group findings by severity
     $criticalFindings = $Findings | Where-Object { $_.Severity -eq 'Critical' } | Sort-Object Category
@@ -727,47 +678,12 @@ function Export-ADSecurityReportHTML {
 </head>
 <body>
     <div class="container">
-        <h1>Active Directory Security Assessment Report <span style="display:inline-block; vertical-align:middle; font-size:0.4em; font-weight:bold; letter-spacing:0.05em; text-transform:uppercase; color:#fff; background:$runModeBadgeColor; padding:4px 10px; border-radius:12px; margin-left:10px;">$(HtmlEncode $RunMode)</span></h1>
+        <h1>Active Directory Security Assessment Report</h1>
         
         <div class="warning-box">
             <p><strong>CONFIDENTIAL SECURITY REPORT</strong></p>
             <p>This report contains sensitive security information about your Active Directory environment. Handle with care and share only with authorized personnel.</p>
         </div>
-$(if ($isOfflineRun) {
-    $stillLiveNotes = @($OfflineSkipNotes | Where-Object { $_.Mode -eq 'StillLive' })
-    $liveConnectionClaim = if ($stillLiveNotes.Count -gt 0) {
-        "$($stillLiveNotes.Count) specific sub-check(s) still performed live, read-only AD/network I/O during this run (listed below) - everything else came from the snapshot with no live connections."
-    }
-    else {
-        "no live Active Directory or Domain Controller connections were made during this run."
-    }
-@"
-        <div class="warning-box" style="background:#fdf5ec; border-color:#c8590b;">
-            <p><strong>OFFLINE / SNAPSHOT-BASED REPORT</strong></p>
-            <p>This report was generated with <code>-FromSnapshot</code> from a previously collected snapshot - $liveConnectionClaim$(if ($snapshotCollectedDateText) { " The underlying snapshot data was collected on <strong>$snapshotCollectedDateText</strong>." }) Findings reflect the environment's state at collection time and may not include changes made since then.</p>
-        </div>
-$(if (@($OfflineSkipNotes).Count -gt 0) {
-@"
-        <div class="warning-box" style="background:#fdf8ec; border-color:#8a6200;">
-            <p><strong>OFFLINE MODE COVERAGE NOTES</strong> - $(@($OfflineSkipNotes).Count) sub-check(s) below were not evaluated from the snapshot, or ran live anyway. This is why an offline report can show different findings than a live run of the same audit against the same domain state.</p>
-            <table class="mitre-table">
-                <tr><th>Test</th><th>Sub-Check Not Covered From Snapshot</th><th>Status</th><th>Why</th></tr>
-$(($OfflineSkipNotes | Sort-Object Test, Check | ForEach-Object {
-    $statusBadge = if ($_.Mode -eq 'StillLive') {
-        '<span style="background:#b3261e;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.85em;">STILL LIVE</span>'
-    }
-    else {
-        '<span style="background:#5b6472;color:#fff;padding:2px 8px;border-radius:10px;font-size:0.85em;">SKIPPED</span>'
-    }
-    "                <tr><td>$(HtmlEncode $_.Test)</td><td>$(HtmlEncode $_.Check)</td><td>$statusBadge</td><td>$(HtmlEncode $_.Reason)</td></tr>"
-}) -join "`n")
-            </table>
-            <p style="margin-top:10px; font-size:0.9em; color:#5b6472;">"SKIPPED" sub-checks contribute zero findings in this report - a like-for-like comparison against a live run must account for this coverage gap, not just the finding counts. "STILL LIVE" sub-checks ran and can contribute findings, but did so over a live connection despite <code>-FromSnapshot</code>.</p>
-        </div>
-"@
-})
-"@
-})
 $(if (@($RunScopeNotes).Count -gt 0) {
 @"
         <div class="warning-box" style="background:#eef3fb; border-color:#2f5fa8;">
@@ -849,12 +765,8 @@ $(($tcSorted | ForEach-Object {
         <div class="header-info">
             <div><strong>DOMAIN</strong><span style="font-size: 1.2em; color: #1f2937;">$(HtmlEncode $Domain)</span></div>
             <div><strong>REPORT DATE</strong><span style="font-size: 1.2em; color: #1f2937;">$reportDate</span></div>
-            <div><strong>COLLECTION MODE</strong><span style="font-size: 1.2em; color: $runModeBadgeColor; font-weight:bold;">$(HtmlEncode $RunMode)</span></div>
             <div><strong>SCAN DURATION</strong><span style="font-size: 1.2em; color: #1f2937;">$([math]::Round($Duration.TotalSeconds, 2)) seconds</span></div>
             <div><strong>TOTAL FINDINGS</strong><span style="font-size: 1.2em; color: #1f2937;">$($Findings.Count)</span></div>
-$(if ($isOfflineRun -and $snapshotCollectedDateText) {
-"            <div><strong>SNAPSHOT COLLECTED</strong><span style=`"font-size: 1.2em; color: #1f2937;`">$snapshotCollectedDateText</span></div>"
-})
         </div>
 
         <nav class="report-nav no-print" aria-label="Report sections">

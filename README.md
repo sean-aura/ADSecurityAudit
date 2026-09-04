@@ -16,7 +16,7 @@ A PowerShell module that finds misconfigurations and security vulnerabilities in
 - [Usage](#usage)
 - [Scoring & Maturity](#scoring--maturity)
 - [Test Coverage](#test-coverage)
-- [Offline / Snapshot Mode](#offline--snapshot-mode)
+- [Recreating Reports from JSON](#recreating-reports-from-json)
 - [Multi-Domain / Forest Targeting](#multi-domain--forest-targeting)
 - [Forest Consolidation, Retesting & Trends](#forest-consolidation-retesting--trends)
 - [Exception / Remediation-State Tracking](#exception--remediation-state-tracking)
@@ -44,7 +44,6 @@ User account risks (AS-REP Roasting, weak/reversible encryption, unconstrained d
 - **Audit policy**: critical policies enabled, SACLs on sensitive objects.
 - **Delegation**: constrained delegation, protocol transition (T2A4D), resource-based constrained delegation (RBCD).
 - **Risk Scoring / ANSSI Maturity / MITRE ATT&CK**: rolls findings into a 0–100 score with per-category sub-scores, a 1–5 ANSSI maturity level, and MITRE technique tags — all from one mapping table (`Get-ADRiskScore`, `Set-ADFindingMetadata`).
-- **Snapshot & offline mode**: `Get-ADSnapshot` collects once; `Start-ADSecurityAudit -FromSnapshot` re-runs fully offline.
 - **Machine Account Quota**: flags the unmodified default of 10 (or any non-zero value) — a common RBCD/SamAccountName-spoofing foothold.
 - **Domain hardening flags**: dangerous `dSHeuristics` settings, broad membership in Pre-Windows 2000 Compatible Access, anonymous LDAP bind, and null-session pipe/share access (`RestrictNullSessAccess`).
 - **Coercion & NTLM relay exposure**: Print Spooler / WebClient running on DCs, LDAP signing/channel binding not enforced.
@@ -130,11 +129,11 @@ Start-ADSecurityAudit -Server dc01.domainb.corp.com -ExportPath "C:\ADReports"
 ```
 Every standalone audit function accepts the same `-Server` parameter. Full detail (PDC Emulator resolution, `runas /netonly` limitation, internals): see [Multi-Domain / Forest Targeting](#multi-domain--forest-targeting).
 
-**Offline / snapshot:**
+**Recreate a report later, with no live AD access:**
 ```powershell
-Get-ADSnapshot -ToJson "C:\Snapshots\contoso.json"
-Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso.json" -ExportPath "C:\ADReports"
+Export-ADSecurityReportHTMLFromJson -InputPath "C:\ADReports\AD_Security_Audit_<timestamp>.json" -OutputPath "C:\ADReports\Rebuilt.html"
 ```
+See [Recreating Reports from JSON](#recreating-reports-from-json) for details and limitations.
 
 **Output formats:** HTML (interactive, risk gauge, maturity panel, MITRE summary, Test Coverage section) · CSV (with `MitreTechnique`/`AnssiControl`/`Weight`/`TestName` columns) · JSON · a JSON score sidecar (`AD_Security_Score_<timestamp>.json`) · a test coverage sidecar (`AD_Security_TestCoverage_<timestamp>.json`/`.csv`) recording, for every registered check, whether it ran clean, ran and found something, failed, or was excluded.
 
@@ -162,51 +161,20 @@ Since v1.24.0, every run records not just what it *found*, but what it *checked*
 - An export that predates test coverage tracking gets an explicit note rather than a silently-missing section: the HTML rebuild path adds a "Test Coverage Not Available" note citing the version boundary, and the CSV rebuild path still writes a coverage CSV with a single explanatory row instead of omitting the file.
 - **Forest Consolidation, Retest Comparison, and Maturity Trend all cross-check against this data too** — see [Forest Consolidation, Retesting & Trends](#forest-consolidation-retesting--trends) for why this matters (a false "Resolved" claim, or a misleading score/domain comparison, can both result from under-testing rather than genuine improvement if this isn't accounted for).
 
-## Offline / Snapshot Mode
+## Recreating Reports from JSON
 
-Since v1.3.0, collection is decoupled from rule evaluation:
-
-- **`Get-ADSnapshot [-ToJson <path>]`** — one read-only pass over users, computers, groups, GPOs, key ACLs, AD CS config, DNS zones, trusts, DC inventory, and machine account quota.
-- **`Start-ADSecurityAudit -FromSnapshot <path>`** — re-runs the full audit offline, no live AD access, same report outputs as a live run.
-- **`Get-ADTier0Principal [-Snapshot $snapshot]`** — shared privileged/Tier-0 principal set, usable live or offline.
+Every live run of `Start-ADSecurityAudit` writes a flat JSON findings export (`AD_Security_Audit_<timestamp>.json`) alongside the HTML report. If you only kept that JSON — or want to regenerate/re-share the HTML report later without hitting a DC again — `Export-ADSecurityReportHTMLFromJson` (and its CSV equivalent, `Export-ADSecurityReportCSVFromJson`) rebuild it from that file alone, with no live AD access:
 
 ```powershell
-Get-ADSnapshot -ToJson "C:\Snapshots\contoso_2026-07-07.json" -Verbose
-Start-ADSecurityAudit -FromSnapshot "C:\Snapshots\contoso_2026-07-07.json" -ExportPath "C:\ADReports"
+# Run once, live:
+Start-ADSecurityAudit -ExportPath "C:\ADReports"
+# ... produces AD_Security_Audit_<timestamp>.json alongside the HTML ...
+
+# Later, regenerate/re-share the HTML report with no live AD access:
+Export-ADSecurityReportHTMLFromJson -InputPath "C:\ADReports\AD_Security_Audit_<timestamp>.json" -OutputPath "C:\ADReports\Rebuilt.html"
 ```
 
-**Want to see this in action without a real domain?** `tests/fixtures/ForcedFail-{100,60,25}pct-Snapshot.json` are three ready-made example snapshots (a fake domain, no real environment/identities) at three severity levels - 100%/60%/25% of the checks that can produce a finding offline are deliberately misconfigured. Point any of the commands in this section, or the "Recreating HTML/CSV reports from JSON" section below, at one to see real JSON/CSV/HTML output immediately:
-
-```powershell
-Start-ADSecurityAudit -FromSnapshot ".\tests\fixtures\ForcedFail-60pct-Snapshot.json" -ExportPath ".\out"
-# or, with the convenience wrapper (writes into tests/fixtures/output/<tier>pct/):
-.\tools\Test-ForcedFailFixture.ps1 -Tier 60
-```
-
-See `tests/fixtures/README.md` for what each tier covers and a maintenance note for keeping them current as checks change.
-
-<details>
-<summary><strong>Which of the 28 tests are fully vs. partially offline-capable (click to expand)</strong></summary>
-
-As of v1.19.0 all 27 registered tests (28 as of v1.23.6, with the addition of `Test-ADCSChaseFallback`) support `-Snapshot`, fully or partially. As of v1.19.1, `-Snapshot` means literally zero live AD/network access — every skipped sub-check records a structured note, visible in the HTML report's **"Offline Mode Coverage Notes"** table.
-
-- **Fully offline-capable:** `Test-ADUserSecurity`, `Test-KRBTGTAccount`, `Test-ADMachineAccountQuota`, `Test-ADExchangeEscalation`, `Test-ADPrivilegedGroups`, `Test-AdminSDHolder`, `Test-ADReplicationSecurity`, `Test-ADDangerousPermissions`, `Test-LAPSDeployment`, `Test-ConstrainedDelegation`, `Test-ADDomainTrusts`, `Test-ADDomainSecurity`, `Test-ADCertificateServices`, `Test-ADDomainAdminEquivalence`.
-- **Partially offline** (a few sub-checks are genuinely real-time and get skipped under `-Snapshot`, with a logged reason each time):
-  - `Test-ADDomainHardeningFlags` — dSHeuristics/Pre-2000 membership offline; anonymous-bind probe is live-only.
-  - `Test-ADCoercionAndRelayExposure` — only the DC list comes from the snapshot; Spooler/WebClient/LDAP registry checks are live-only.
-  - `Test-ADCSExtended` — template/CA enumeration, ESC4, approval-gate, and NTAuth/AIA/Root sweep are offline; only ESC8 (a live HTTP probe) is live-only.
-  - `Test-ADCSChaseFallback` — live-only (reads `policy\EditFlags` on the CA host itself, no snapshot representation), same as ESC8.
-  - `Test-ADDnsSecurity` — DnsAdmins membership is offline; zone transfer, dynamic-update, ADIDNS, and delegation-staleness checks are live-only (not in current snapshot schema).
-  - `Test-ADKerberosHardening` — account/trust-level RC4 checks are offline; domain-wide encryption policy and FAST are live-only.
-  - `Test-ADStaleObjectDepth` — PASSWD_NOTREQD/primaryGroupID/duplicate-SPN/DC-count are offline; DC subnet/site registration is live-only.
-  - `Test-ADRodcSecurity` — entirely skipped under `-Snapshot` (every finding needs live per-RODC attributes).
-  - `Test-ADGroupPolicies` — over-permissioned/unlinked GPO checks offline; SYSVOL file-share ACL check is live-only.
-  - `Test-AuditPolicyConfiguration` — SACL-presence checks offline; per-DC `auditpol` is live-only.
-  - `Test-ADControlPaths` — membership/DC/AdminSDHolder edges offline; ACL/ownership edges for other objects in a chain aren't (recorded as a coverage note, not a live read).
-  - `Test-ADGpoDeployedSecrets` — entirely skipped under `-Snapshot` (its whole job is scanning SYSVOL file content).
-- **Declared but effectively live-only** (no findings under `-Snapshot`): `Test-ADLegacyAuthSurface`, `Test-ADKnownDCVulnerabilities`.
-
-</details>
+This rebuilds the **HTML/CSV view of already-computed findings** (recomputing only the risk score) — it does **not** re-run detection logic against a frozen point-in-time AD state. See [Forest Consolidation, Retesting & Trends](#forest-consolidation-retesting--trends) for full detail, parameters, and limitations.
 
 ## Multi-Domain / Forest Targeting
 
@@ -220,7 +188,7 @@ Start-ADSecurityAudit -Server domainb.corp.com -ExportPath "C:\ADReports"
 Start-ADSecurityAudit -Server dc01.domainb.corp.com -ExportPath "C:\ADReports"
 ```
 
-Also available standalone: `Test-ADMachineAccountQuota -Server ...`, `Get-ADSnapshot -Server ...`, `Test-ADUserSecurity -Server ...`, `Get-ADPrivilegedUsers -Server ...`, `Test-ADPrivilegedGroups -Server ...`, `Test-ADDomainAdminEquivalence -Server ...`, `Test-ADRodcSecurity -Server ...`. Ignored (with a warning) alongside `-FromSnapshot`, since offline mode makes no live queries at all.
+Also available standalone: `Test-ADMachineAccountQuota -Server ...`, `Test-ADUserSecurity -Server ...`, `Get-ADPrivilegedUsers -Server ...`, `Test-ADPrivilegedGroups -Server ...`, `Test-ADDomainAdminEquivalence -Server ...`, `Test-ADRodcSecurity -Server ...`.
 
 **Known limitation:** `runas /netonly` doesn't change `$env:USERDNSDOMAIN` — pass `-Server` explicitly in that case.
 
@@ -307,7 +275,7 @@ With only one sidecar, no trend is computed (`RunCount = 1`, explanatory message
 <details>
 <summary><strong>Recreating HTML/CSV reports from JSON, with no re-scan</strong></summary>
 
-- **`Export-ADSecurityReportHTMLFromJson`** — rebuilds the main audit HTML report from an `AD_Security_Audit_<timestamp>.json` export alone. Score/maturity/MITRE are recomputed fresh. Gaps it *can't* recover (never stored in that JSON): Domain, Duration, RunMode, Offline Mode Coverage Notes, and the Privileged Users section — pass what you know via parameters, or accept the placeholders. Findings missing supporting information (`EstimatedEffort`/`KnownRisks`/`BackupRollback`/`OperationalNotes`, or MITRE/ANSSI/Weight metadata) because the export predates those fields are backfilled with current guidance where available (`Merge-ADFindingNarrativeGaps`), clearly labeled as such — never silently presented as if it were part of the original run.
+- **`Export-ADSecurityReportHTMLFromJson`** — rebuilds the main audit HTML report from an `AD_Security_Audit_<timestamp>.json` export alone. Score/maturity/MITRE are recomputed fresh. Gaps it *can't* recover (never stored in that JSON): Domain, Duration, and the Privileged Users section — pass what you know via parameters, or accept the placeholders. Findings missing supporting information (`EstimatedEffort`/`KnownRisks`/`BackupRollback`/`OperationalNotes`, or MITRE/ANSSI/Weight metadata) because the export predates those fields are backfilled with current guidance where available (`Merge-ADFindingNarrativeGaps`), clearly labeled as such — never silently presented as if it were part of the original run.
 - **`Export-ADSecurityReportCSVFromJson`** (new in v1.24.0) — the CSV equivalent: rebuilds the findings CSV (and, if the sidecar exists, a coverage CSV) from the same JSON export, using the exact same column-construction function as the live export so the two can't drift apart.
 - Both rebuild functions accept a folder for `-OutputPath` (not just an exact file path) - an auto-named `AD_Security_Audit_<timestamp>-recreated.<ext>` is created inside it, so pointing this at "the reports folder" just works without constructing a filename yourself, and without risk of overwriting the original same-timestamp report.
 - Both rebuild paths pick up a sibling `AD_Security_TestCoverage_<timestamp>.json`, if present, to populate the Test Coverage section/CSV; an export that predates coverage tracking gets an explicit note instead of a silently-missing section.
@@ -332,16 +300,7 @@ Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports\AD_Security_Audit_2
 Export-ADSecurityReportCSVFromJson -FindingsPath "C:\Reports" -OutputPath "C:\Reports"
 ```
 
-**No JSON export handy to try this with?** Generate one first from a bundled example fixture, no live AD needed:
-
-```powershell
-# 1. Produce a real AD_Security_Audit_*.json (plus CSV/HTML) from an example fixture:
-Start-ADSecurityAudit -FromSnapshot ".\tests\fixtures\ForcedFail-60pct-Snapshot.json" -ExportPath ".\out"
-
-# 2. Recreate the HTML and CSV from that JSON alone, as if starting fresh from it:
-Export-ADSecurityReportHTMLFromJson -FindingsPath ".\out" -OutputPath ".\out"
-Export-ADSecurityReportCSVFromJson  -FindingsPath ".\out" -OutputPath ".\out"
-```
+**No JSON export handy to try this with?** Run a live audit first (see [Usage](#usage)) to produce one, then point these functions at it.
 
 </details>
 
@@ -427,7 +386,7 @@ An `AcceptedRisk` finding still counts toward the risk score — this is a repor
 
 ## Report Interpretation
 
-**HTML report structure:** Executive Summary (clickable severity cards) → Risk Score & Maturity (gauge, ANSSI ladder, category bars, MITRE summary) → Critical Issues → Detailed Findings (collapsed by default, one entry per Category+Issue with every affected object listed underneath) → Affected Objects. When applicable, a **Run Scope Information** box appears near the top (e.g. `-Server` named a specific DC that isn't the domain's PDC Emulator) alongside the offline-mode boxes for `-FromSnapshot` runs, and a **Test Coverage** box (collapsed by default, click to expand the full per-check list — see [Test Coverage](#test-coverage)) when coverage data is available for the run.
+**HTML report structure:** Executive Summary (clickable severity cards) → Risk Score & Maturity (gauge, ANSSI ladder, category bars, MITRE summary) → Critical Issues → Detailed Findings (collapsed by default, one entry per Category+Issue with every affected object listed underneath) → Affected Objects. When applicable, a **Run Scope Information** box appears near the top (e.g. `-Server` named a specific DC that isn't the domain's PDC Emulator), and a **Test Coverage** box (collapsed by default, click to expand the full per-check list — see [Test Coverage](#test-coverage)) when coverage data is available for the run.
 
 **Each finding includes:** Description, Impact, Affected Objects, and step-by-step Remediation.
 
@@ -480,7 +439,7 @@ If `-Server` is set but data still looks like it's coming from the wrong domain:
 1. **Update first** — the `Get-ADDomainController -Filter *` and GroupPolicy-module gaps (see [Multi-Domain / Forest Targeting](#multi-domain--forest-targeting)) were the most common causes and are fixed in current versions.
 2. **Confirm the override took effect** — run with `-Verbose` and check for `Server override: forcing all AD queries to target '<value>'`.
 3. **Pass a specific DC FQDN**, not just the domain name — a bare domain name depends on DNS-based locator resolution, which can silently fall back to the wrong domain if conditional forwarders aren't configured.
-4. **Confirm `-Server` is on the same invocation** producing the report — it doesn't persist across separate commands, and calling a `Test-AD*` function directly (outside `Start-ADSecurityAudit`) has no `-Server` of its own except `Test-ADMachineAccountQuota`/`Get-ADSnapshot`.
+4. **Confirm `-Server` is on the same invocation** producing the report — it doesn't persist across separate commands, and calling a `Test-AD*` function directly (outside `Start-ADSecurityAudit`) has no `-Server` of its own except `Test-ADMachineAccountQuota`.
 5. **Check "Cross-Domain Privileged Group Membership"** if the mismatch is in group members rather than DCs — nested/universal groups can legitimately span domains.
 6. If using `runas /netonly`, pass `-Server` explicitly (see Known Limitation above).
 
@@ -544,6 +503,7 @@ Open `http://localhost:8000`, then upload a JSON file, paste JSON, load from a U
 
 Full details in [CHANGELOG.md](./CHANGELOG.md). Recent highlights:
 
+- **v1.25.0** — Removed offline/`-Snapshot` mode in its entirety: `Get-ADSnapshot`, `Invoke-ADRuleSet`, and `ConvertTo-ADHashtable` no longer exist; `Start-ADSecurityAudit` no longer accepts `-FromSnapshot`/`-AllowLiveFallbackForUnsupportedTests`; every `Test-*` function's `-Snapshot` parameter and offline code branch is gone, leaving only each function's live AD query path. The JSON findings export every live run produces, together with `Export-ADSecurityReportHTMLFromJson`/`Export-ADSecurityReportCSVFromJson` (kept, unchanged), already covered the real use case — regenerating/re-sharing a report later with no live AD access — without the cost of maintaining a second, independent offline code path across all 27 tests. See [Recreating Reports from JSON](#recreating-reports-from-json). Migration: existing `.json` snapshot files from `Get-ADSnapshot -ToJson` are no longer usable with `-FromSnapshot`; run `Start-ADSecurityAudit` live instead and, if needed later, `Export-ADSecurityReportHTMLFromJson` against its JSON findings output.
 - **v1.24.0** — Added Test Coverage tracking: every report now shows which checks ran clean, found something, failed, or were excluded, instead of a clean run being indistinguishable from an incomplete one. New `Export-ADSecurityReportCSVFromJson` (CSV equivalent of the HTML JSON-rebuild path); both JSON-rebuild functions now accept a folder for `-OutputPath` and auto-name the file. Closed the same "under-testing looks like improvement" blind spot in `Get-ADRetestComparison` (a new `UnconfirmedFindings` bucket replaces false "Resolved" claims when the relevant check didn't actually run), `Get-ADMaturityTrend`, and `Get-ADForestConsolidation` (both flag incomplete/missing coverage rather than letting it silently skew a trend or cross-domain comparison). Fixed `-FromSnapshot` mode never tracking test coverage at all (it dispatches through a separate code path, `Invoke-ADRuleSet`, that Test Coverage tracking hadn't reached yet - every offline report rendered a nonsensical "0 check(s) tracked" box regardless of what actually ran). A full audit of the findings pipeline confirmed every check correctly populates the JSON/HTML/CSV outputs, with one latent gap fixed defensively: an unexpected `Severity` value (not currently produced by any check, but previously unhandled) would have been invisible in the HTML report - now rendered in a dedicated "Other / Unclassified Severity" section with a warning, so a finding can never silently disappear. Also fixed a scoring bug where a JSON-recreated finding missing MITRE/ANSSI/Weight metadata silently scored 0 instead of its real weight, two Kerberoasting findings having no supporting-information backfill at all due to a conditionally-named Issue the extraction tool didn't recognize, a general PowerShell null-vs-empty-array bug affecting several offline analysis functions, and both `Export-ADSecurityReportCSVFromJson` and `Export-ADSecurityReportHTML` itself having been defined but never actually exported by the module.
 - **v1.23.9** — Added a "Run Scope Information" report section (and console notice) for whenever `-Server` names a specific DC that isn't the domain's actual PDC Emulator, so "PDC-only" checks (Machine Account Quota, domain security settings) don't silently query a different DC than a reader might assume.
 - **v1.23.8** — Fixed "Insufficient Domain Controller Count" undercounting (and a related primaryGroupID false-positive) whenever `-Server` named one specific DC; both now use an always-unscoped DC inventory (`Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope`) independent of per-DC-probe scoping. Also fixed `Get-ADTargetDomainController` to deterministically prefer the domain's PDC rather than an arbitrary enumerated DC.

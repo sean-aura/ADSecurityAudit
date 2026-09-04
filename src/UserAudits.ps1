@@ -12,13 +12,6 @@ function Test-ADUserSecurity {
         [Parameter()]
         [int]$PasswordAgeThreshold = 180,
 
-        # Added in v1.3.0 (collect-once snapshot contract, see
-        # docs/features/02-domain-snapshot.md). Optional and backward
-        # compatible: when omitted, this function queries AD live exactly as
-        # before.
-        [Parameter()]
-        [hashtable]$Snapshot,
-
         # Defense-in-depth for multi-domain forests: when this function is
         # called standalone (not via Start-ADSecurityAudit -Server, which
         # already installs a session-wide override before this ever runs),
@@ -46,27 +39,6 @@ function Test-ADUserSecurity {
     }
     
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
-            Write-Verbose "Test-ADUserSecurity: using snapshot data."
-            $users = @($Snapshot.Users)
-            if ($SearchBase) {
-                $users = @($users | Where-Object { $_.DistinguishedName -like "*$SearchBase" })
-            }
-
-            # PasswordLastSet/LastLogonDate may come back as [string] after a
-            # JSON round-trip (-ToJson / -FromSnapshot); normalise to
-            # [datetime] so the age-comparison logic below is unaffected.
-            foreach ($u in $users) {
-                foreach ($dateField in @('PasswordLastSet', 'LastLogonDate')) {
-                    $val = $u.$dateField
-                    if ($val -and $val -isnot [datetime]) {
-                        try { $u.$dateField = [datetime]$val }
-                        catch { Write-Verbose "Test-ADUserSecurity: could not parse $dateField '$val' for $($u.SamAccountName)." }
-                    }
-                }
-            }
-        }
-        else {
         # Resolved once, explicitly passed to every live AD call below -
         # not relying on Set-ADSecurityAuditTargetServer's
         # $PSDefaultParameterValues injection alone. $__adServer is $null
@@ -91,34 +63,21 @@ function Test-ADUserSecurity {
         }
         
         $getUserParams['ResultPageSize'] = 500
-            $users = Get-ADUser @getUserParams
-        }
+        $users = Get-ADUser @getUserParams
 
         Write-Verbose "Analyzing $($users.Count) user accounts..."
 
-        # Fixed in v1.19.1: this was an unconditional live Get-ADGroup call,
-        # outside the $Snapshot/live branch above - it ran even under
-        # -Snapshot, which is not acceptable for a genuinely offline
-        # analysis. Only the group's *existence* is actually used below
-        # (as a boolean gate; the finding logic itself only reads from
-        # $user.MemberOf, already present in the snapshot), so this can be
-        # answered entirely from Snapshot.Groups with no live call at all.
         $protectedUsersGroup = $null
-        if ($Snapshot -and $Snapshot.ContainsKey('Groups')) {
-            $protectedUsersGroup = @($Snapshot.Groups | Where-Object { $_.Name -eq 'Protected Users' }) | Select-Object -First 1
+        try {
+            $protectedUsersGroup = if ($__adServer) {
+                Get-ADGroup -Filter "Name -eq 'Protected Users'" -Server $__adServer -ErrorAction Stop
+            }
+            else {
+                Get-ADGroup -Filter "Name -eq 'Protected Users'" -ErrorAction Stop
+            }
         }
-        else {
-            try {
-                $protectedUsersGroup = if ($__adServer) {
-                    Get-ADGroup -Filter "Name -eq 'Protected Users'" -Server $__adServer -ErrorAction Stop
-                }
-                else {
-                    Get-ADGroup -Filter "Name -eq 'Protected Users'" -ErrorAction Stop
-                }
-            }
-            catch {
-                Write-Verbose "Failed to get Protected Users group: $_"
-            }
+        catch {
+            Write-Verbose "Failed to get Protected Users group: $_"
         }
         
         $userCount = $users.Count
@@ -441,17 +400,6 @@ function Test-PrivilegedUser {
     .SYNOPSIS
         Returns whether a user object belongs to one of the protected
         groups, based on its MemberOf list.
-    .DESCRIPTION
-        Deliberately untyped ($User has no type constraint): this is called
-        with a live Microsoft.ActiveDirectory.Management.ADUser object in
-        live mode, and with a flattened PSCustomObject (from
-        Get-ADSnapshot's Users collection) in -FromSnapshot mode. A typed
-        [Microsoft.ActiveDirectory.Management.ADUser]$User parameter would
-        make PowerShell try to coerce the PSCustomObject into a real ADUser
-        instance on every -FromSnapshot call, which fails ("the adapter
-        cannot set the value of property 'Name'") since that type isn't
-        constructible that way. Only .MemberOf is read, so no type
-        constraint is needed - this works for either shape.
     #>
     [CmdletBinding()]
     param(

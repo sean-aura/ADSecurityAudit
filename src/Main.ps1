@@ -36,31 +36,9 @@ function Start-ADSecurityAudit {
         # logged in as a Domain A account), or when running under
         # alternate credentials via `runas /netonly` (see
         # Resolve-ADSecurityAuditTargetServer in Common.ps1 for why the
-        # default can't reliably detect that case on its own). Ignored
-        # (with a warning) if combined with -FromSnapshot, since that mode
-        # performs no live AD access at all.
+        # default can't reliably detect that case on its own).
         [Parameter()]
-        [string]$Server,
-
-        # Added in v1.3.0 (collect-once snapshot contract, see
-        # docs/features/02-domain-snapshot.md). Path to a JSON snapshot
-        # produced by Get-ADSnapshot -ToJson. When supplied, the audit is
-        # re-run offline against that snapshot via Invoke-ADRuleSet instead
-        # of querying AD live - no live AD access is performed.
-        [Parameter()]
-        [string]$FromSnapshot,
-
-        # As of v1.19.0, all 27 registered tests declare -Snapshot support
-        # (fully or partially - see Invoke-ADRuleSet's help for the small
-        # number of remaining live-only sub-checks). This switch/skip
-        # mechanism remains in place for any future new test that hasn't
-        # been retrofitted yet, so by default -FromSnapshot SKIPS an
-        # unsupported test rather than silently falling back to live
-        # queries, to honor the "no live AD access" contract above. Pass
-        # this switch to restore the old behaviour and run those tests live
-        # alongside the offline ones.
-        [Parameter()]
-        [switch]$AllowLiveFallbackForUnsupportedTests
+        [string]$Server
     )
     
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -85,23 +63,11 @@ function Start-ADSecurityAudit {
         return
     }
 
-    # Reset the offline-skip-note tracker (v1.19.1) so notes from a
-    # previous Start-ADSecurityAudit call in the same PowerShell session
-    # never leak into this run's HTML report.
-    Reset-ADOfflineSkipNotes
-
-    # Same reset, for run-scope notes (e.g. a "PDC-only" check running
-    # against an explicitly-named non-PDC DC) - see Common.ps1.
+    # Reset run-scope notes (e.g. a "PDC-only" check running against an
+    # explicitly-named non-PDC DC) so notes from a previous
+    # Start-ADSecurityAudit call in the same PowerShell session never leak
+    # into this run's HTML report - see Common.ps1.
     Reset-ADRunScopeNotes
-
-    # Same reset, for test coverage tracking (which checks ran clean,
-    # found something, failed, or were excluded) - see
-    # Add-ADTestCoverageEntry's own docs (Common.ps1). Only -FromSnapshot
-    # actually reads this tracker (via Invoke-ADRuleSet); live mode builds
-    # $testCoverage directly in its own loop below and never touches this
-    # tracker, but resetting it unconditionally here costs nothing and
-    # keeps both code paths' state hygiene identical.
-    Reset-ADTestCoverageTracker
     
     if (-not (Test-Path $ExportPath)) {
         try {
@@ -134,90 +100,6 @@ function Start-ADSecurityAudit {
         Write-Host "==================================================" -ForegroundColor Cyan
         Write-Host "Start Time: $startTime`n" -ForegroundColor Gray
         
-        if ($FromSnapshot) {
-            if ($Server) {
-                Write-Warning "-Server '$Server' was supplied together with -FromSnapshot; ignoring it, since offline/-FromSnapshot mode performs no live AD access."
-            }
-            # --- Offline re-analysis path (v1.3.0): no live AD access ---
-            Write-Host "Offline mode: re-analysing snapshot '$FromSnapshot' (no live AD access)`n" -ForegroundColor Cyan
-
-            if (-not (Test-Path $FromSnapshot)) {
-                Write-Error "Snapshot file not found: $FromSnapshot"
-                return
-            }
-
-            try {
-                $rawSnapshot = Get-Content -Path $FromSnapshot -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-                $snapshot = ConvertTo-ADHashtable -InputObject $rawSnapshot
-            }
-            catch {
-                Write-Error "Failed to load snapshot from '$FromSnapshot': $_"
-                return
-            }
-
-            $domain = $snapshot.Domain
-            if (-not $domain) {
-                Write-Error "Snapshot '$FromSnapshot' does not contain domain information; cannot proceed."
-                return
-            }
-
-            Write-Host "Domain: $($domain.DNSRoot)" -ForegroundColor Green
-            Write-Host "Domain DN: $($domain.DistinguishedName)`n" -ForegroundColor Green
-            Write-Host "Snapshot collected: $($snapshot.CollectedDate)`n" -ForegroundColor Gray
-
-            # Determine which tests to run (same semantics as live mode).
-            if ($IncludeTests) {
-                $testsToRun = $Script:ADTestFunctionRegistry.Keys | Where-Object { $_ -in $IncludeTests -and $_ -notin $ExcludeTests }
-            }
-            else {
-                $testsToRun = $Script:ADTestFunctionRegistry.Keys | Where-Object { $_ -notin $ExcludeTests }
-            }
-
-            if (-not $AllowLiveFallbackForUnsupportedTests) {
-                $unsupportedTests = @($testsToRun | Where-Object {
-                    $fn = Get-Command -Name $Script:ADTestFunctionRegistry[$_] -ErrorAction SilentlyContinue
-                    $fn -and -not $fn.Parameters.ContainsKey('Snapshot')
-                })
-                if ($unsupportedTests.Count -gt 0) {
-                    Write-Host "Note: $($unsupportedTests.Count) test(s) have no offline/-Snapshot support yet and will be skipped (no live AD access performed): $($unsupportedTests -join ', ')" -ForegroundColor Yellow
-                    Write-Host "Pass -AllowLiveFallbackForUnsupportedTests to run them live instead.`n" -ForegroundColor Yellow
-                }
-            }
-
-            Write-Host "Running $($testsToRun.Count) test(s) via Invoke-ADRuleSet...`n" -ForegroundColor Yellow
-            $allFindings = @(Invoke-ADRuleSet -Snapshot $snapshot -IncludeTests $testsToRun `
-                -InactiveDaysThreshold $InactiveDaysThreshold -PasswordAgeThreshold $PasswordAgeThreshold `
-                -AllowLiveFallbackForUnsupportedTests:$AllowLiveFallbackForUnsupportedTests)
-
-            # FIXED (reported): $testCoverage was previously never assigned
-            # on this (-FromSnapshot) code path at all - only the live-mode
-            # branch below builds it directly. The shared HTML-export call
-            # near the end of this function unconditionally passes
-            # -TestCoverage $testCoverage, so an undefined variable here
-            # silently became $null, which made the Test Coverage section's
-            # gate (Count -gt 0) true while its actual row data (built via
-            # Sort-Object, which drops a $null element) came out empty -
-            # rendering a nonsensical "0 check(s) tracked" box on every
-            # single -FromSnapshot report. Invoke-ADRuleSet now populates
-            # the same tracker Add-ADTestCoverageEntry writes to
-            # (Common.ps1); read it back here so this path is a real,
-            # populated array like the live path's, not an undefined
-            # variable.
-            $testCoverage = Get-ADTestCoverageTracker
-
-            $skipNotesForConsole = @(Get-ADOfflineSkipNotes)
-            if ($skipNotesForConsole.Count -gt 0) {
-                $stillLiveCountForConsole = @($skipNotesForConsole | Where-Object { $_.Mode -eq 'StillLive' }).Count
-                $skippedCountForConsole = $skipNotesForConsole.Count - $stillLiveCountForConsole
-                Write-Host "Offline coverage note: $skippedCountForConsole sub-check(s) skipped, $stillLiveCountForConsole sub-check(s) still ran live - see the HTML report's 'Offline Mode Coverage Notes' section for the full breakdown.`n" -ForegroundColor Yellow
-            }
-
-            if ($IncludePrivilegedUsersReport) {
-                Write-Warning "IncludePrivilegedUsersReport requires live AD access and is not available in -FromSnapshot mode; skipping."
-            }
-            $privilegedUsers = $null
-        }
-        else {
         # Verify AD module is available
         if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
             Write-Error "Active Directory PowerShell module is not installed. Please install RSAT tools."
@@ -489,7 +371,6 @@ function Start-ADSecurityAudit {
                 Write-Warning "Failed to enumerate privileged users: $_"
             }
         }
-        }
         
         $endTime = Get-Date
         $duration = $endTime - $startTime
@@ -601,37 +482,17 @@ function Start-ADSecurityAudit {
             # Export to HTML
             Write-Progress -Activity "Exporting Audit Reports" -Status "Building HTML report..." -PercentComplete 40
             $htmlPath = Join-Path $ExportPath "AD_Security_Audit_$timestamp.html"
-            $reportRunMode = if ($FromSnapshot) { 'Offline (Snapshot)' } else { 'Live' }
-            $reportSnapshotCollectedDate = $null
-            if ($FromSnapshot -and $snapshot.CollectedDate) {
-                # CollectedDate may come back as [string] after the JSON
-                # round-trip (-ToJson / -FromSnapshot); coerce defensively
-                # rather than letting a bad string fail parameter binding.
-                $reportSnapshotCollectedDate = if ($snapshot.CollectedDate -is [datetime]) {
-                    $snapshot.CollectedDate
-                }
-                else {
-                    try { [datetime]$snapshot.CollectedDate } catch { $null }
-                }
-            }
-            $offlineSkipNotes = @(Get-ADOfflineSkipNotes)
 
-            # Merge notes recorded THIS run/session (Get-ADRunScopeNotes -
-            # populated live whenever a "PDC-only" check runs against an
-            # explicitly-named non-PDC DC) with any notes carried inside
-            # the snapshot itself (only relevant for -FromSnapshot: those
-            # notes were recorded at COLLECTION time, and this analysis
-            # pass performs no live resolution of its own to re-detect the
-            # condition). De-duplicated by message text, since a snapshot
-            # collected and then immediately re-analysed in the same
-            # session could otherwise show the same note twice.
-            $runScopeNotesFromSnapshot = if ($FromSnapshot -and $snapshot.ContainsKey('RunScopeNotes')) { @($snapshot.RunScopeNotes) } else { @() }
-            $runScopeNotes = @(@(Get-ADRunScopeNotes) + $runScopeNotesFromSnapshot | Sort-Object Message -Unique)
+            # Notes recorded THIS run/session (e.g. a "PDC-only" check
+            # running against an explicitly-named non-PDC DC) - see
+            # Get-ADRunScopeNotes in Common.ps1 (v1.23.9, unrelated to the
+            # now-removed offline/-Snapshot mode).
+            $runScopeNotes = @(Get-ADRunScopeNotes)
             if ($runScopeNotes.Count -gt 0) {
                 Write-Host "Run scope note: $($runScopeNotes.Count) note(s) about how this run was scoped - see the HTML report's 'Run Scope Information' section.`n" -ForegroundColor Yellow
             }
 
-            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunMode $reportRunMode -SnapshotCollectedDate $reportSnapshotCollectedDate -OfflineSkipNotes $offlineSkipNotes -RunScopeNotes $runScopeNotes -TestCoverage $testCoverage
+            Export-ADSecurityReportHTML -Findings $allFindings -OutputPath $htmlPath -Domain $domain.DNSRoot -Summary $summary -Duration $duration -PrivilegedUsers $privilegedUsers -RiskScore $riskScore -RunScopeNotes $runScopeNotes -TestCoverage $testCoverage
             Write-Host "HTML report exported to: $htmlPath" -ForegroundColor Green
             
             # Export to CSV with formula injection protection

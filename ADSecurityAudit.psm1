@@ -43,7 +43,6 @@ $moduleScripts = @(
     # dependency on load order relative to the check files below - it's
     # pure data, referenced only by Issue name string.
     'src/FindingNarrativeLibrary.ps1',
-    'src/Snapshot.ps1',
     'src/UserAudits.ps1',
     'src/GroupAudits.ps1',
     'src/AdminSDAudits.ps1',
@@ -137,8 +136,6 @@ Export-ModuleMember -Function @(
     'Get-ADRiskScore',
     'Set-ADFindingMetadata',
     'Get-ADFindingMetadataMap',
-    'Get-ADSnapshot',
-    'Invoke-ADRuleSet',
     'Get-ADTier0Principal',
     'Invoke-ADQueryWithRetry',
     'ConvertTo-SafeCsvValue'

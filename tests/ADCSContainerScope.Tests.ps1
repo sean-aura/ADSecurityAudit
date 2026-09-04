@@ -17,13 +17,13 @@
     misconfigured CA).
 
     This is a static source-inspection test rather than a functional mock
-    test: Test-ADCertificateServices/Test-ADCSExtended/Get-ADSnapshot are
-    large functions with substantial unrelated setup (module imports,
-    Get-Acl, live registry/network calls) that would need extensive
-    mocking to execute safely here. Asserting the fix's actual shape
-    (-SearchScope OneLevel on every affected call) is a reliable,
-    low-risk guard against this specific regression reappearing, without
-    depending on being able to fully execute those functions offline.
+    test: Test-ADCertificateServices/Test-ADCSExtended are large functions
+    with substantial unrelated setup (module imports, Get-Acl, live
+    registry/network calls) that would need extensive mocking to execute
+    safely here. Asserting the fix's actual shape (-SearchScope OneLevel on
+    every affected call) is a reliable, low-risk guard against this
+    specific regression reappearing, without depending on being able to
+    fully execute those functions.
 
     Run from the repo root:  Invoke-Pester ./tests/ADCSContainerScope.Tests.ps1
 #>
@@ -33,7 +33,6 @@ BeforeAll {
     $script:AffectedFiles = @(
         (Join-Path $root 'src/CertificateServicesAudits.ps1')
         (Join-Path $root 'src/CertificateServicesExtendedAudits.ps1')
-        (Join-Path $root 'src/Snapshot.ps1')
     )
 }
 

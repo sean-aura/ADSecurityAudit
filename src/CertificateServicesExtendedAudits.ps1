@@ -28,15 +28,10 @@
 # state on the CA host itself. Nothing here requests, forges, or relays a
 # certificate, and no coercion/PoC traffic is sent to any host.
 #
-# Snapshot contract: certificate template/CA enumeration and the
-# attribute-only checks (approval-gate check, and weak-signature/ROCA
-# evaluation of the CA's own published certificate) are snapshot-aware via
-# Snapshot.ADCS (from Get-ADSnapshot, unchanged schema). ESC4 (per-template
-# ACL), ESC8 (live network probe of the CA host), and the NTAuth/AIA/Root
-# store sweep are live AD/network reads with no snapshot representation, so
-# - consistent with the anonymous-bind probe in Test-ADDomainHardeningFlags
-# and the per-DC probes in Test-ADCoercionAndRelayExposure - they are
-# skipped entirely when this function is invoked with -Snapshot.
+# Detection scope: certificate template/CA enumeration, ESC4 (per-template
+# ACL), the approval-gate/CA-certificate weak-crypto checks, and the
+# NTAuth/AIA/Root store sweep are all live AD reads. ESC8 is a live network
+# probe of the CA host itself. Nothing here is snapshot-based.
 
 # Small set of primes (with a fast brute-force order computation, valid
 # since each prime here is tiny) used for a probabilistic ROCA fingerprint
@@ -284,26 +279,11 @@ function Test-ADCSExtended {
         certificate bytes, plus (ESC8 only) remote service/web-configuration
         state on the CA host. Never requests, forges, or relays a
         certificate, and sends no coercion/PoC traffic.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        certificate template/CA enumeration, ESC4 (per-template ACL), the
-        approval-gate/CA-certificate weak-crypto checks, and the NTAuth/AIA/
-        Root store sweep are all read from Snapshot.ADCS - no live AD access
-        is performed for any of them (ESC4 and the NTAuth/AIA/Root sweep
-        gained snapshot support in v1.19.1; a snapshot collected with an
-        older module version won't have the NTAuth/AIA/Root fields, in
-        which case that one sweep is skipped with a note rather than
-        erroring). ESC8 (a live HTTP probe against the CA host itself) has
-        no possible snapshot representation and is always skipped entirely
-        under -Snapshot, consistent with Test-ADCoercionAndRelayExposure.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Starting AD CS extended security audit (ESC4/ESC8/ROCA/weak crypto)..."
     $findings = @()
@@ -329,56 +309,42 @@ function Test-ADCSExtended {
     $adcsInstalled = $false
     $configContext = $null
 
-    if ($Snapshot) {
-        if ($Snapshot.ContainsKey('ADCS') -and $Snapshot.ADCS.Installed) {
-            Write-Verbose "Test-ADCSExtended: using snapshot AD CS inventory."
-            $adcsInstalled = $true
-            $certTemplates = @($Snapshot.ADCS.CertificateTemplates)
-            $certAuthorities = @($Snapshot.ADCS.CertificateAuthorities)
-        }
-        else {
-            Write-Verbose "Test-ADCSExtended: snapshot indicates AD CS is not installed; no findings."
-            return $findings
-        }
-    }
-    else {
+    try {
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
+        $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
+
+        # -SearchScope OneLevel, not the default Subtree: a Subtree
+        # search over "CN=Certificate Templates,..."/"CN=Enrollment
+        # Services,..." returns the CONTAINER OBJECT ITSELF alongside
+        # its real children (pKICertificateTemplate/pKIEnrollmentService
+        # objects, which are never nested further than one level under
+        # these containers). Neither loop below filtered by objectClass,
+        # so that container object was silently iterated as if it were
+        # a real template/CA - its own Name IS literally "Certificate
+        # Templates"/"Enrollment Services", it has no dNSHostName or
+        # cACertificate, and every check against it either produced
+        # confusing noise (e.g. "CA 'Enrollment Services' has no
+        # dNSHostName; skipping ESC8 probe" - about the container, not
+        # any real, misconfigured CA) or was silently skipped. OneLevel
+        # returns only the real child objects, never the base container.
+        $certTemplates = @(Invoke-ADQueryWithRetry -OperationName 'Get certificate templates (ADCS extended audit)' -Query {
+            Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
+        })
+        $adcsInstalled = $true
+
         try {
-            $__adServer = Get-ADSecurityAuditTargetServerValue
-            $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
-            $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
-
-            # -SearchScope OneLevel, not the default Subtree: a Subtree
-            # search over "CN=Certificate Templates,..."/"CN=Enrollment
-            # Services,..." returns the CONTAINER OBJECT ITSELF alongside
-            # its real children (pKICertificateTemplate/pKIEnrollmentService
-            # objects, which are never nested further than one level under
-            # these containers). Neither loop below filtered by objectClass,
-            # so that container object was silently iterated as if it were
-            # a real template/CA - its own Name IS literally "Certificate
-            # Templates"/"Enrollment Services", it has no dNSHostName or
-            # cACertificate, and every check against it either produced
-            # confusing noise (e.g. "CA 'Enrollment Services' has no
-            # dNSHostName; skipping ESC8 probe" - about the container, not
-            # any real, misconfigured CA) or was silently skipped. OneLevel
-            # returns only the real child objects, never the base container.
-            $certTemplates = @(Invoke-ADQueryWithRetry -OperationName 'Get certificate templates (ADCS extended audit)' -Query {
-                Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
+            $certAuthorities = @(Invoke-ADQueryWithRetry -OperationName 'Get enrollment services (ADCS extended audit)' -Query {
+                Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
             })
-            $adcsInstalled = $true
-
-            try {
-                $certAuthorities = @(Invoke-ADQueryWithRetry -OperationName 'Get enrollment services (ADCS extended audit)' -Query {
-                    Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
-                })
-            }
-            catch {
-                Write-Verbose "Test-ADCSExtended: could not enumerate Certificate Authorities: $_"
-            }
         }
         catch {
-            Write-Verbose "Test-ADCSExtended: AD Certificate Services not found or accessible. Skipping AD CS extended audit."
-            return $findings
+            Write-Verbose "Test-ADCSExtended: could not enumerate Certificate Authorities: $_"
         }
+    }
+    catch {
+        Write-Verbose "Test-ADCSExtended: AD Certificate Services not found or accessible. Skipping AD CS extended audit."
+        return $findings
     }
 
     if (-not $certTemplates -or $certTemplates.Count -eq 0) {
@@ -388,37 +354,27 @@ function Test-ADCSExtended {
     # -------------------------------------------------------------------
     # ESC4: dangerous template ACLs
     # -------------------------------------------------------------------
-    # Fixed in v1.19.1: this was documented as "live only - not captured in
-    # snapshot" and skipped entirely under -Snapshot, but Get-ADSnapshot has
-    # collected a flattened per-template Access ACL since v1.19.0 (added for
-    # Test-ADCertificateServices' ESC7 check) - the same data this check
-    # needs was already sitting in the snapshot, just never wired up here.
-    # Offline path below reads $template.Access (already-flattened ACEs,
-    # IdentityReference as a plain string) instead of a live Get-Acl call;
-    # detection logic is otherwise identical to the live path.
     foreach ($template in $certTemplates) {
         $templateName = if ($template.displayName) { $template.displayName } else { $template.Name }
 
-        $templateAces = if ($Snapshot) { @($template.Access) } else {
-            try {
-                # Get-ADObject -Properties nTSecurityDescriptor, not
-                # Get-Acl -Path "AD:..." - the latter has no -Server
-                # parameter and reads via the AD: PSDrive's ambient
-                # default domain/DC, bypassing this module's -Server
-                # override entirely. nTSecurityDescriptor returns the
-                # same ActiveDirectorySecurity object (.Access, etc.) via
-                # a real, -Server-aware Get-AD* cmdlet.
-                @((Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor.Access)
-            }
-            catch {
-                Write-Verbose "Test-ADCSExtended: could not get ACL for template '$templateName': $_"
-                @()
-            }
+        $templateAces = try {
+            # Get-ADObject -Properties nTSecurityDescriptor, not
+            # Get-Acl -Path "AD:..." - the latter has no -Server
+            # parameter and reads via the AD: PSDrive's ambient
+            # default domain/DC, bypassing this module's -Server
+            # override entirely. nTSecurityDescriptor returns the
+            # same ActiveDirectorySecurity object (.Access, etc.) via
+            # a real, -Server-aware Get-AD* cmdlet.
+            @((Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor.Access)
+        }
+        catch {
+            Write-Verbose "Test-ADCSExtended: could not get ACL for template '$templateName': $_"
+            @()
         }
 
         $dangerousAces = @()
         foreach ($ace in $templateAces) {
-            $principal = if ($Snapshot) { $ace.IdentityReference } else { $ace.IdentityReference.Value }
+            $principal = $ace.IdentityReference.Value
             $isLowPriv = $false
             foreach ($lowPriv in $lowPrivilegedPrincipals) {
                 if ($principal -match [regex]::Escape($lowPriv)) { $isLowPriv = $true; break }
@@ -514,84 +470,77 @@ function Test-ADCSExtended {
     # -------------------------------------------------------------------
     # ESC8: CA web enrollment over HTTP without EPA (live only)
     # -------------------------------------------------------------------
-    if ($Snapshot) {
-        Write-Verbose "Test-ADCSExtended: -Snapshot supplied; skipping live ESC8 web-enrollment probe (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'ADCSExtended' -Check 'ESC8: CA web enrollment over HTTP without EPA' `
-            -Reason 'This is a live HTTP probe against the CA host itself, not an AD attribute - there is no snapshot representation possible. Run this check live (without -Snapshot) if you need this coverage.'
-    }
-    else {
-        foreach ($ca in $certAuthorities) {
-            $caName = $ca.Name
-            $caHost = $ca.dNSHostName
-            if (-not $caHost) {
-                Write-Verbose "Test-ADCSExtended: CA '$caName' has no dNSHostName; skipping ESC8 probe."
-                continue
-            }
+    foreach ($ca in $certAuthorities) {
+        $caName = $ca.Name
+        $caHost = $ca.dNSHostName
+        if (-not $caHost) {
+            Write-Verbose "Test-ADCSExtended: CA '$caName' has no dNSHostName; skipping ESC8 probe."
+            continue
+        }
 
-            try {
-                $webEnrollState = Invoke-ADQueryWithRetry -OperationName "Probe CA web enrollment on $caHost" -Query {
-                    Invoke-Command -ComputerName $caHost -ErrorAction Stop -ScriptBlock {
-                        $result = [PSCustomObject]@{
-                            CertSrvVDirPresent = $false
-                            EpaRequired        = $null
-                            Error              = $null
-                        }
-                        try {
-                            Import-Module WebAdministration -ErrorAction Stop
-                            $vdir = Get-WebApplication -Site 'Default Web Site' -Name 'CertSrv' -ErrorAction SilentlyContinue
-                            if ($vdir) {
-                                $result.CertSrvVDirPresent = $true
-                                try {
-                                    $epa = Get-WebConfigurationProperty -PSPath 'IIS:\Sites\Default Web Site\CertSrv' `
-                                        -Filter 'system.webServer/security/authentication/windowsAuthentication' `
-                                        -Name 'extendedProtection.tokenChecking' -ErrorAction Stop
-                                    $result.EpaRequired = ($epa.Value -eq 'Require')
-                                }
-                                catch {
-                                    $result.EpaRequired = $null
-                                }
+        try {
+            $webEnrollState = Invoke-ADQueryWithRetry -OperationName "Probe CA web enrollment on $caHost" -Query {
+                Invoke-Command -ComputerName $caHost -ErrorAction Stop -ScriptBlock {
+                    $result = [PSCustomObject]@{
+                        CertSrvVDirPresent = $false
+                        EpaRequired        = $null
+                        Error              = $null
+                    }
+                    try {
+                        Import-Module WebAdministration -ErrorAction Stop
+                        $vdir = Get-WebApplication -Site 'Default Web Site' -Name 'CertSrv' -ErrorAction SilentlyContinue
+                        if ($vdir) {
+                            $result.CertSrvVDirPresent = $true
+                            try {
+                                $epa = Get-WebConfigurationProperty -PSPath 'IIS:\Sites\Default Web Site\CertSrv' `
+                                    -Filter 'system.webServer/security/authentication/windowsAuthentication' `
+                                    -Name 'extendedProtection.tokenChecking' -ErrorAction Stop
+                                $result.EpaRequired = ($epa.Value -eq 'Require')
+                            }
+                            catch {
+                                $result.EpaRequired = $null
                             }
                         }
-                        catch {
-                            $result.Error = "$_"
-                        }
-                        return $result
                     }
+                    catch {
+                        $result.Error = "$_"
+                    }
+                    return $result
                 }
             }
-            catch {
-                Write-Verbose "Test-ADCSExtended: could not probe CA host '$caHost' for web enrollment state: $_"
-                $webEnrollState = $null
-            }
+        }
+        catch {
+            Write-Verbose "Test-ADCSExtended: could not probe CA host '$caHost' for web enrollment state: $_"
+            $webEnrollState = $null
+        }
 
-            if ($webEnrollState -and $webEnrollState.CertSrvVDirPresent) {
-                $epaMissing = ($webEnrollState.EpaRequired -ne $true)
-                if ($epaMissing) {
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'Certificate Services'
-                    $finding.Issue = 'CA Web Enrollment over HTTP (ESC8)'
-                    $finding.Severity = 'Critical'
-                    $finding.SeverityLevel = 4
-                    $finding.AffectedObject = $caName
-                    $finding.Description = "Certificate Authority '$caName' ($caHost) has the CertSrv web enrollment endpoint installed without Extended Protection for Authentication (EPA) enforced."
-                    $finding.Impact = "An attacker who coerces a privileged host (e.g. a Domain Controller) to authenticate to them can relay that NTLM authentication to the CA's HTTP enrollment endpoint and obtain a certificate as that host/account, leading to domain compromise."
-                    $finding.Remediation = "Disable HTTP(S) web enrollment if unused, or require Extended Protection for Authentication ('Require') on the CertSrv virtual directory and enforce HTTPS with channel binding."
-                    $finding.EstimatedEffort = 'Medium - requires enabling HTTPS web enrollment (certificate + IIS binding) and usually coordination with whoever manages the CA''s IIS instance; confirm no client submits enrollment requests over plain HTTP first.'
-                    $finding.KnownRisks = 'Enforcing HTTPS-only web enrollment can break legacy clients or scripts that submit requests over plain HTTP until they''re updated to the HTTPS endpoint.'
-                    $finding.BackupRollback = 'Moderate - revert the IIS binding/auth settings and re-enable the HTTP endpoint if needed; requires an IIS restart but no data loss.'
-                    $finding.OperationalNotes = 'HTTPS alone doesn''t fully close ESC8''s NTLM relay risk without Extended Protection for Authentication (EPA) also enabled - consider enabling EPA on the enrollment endpoint at the same time.'
-                    $finding.Details = @{
-                        DistinguishedName = $ca.DistinguishedName
-                        CAHost            = $caHost
-                        EpaRequired       = $webEnrollState.EpaRequired
-                        ESCType           = 'ESC8'
-                    }
-                    $findings += $finding
+        if ($webEnrollState -and $webEnrollState.CertSrvVDirPresent) {
+            $epaMissing = ($webEnrollState.EpaRequired -ne $true)
+            if ($epaMissing) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Certificate Services'
+                $finding.Issue = 'CA Web Enrollment over HTTP (ESC8)'
+                $finding.Severity = 'Critical'
+                $finding.SeverityLevel = 4
+                $finding.AffectedObject = $caName
+                $finding.Description = "Certificate Authority '$caName' ($caHost) has the CertSrv web enrollment endpoint installed without Extended Protection for Authentication (EPA) enforced."
+                $finding.Impact = "An attacker who coerces a privileged host (e.g. a Domain Controller) to authenticate to them can relay that NTLM authentication to the CA's HTTP enrollment endpoint and obtain a certificate as that host/account, leading to domain compromise."
+                $finding.Remediation = "Disable HTTP(S) web enrollment if unused, or require Extended Protection for Authentication ('Require') on the CertSrv virtual directory and enforce HTTPS with channel binding."
+                $finding.EstimatedEffort = 'Medium - requires enabling HTTPS web enrollment (certificate + IIS binding) and usually coordination with whoever manages the CA''s IIS instance; confirm no client submits enrollment requests over plain HTTP first.'
+                $finding.KnownRisks = 'Enforcing HTTPS-only web enrollment can break legacy clients or scripts that submit requests over plain HTTP until they''re updated to the HTTPS endpoint.'
+                $finding.BackupRollback = 'Moderate - revert the IIS binding/auth settings and re-enable the HTTP endpoint if needed; requires an IIS restart but no data loss.'
+                $finding.OperationalNotes = 'HTTPS alone doesn''t fully close ESC8''s NTLM relay risk without Extended Protection for Authentication (EPA) also enabled - consider enabling EPA on the enrollment endpoint at the same time.'
+                $finding.Details = @{
+                    DistinguishedName = $ca.DistinguishedName
+                    CAHost            = $caHost
+                    EpaRequired       = $webEnrollState.EpaRequired
+                    ESCType           = 'ESC8'
                 }
+                $findings += $finding
             }
-            elseif ($webEnrollState -and $webEnrollState.Error) {
-                Write-Verbose "Test-ADCSExtended: web enrollment probe on '$caHost' reported: $($webEnrollState.Error)"
-            }
+        }
+        elseif ($webEnrollState -and $webEnrollState.Error) {
+            Write-Verbose "Test-ADCSExtended: web enrollment probe on '$caHost' reported: $($webEnrollState.Error)"
         }
     }
 
@@ -612,52 +561,24 @@ function Test-ADCSExtended {
     # -------------------------------------------------------------------
     # NTAuth / AIA / Root store sweep
     # -------------------------------------------------------------------
-    # Fixed in v1.19.1: this was documented as "live only - not captured in
-    # snapshot" and skipped entirely under -Snapshot, but Get-ADSnapshot now
-    # collects these same cACertificate blobs (same data shape/risk profile
-    # as the CA objects' cACertificate, already in the snapshot since
-    # v1.19.0) - so this can run fully offline too.
-    if ($Snapshot) {
-        if ($Snapshot.ADCS.ContainsKey('NTAuthCertificates')) {
-            foreach ($blob in @($Snapshot.ADCS.NTAuthCertificates)) {
-                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "NTAuth`:$($blob.Source)"
-                if ($result) { [void]$weakCertResults.Add($result) }
-            }
-            foreach ($blob in @($Snapshot.ADCS.AIACertificates)) {
-                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "AIA`:$($blob.Source)"
-                if ($result) { [void]$weakCertResults.Add($result) }
-            }
-            foreach ($blob in @($Snapshot.ADCS.RootCACertificates)) {
-                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "Root`:$($blob.Source)"
-                if ($result) { [void]$weakCertResults.Add($result) }
-            }
+    try {
+        $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
+        $storeTargets = @{
+            'NTAuth' = "CN=NTAuthCertificates,$pkiContainer"
+            'AIA'    = "CN=AIA,$pkiContainer"
+            'Root'   = "CN=Certification Authorities,$pkiContainer"
         }
-        else {
-            Write-Verbose "Test-ADCSExtended: snapshot predates v1.19.1's NTAuth/AIA/Root collection; skipping that sweep for this older snapshot."
-            Add-ADOfflineSkipNote -Test 'ADCSExtended' -Check 'NTAuth/AIA/Root store weak-signature sweep' `
-                -Reason 'This snapshot was collected with a version older than v1.19.1 and does not contain NTAuth/AIA/Root certificate data. Re-collect the snapshot with the current module version for this coverage.'
+
+        foreach ($storeName in $storeTargets.Keys) {
+            $blobs = Get-ADCSCertificateBlob -ContainerDN $storeTargets[$storeName] -Server $__adServer
+            foreach ($blob in $blobs) {
+                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "$storeName`:$($blob.Source)"
+                if ($result) { [void]$weakCertResults.Add($result) }
+            }
         }
     }
-    else {
-        try {
-            $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
-            $storeTargets = @{
-                'NTAuth' = "CN=NTAuthCertificates,$pkiContainer"
-                'AIA'    = "CN=AIA,$pkiContainer"
-                'Root'   = "CN=Certification Authorities,$pkiContainer"
-            }
-
-            foreach ($storeName in $storeTargets.Keys) {
-                $blobs = Get-ADCSCertificateBlob -ContainerDN $storeTargets[$storeName] -Server $__adServer
-                foreach ($blob in $blobs) {
-                    $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "$storeName`:$($blob.Source)"
-                    if ($result) { [void]$weakCertResults.Add($result) }
-                }
-            }
-        }
-        catch {
-            Write-Verbose "Test-ADCSExtended: could not sweep NTAuth/AIA/Root store: $_"
-        }
+    catch {
+        Write-Verbose "Test-ADCSExtended: could not sweep NTAuth/AIA/Root store: $_"
     }
 
     foreach ($weak in $weakCertResults) {
@@ -752,20 +673,11 @@ function Test-ADCSChaseFallback {
 
         Detection only: reads one registry value per discovered CA. No
         certificate requests, no PoC/exploitation traffic, no coercion.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). This check has
-        no snapshot representation - policy\EditFlags is a registry value
-        on the CA host itself, not an AD attribute - so it is always
-        skipped under -Snapshot, consistent with this module's other
-        live-only CA-host probe (ESC8 in Test-ADCSExtended).
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Starting AD CS chase-fallback exposure audit (CVE-2026-54121 / Certighost)..."
     $findings = @()
@@ -778,22 +690,6 @@ function Test-ADCSChaseFallback {
 
     $certAuthorities = @()
     $adcsInstalled = $false
-
-    if ($Snapshot) {
-        if ($Snapshot.ContainsKey('ADCS') -and $Snapshot.ADCS.Installed) {
-            $adcsInstalled = $true
-            $certAuthorities = @($Snapshot.ADCS.CertificateAuthorities)
-        }
-        else {
-            Write-Verbose "Test-ADCSChaseFallback: snapshot indicates AD CS is not installed; no findings."
-            return $findings
-        }
-
-        Write-Verbose "Test-ADCSChaseFallback: -Snapshot supplied; skipping live registry probe (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'ADCSChaseFallback' -Check 'EDITF_ENABLECHASECLIENTDC / Certighost (CVE-2026-54121) exposure' `
-            -Reason 'This is a live registry probe against the CA host itself (policy\EditFlags), not an AD attribute - there is no snapshot representation possible. Run this check live (without -Snapshot) if you need this coverage.'
-        return $findings
-    }
 
     try {
         $__adServer = Get-ADSecurityAuditTargetServerValue

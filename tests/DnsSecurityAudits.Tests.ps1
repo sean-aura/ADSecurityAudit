@@ -6,9 +6,8 @@
 
     This check (like the zone-transfer/dynamic-update/ADIDNS checks it sits
     alongside) is live-only: it reads zone-level attributes/ACLs/delegation
-    records that have no representation in the current snapshot schema. These
-    tests call Test-ADDnsSecurity with NO -Snapshot argument and shadow every
-    live AD/DNS cmdlet the function touches: Get-ADGroup, Get-ADDomain,
+    records. These tests shadow every live AD/DNS cmdlet the function
+    touches: Get-ADGroup, Get-ADDomain,
     Get-ADForest, Get-ADObject, Get-Module, Get-ADDomainController,
     Import-Module, Get-DnsServerZone, Get-DnsServerZoneDelegation,
     Get-ADReplicationSubnet, and Resolve-DnsName. No real Active Directory,
@@ -195,17 +194,5 @@ Describe 'Test-ADDnsSecurity (Stale/Dangling DNS Zone Delegation)' {
         $Script:__resolvedNames | Should -Contain '_msdcs.contoso.com'
         $Script:__resolvedNames | Should -Not -Contain '_msdcs.contoso.com..contoso.com'
         ($findings | Where-Object { $_.Issue -eq 'Stale/Dangling DNS Zone Delegation' }) | Should -BeNullOrEmpty
-    }
-}
-
-Describe 'Test-ADDnsSecurity (delegation staleness offline-mode contract)' {
-    It 'is skipped (no finding, offline note recorded) when -Snapshot is supplied' {
-        Reset-ADOfflineSkipNotes
-        $snapshot = @{ Groups = @() }
-        $findings = Test-ADDnsSecurity -Snapshot $snapshot
-        ($findings | Where-Object { $_.Issue -eq 'Stale/Dangling DNS Zone Delegation' }) | Should -BeNullOrEmpty
-
-        $notes = Get-ADOfflineSkipNotes
-        ($notes | Where-Object { $_.Check -match 'delegation-staleness' }) | Should -Not -BeNullOrEmpty
     }
 }

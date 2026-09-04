@@ -135,44 +135,15 @@ function Test-ADGpoDeployedSecrets {
              finding, consistent with this module's convention that a broad
              principal (Everyone/Authenticated Users/Domain Users/ANONYMOUS
              LOGON) on any sensitive path is always Critical.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). Every check in
-        this function is a SYSVOL/registry.pol read against a live file
-        share, with no possible snapshot representation - so when -Snapshot
-        is supplied, this entire test is SKIPPED (with a Write-Warning),
-        performing zero live AD/network access, consistent with the other
-        entirely-live-only tests in this module (e.g. Test-ADLegacyAuthSurface,
-        Test-ADKnownDCVulnerabilities). Fixed in v1.19.1: prior to this it
-        still performed live SYSVOL reads even with -Snapshot supplied
-        (only the GPO *list* itself came from the snapshot) - unacceptable
-        for a genuinely offline analysis where no DC/file-share path may
-        even exist. Run this test live (without -Snapshot) for this coverage.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Starting GPO-Deployed Secrets & Insecure Settings audit..."
     $findings = @()
     $__adServer = Get-ADSecurityAuditTargetServerValue
-
-    # Fixed in v1.19.1: this used to still perform live SYSVOL file-share
-    # reads even when -Snapshot was supplied (only the GPO *list* came from
-    # the snapshot). For a genuinely offline analysis - e.g. re-analysing a
-    # JSON snapshot on a machine with no network path to any DC at all -
-    # that is not acceptable: this function's entire purpose is reading
-    # SYSVOL file content, which has no snapshot representation, so under
-    # -Snapshot it now skips entirely rather than attempt any connection.
-    if ($Snapshot) {
-        Write-Warning "Test-ADGpoDeployedSecrets: -Snapshot supplied; skipping entirely (this test's entire purpose is reading SYSVOL file content - GPP cpassword, deployed scripts, GptTmpl.inf - which has no AD-schema/snapshot equivalent; offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'GpoDeployedSecrets' -Check 'Entire test: SYSVOL policy file content (GPP cpassword, deployed scripts, GptTmpl.inf)' `
-            -Reason 'This check scans file content, not AD attributes - there is no snapshot representation possible. Run this check live (without -Snapshot) if you need this coverage.'
-        return $findings
-    }
 
     # -------------------------------------------------------------------
     # Resolve the list of GPOs (id + display name) to enumerate.

@@ -107,30 +107,11 @@ function Test-ADRodcSecurity {
         krbtgt_* account inventory. Never modifies a PRP list, forges a
         Kerberos ticket, or sends any exploitation/coercion/PoC traffic to
         any host.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        the RODC list is taken from Snapshot.DomainControllers (filtered to
-        IsReadOnly). Every finding this test can produce depends on the
-        per-RODC msDS-RevealedUsers/msDS-RevealOnDemandGroup/
-        msDS-NeverRevealGroup/msDS-KrbTgtLink attributes, which are not
-        part of the current snapshot schema - so as of v1.19.1, this
-        entire test is SKIPPED (with a Write-Warning) under -Snapshot,
-        performing zero live AD/network access. Prior to v1.19.1 it still
-        performed one live Get-ADObject call per RODC even with -Snapshot
-        supplied, which is not acceptable for a genuinely offline analysis;
-        partially skipping just that read (keeping the krbtgt_* orphan
-        check running from Snapshot.Users) was also considered and
-        rejected, since it would misreport every krbtgt_* account as
-        orphaned rather than just being a coverage gap. Run this test live
-        (without -Snapshot) if you need this coverage.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
     param(
-        [Parameter()]
-        [hashtable]$Snapshot,
-
         # Defense-in-depth for multi-domain forests: when this function is
         # called standalone (not via Start-ADSecurityAudit -Server, which
         # already installs a session-wide override before this ever runs),
@@ -166,33 +147,22 @@ function Test-ADRodcSecurity {
     $findings = @()
 
     # -------------------------------------------------------------------
-    # Resolve the RODC list - from the snapshot's DC inventory when
-    # supplied, otherwise a live, read-only DC enumeration.
+    # Resolve the RODC list via a live, read-only DC enumeration.
     # -------------------------------------------------------------------
     $rodcs = @()
 
-    if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers')) {
-        Write-Verbose "Test-ADRodcSecurity: using RODC list from snapshot DomainControllers."
-        $rodcs = @($Snapshot.DomainControllers | Where-Object { $_.IsReadOnly -eq $true -or "$($_.IsReadOnly)" -eq 'True' })
+    try {
+        # Get-ADSecurityAuditDomainController, not a bare
+        # Get-ADDomainController -Filter - the latter is forest-wide
+        # regardless of -Server; see Common.ps1 for why. -Filter is
+        # still passed through so this only enumerates RODCs.
+        $rodcs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController RODCs' -Query {
+            Get-ADSecurityAuditDomainController -Filter { IsReadOnly -eq $true } -Server $__adServer
+        })
     }
-    elseif ($Snapshot) {
-        Write-Verbose "Test-ADRodcSecurity: snapshot has no 'DomainControllers' key; no RODCs to evaluate."
+    catch {
+        Write-Error "Test-ADRodcSecurity: failed to enumerate RODCs: $_"
         return $findings
-    }
-    else {
-        try {
-            # Get-ADSecurityAuditDomainController, not a bare
-            # Get-ADDomainController -Filter - the latter is forest-wide
-            # regardless of -Server; see Common.ps1 for why. -Filter is
-            # still passed through so this only enumerates RODCs.
-            $rodcs = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController RODCs' -Query {
-                Get-ADSecurityAuditDomainController -Filter { IsReadOnly -eq $true } -Server $__adServer
-            })
-        }
-        catch {
-            Write-Error "Test-ADRodcSecurity: failed to enumerate RODCs: $_"
-            return $findings
-        }
     }
 
     if (-not $rodcs -or $rodcs.Count -eq 0) {
@@ -202,31 +172,11 @@ function Test-ADRodcSecurity {
 
     Write-Verbose "Test-ADRodcSecurity: found $($rodcs.Count) RODC(s)."
 
-    # Fixed in v1.19.1: every finding this test can produce (revealed
-    # Tier-0 accounts, PRP misconfiguration, orphaned krbtgt_* accounts)
-    # depends on the per-RODC msDS-RevealedUsers/RevealOnDemandGroup/
-    # NeverRevealGroup/KrbTgtLink attributes, which are not part of the
-    # current snapshot schema. This used to still perform a live
-    # Get-ADObject call per RODC even under -Snapshot, which is not
-    # acceptable for a genuinely offline analysis (e.g. re-analysing a
-    # JSON snapshot with no network path to any DC at all). Rather than
-    # partially skip just the attribute read (which would leave
-    # $linkedKrbtgtDNs empty and misreport every krbtgt_* account as
-    # "orphaned" - a false positive, not just a coverage gap), this test
-    # now skips entirely under -Snapshot: zero live AD/network access,
-    # zero findings, with a clear note instead of a wrong answer.
-    if ($Snapshot) {
-        Write-Warning "Test-ADRodcSecurity: -Snapshot supplied; skipping entirely ($($rodcs.Count) RODC(s) found, but the per-RODC msDS-RevealedUsers/RevealOnDemandGroup/NeverRevealGroup/KrbTgtLink attributes this test depends on have no AD-schema/snapshot equivalent; offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'RodcSecurity' -Check 'Entire test: per-RODC msDS-RevealedUsers/RevealOnDemandGroup/NeverRevealGroup/KrbTgtLink attributes' `
-            -Reason 'Not part of the current snapshot schema, and partially skipping would misreport every krbtgt_* account as orphaned. Run this test live (without -Snapshot) if you need this coverage.'
-        return $findings
-    }
-
     # Tier-0/privileged principal set, for cross-referencing revealed/
-    # allowed principals. Works with or without -Snapshot.
+    # allowed principals.
     $tier0 = @()
     try {
-        $tier0 = @(Get-ADTier0Principal -Snapshot $Snapshot)
+        $tier0 = @(Get-ADTier0Principal)
     }
     catch {
         Write-Verbose "Test-ADRodcSecurity: Get-ADTier0Principal unavailable: $_"
@@ -240,9 +190,7 @@ function Test-ADRodcSecurity {
     }
 
     # -------------------------------------------------------------------
-    # Per-RODC live attribute reads (not part of the current snapshot
-    # schema; this whole function already returned above when -Snapshot
-    # was supplied, so this path is live-mode only).
+    # Per-RODC live attribute reads.
     # -------------------------------------------------------------------
     $rodcDetails = [System.Collections.ArrayList]::new()
     $linkedKrbtgtDNs = New-Object System.Collections.Generic.HashSet[string]
@@ -392,17 +340,11 @@ function Test-ADRodcSecurity {
     # -------------------------------------------------------------------
     $krbtgtUsers = @()
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
-            Write-Verbose "Test-ADRodcSecurity: sourcing krbtgt_* accounts from snapshot Users."
-            $krbtgtUsers = @($Snapshot.Users | Where-Object { $_.SamAccountName -like 'krbtgt_*' })
-        }
-        else {
-            $krbtgtUsers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser krbtgt_* accounts' -Query {
-                $params = @{ Filter = "SamAccountName -like 'krbtgt_*'"; Properties = @('DistinguishedName', 'SamAccountName'); ErrorAction = 'Stop' }
-                if ($__adServer) { $params['Server'] = $__adServer }
-                Get-ADUser @params
-            })
-        }
+        $krbtgtUsers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser krbtgt_* accounts' -Query {
+            $params = @{ Filter = "SamAccountName -like 'krbtgt_*'"; Properties = @('DistinguishedName', 'SamAccountName'); ErrorAction = 'Stop' }
+            if ($__adServer) { $params['Server'] = $__adServer }
+            Get-ADUser @params
+        })
     }
     catch {
         Write-Verbose "Test-ADRodcSecurity: could not enumerate krbtgt_* accounts: $_"

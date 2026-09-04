@@ -10,13 +10,7 @@
 # LDAPServerIntegrity / LdapEnforceChannelBinding registry values on each
 # Domain Controller. It never sends a coercion trigger (e.g. RPC calls to
 # the Print System Remote Protocol or WebDAV), never relays a credential,
-# and never performs any exploitation or PoC traffic. Per the -FromSnapshot
-# contract, these are live per-DC service/registry reads, so - consistent
-# with the anonymous-bind probe in src/DomainHardeningAudits.ps1 - they are
-# skipped entirely when this function is invoked with -Snapshot, since
-# offline re-analysis must perform no live AD/network access. The DC
-# inventory itself is still taken from the snapshot when one is supplied,
-# purely for enumeration/reporting purposes.
+# and never performs any exploitation or PoC traffic.
 
 function Test-ADCoercionAndRelayExposure {
     <#
@@ -39,21 +33,11 @@ function Test-ADCoercionAndRelayExposure {
         Detection only - reads service and registry state via remote
         registry / `Invoke-Command`. No coercion request (Spooler
         RPC/WebDAV) is ever sent, and no relay or exploitation is performed.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        the DC list is read from `Snapshot.DomainControllers` instead of a
-        live `Get-ADSecurityAuditDomainController` call, but the live
-        per-DC service/registry probes are still skipped entirely (offline
-        mode performs no live AD/network access), consistent with the
-        anonymous-bind probe in Test-ADDomainHardeningFlags.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Starting Coercion & NTLM Relay Exposure audit..."
     $findings = @()
@@ -63,37 +47,20 @@ function Test-ADCoercionAndRelayExposure {
     # -------------------------------------------------------------------
     $domainControllers = @()
 
-    if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers')) {
-        Write-Verbose "Test-ADCoercionAndRelayExposure: using snapshot DC inventory."
-        $domainControllers = @($Snapshot.DomainControllers)
+    try {
+        # Get-ADSecurityAuditDomainController, not a bare
+        # Get-ADDomainController -Filter * - the latter is forest-wide
+        # regardless of -Server; see Common.ps1 for why.
+        $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (coercion/relay audit)' -Query {
+            Get-ADSecurityAuditDomainController -Server (Get-ADSecurityAuditTargetServerValue)
+        })
     }
-    elseif (-not $Snapshot) {
-        try {
-            # Get-ADSecurityAuditDomainController, not a bare
-            # Get-ADDomainController -Filter * - the latter is forest-wide
-            # regardless of -Server; see Common.ps1 for why.
-            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (coercion/relay audit)' -Query {
-                Get-ADSecurityAuditDomainController -Server (Get-ADSecurityAuditTargetServerValue)
-            })
-        }
-        catch {
-            Write-Warning "Test-ADCoercionAndRelayExposure: failed to enumerate Domain Controllers: $_"
-        }
+    catch {
+        Write-Warning "Test-ADCoercionAndRelayExposure: failed to enumerate Domain Controllers: $_"
     }
 
     if (-not $domainControllers -or $domainControllers.Count -eq 0) {
         Write-Verbose "Test-ADCoercionAndRelayExposure: no Domain Controllers to evaluate; no findings."
-        return $findings
-    }
-
-    # Live per-DC service/registry probes cannot be represented by a
-    # point-in-time snapshot and are a live network operation, so - per the
-    # -FromSnapshot contract of performing NO live AD/network access - they
-    # are only attempted when this function is called WITHOUT -Snapshot.
-    if ($Snapshot) {
-        Write-Verbose "Test-ADCoercionAndRelayExposure: -Snapshot supplied; skipping live per-DC service/registry probes (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'CoercionAndRelayExposure' -Check 'Per-DC Spooler/WebClient service state and LDAP-signing registry probes' `
-            -Reason 'Real-time per-DC service/registry state with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
         return $findings
     }
 

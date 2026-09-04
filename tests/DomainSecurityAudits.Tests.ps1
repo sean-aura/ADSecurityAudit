@@ -5,12 +5,10 @@
       - "Outdated Forest Functional Level"
       - "Short Tombstone Lifetime"
 
-    Snapshot-mode tests exercise Snapshot.Forest.ForestMode and
-    Snapshot.TombstoneLifetimeDays directly. Live-mode tests shadow every
-    live AD cmdlet the function touches: Get-ADDomain,
-    Get-ADDefaultDomainPasswordPolicy, Get-ADForest, Get-ADRootDSE,
-    Get-ADObject, Get-ADOptionalFeature, Get-ADComputer. No real Active
-    Directory access is used.
+    These tests shadow every live AD cmdlet the function touches:
+    Get-ADDomain, Get-ADDefaultDomainPasswordPolicy, Get-ADForest,
+    Get-ADRootDSE, Get-ADObject, Get-ADOptionalFeature, Get-ADComputer. No
+    real Active Directory access is used.
 
     Run from the repo root:  Invoke-Pester ./tests/DomainSecurityAudits.Tests.ps1
 #>
@@ -22,68 +20,7 @@ BeforeAll {
     . (Join-Path $root 'src/DomainSecurityAudits.ps1')
 }
 
-Describe 'Test-ADDomainSecurity (Outdated Forest Functional Level / Short Tombstone Lifetime) - Snapshot mode' {
-    function New-BaseSnapshot {
-        @{
-            PasswordPolicy      = @{ MinPasswordLength = 14; ComplexityEnabled = $true; ReversibleEncryptionEnabled = $false }
-            Domain              = [PSCustomObject]@{ DomainMode = 'Windows2016Domain' }
-            Forest              = @{ ForestMode = 'Windows2016Forest' }
-            RecycleBinEnabled   = $true
-            TombstoneLifetimeDays = 180
-        }
-    }
-
-    It 'produces no forest-functional-level finding for a current forest mode' {
-        $snapshot = New-BaseSnapshot
-        $findings = Test-ADDomainSecurity -Snapshot $snapshot
-        ($findings | Where-Object { $_.Issue -eq 'Outdated Forest Functional Level' }) | Should -BeNullOrEmpty
-    }
-
-    It 'fires Medium when the forest functional level is deprecated, independent of a current domain level' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.Forest.ForestMode = 'Windows2008R2Forest'
-        $findings = Test-ADDomainSecurity -Snapshot $snapshot
-        $finding = $findings | Where-Object { $_.Issue -eq 'Outdated Forest Functional Level' }
-
-        $finding | Should -Not -BeNullOrEmpty
-        $finding.Category | Should -Be 'Domain Security'
-        $finding.Severity | Should -Be 'Medium'
-        $finding.SeverityLevel | Should -Be 2
-        $finding.Details.CurrentLevel | Should -Be 'Windows2008R2Forest'
-        # Domain-level finding must NOT also fire - domain mode is current in this fixture
-        ($findings | Where-Object { $_.Issue -eq 'Outdated Domain Functional Level' }) | Should -BeNullOrEmpty
-    }
-
-    It 'produces no tombstone-lifetime finding at exactly the 180-day recommended minimum' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.TombstoneLifetimeDays = 180
-        $findings = Test-ADDomainSecurity -Snapshot $snapshot
-        ($findings | Where-Object { $_.Issue -eq 'Short Tombstone Lifetime' }) | Should -BeNullOrEmpty
-    }
-
-    It 'fires Low when tombstone lifetime is the legacy 60-day default' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.TombstoneLifetimeDays = 60
-        $findings = Test-ADDomainSecurity -Snapshot $snapshot
-        $finding = $findings | Where-Object { $_.Issue -eq 'Short Tombstone Lifetime' }
-
-        $finding | Should -Not -BeNullOrEmpty
-        $finding.Severity | Should -Be 'Low'
-        $finding.SeverityLevel | Should -Be 1
-        $finding.Details.CurrentValueDays | Should -Be 60
-        $finding.Details.RecommendedMinimumDays | Should -Be 180
-    }
-
-    It 'skips the tombstone-lifetime check without throwing when the snapshot predates this field' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.Remove('TombstoneLifetimeDays')
-        { Test-ADDomainSecurity -Snapshot $snapshot } | Should -Not -Throw
-        $findings = Test-ADDomainSecurity -Snapshot $snapshot
-        ($findings | Where-Object { $_.Issue -eq 'Short Tombstone Lifetime' }) | Should -BeNullOrEmpty
-    }
-}
-
-Describe 'Test-ADDomainSecurity (Outdated Forest Functional Level / Short Tombstone Lifetime) - Live mode' {
+Describe 'Test-ADDomainSecurity (Outdated Forest Functional Level / Short Tombstone Lifetime)' {
     BeforeEach {
         function Get-ADDomain {
             param([switch]$ErrorAction, $Server)

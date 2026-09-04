@@ -15,12 +15,11 @@
          positive).
 
     Both are now driven by a separately-collected, always-unscoped DC
-    inventory (Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope
-    live; Snapshot.TotalDomainControllerCount / .AllDomainControllerComputerObjectDNs
-    offline), independent of whatever -Server scoping narrowed the
+    inventory (Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope),
+    independent of whatever -Server scoping narrowed the
     per-DC-probe list used elsewhere in the same function.
 
-    Live-mode tests shadow every live AD cmdlet touched: Get-ADUser,
+    These tests shadow every live AD cmdlet touched: Get-ADUser,
     Get-ADComputer, Get-ADDomain, Get-ADDomainController,
     Get-ADReplicationSubnet. No real Active Directory access is used.
 
@@ -34,98 +33,7 @@ BeforeAll {
     . (Join-Path $root 'src/StaleObjectDepthAudits.ps1')
 }
 
-Describe 'Test-ADStaleObjectDepth (true DC count / primaryGroupID legitimacy) - Snapshot mode' {
-    function New-DcObject {
-        param($Name, $ComputerObjectDN)
-        [PSCustomObject]@{ Name = $Name; HostName = "$Name.contoso.com"; ComputerObjectDN = $ComputerObjectDN; IPv4Address = '10.0.0.1'; IsReadOnly = $false; IsGlobalCatalog = $true; Enabled = $true; Site = 'Default-First-Site-Name'; OperatingSystem = 'Windows Server 2022' }
-    }
-
-    function New-BaseSnapshot {
-        @{
-            Users     = @()
-            Computers = @(
-                [PSCustomObject]@{ SamAccountName = 'DC01$'; DistinguishedName = 'CN=DC01,OU=Domain Controllers,DC=contoso,DC=com'; Enabled = $true; userAccountControl = 532480; PrimaryGroupID = 516; ServicePrincipalNames = @() }
-                [PSCustomObject]@{ SamAccountName = 'DC02$'; DistinguishedName = 'CN=DC02,OU=Domain Controllers,DC=contoso,DC=com'; Enabled = $true; userAccountControl = 532480; PrimaryGroupID = 516; ServicePrincipalNames = @() }
-            )
-            # DomainControllers is deliberately narrowed to ONE DC here,
-            # simulating a snapshot collected with -Server pointed at a
-            # single specific DC (DC01 only) - DC02 is a real DC that
-            # simply wasn't included in this -Server-scoped list.
-            DomainControllers = @(New-DcObject -Name 'DC01' -ComputerObjectDN 'CN=DC01,OU=Domain Controllers,DC=contoso,DC=com')
-        }
-    }
-
-    It 'still reports the OLD (narrower, possibly wrong) count/legitimacy behavior for a snapshot collected before this fix (no true-count fields present)' {
-        $snapshot = New-BaseSnapshot
-        $findings = Test-ADStaleObjectDepth -Snapshot $snapshot
-
-        # Pre-fix-snapshot fallback: DC02 is NOT in the narrowed
-        # DomainControllers list, so it gets misclassified - this is the
-        # documented, unavoidable accuracy caveat for snapshots that
-        # predate the fix, not a live bug. Asserting it here pins down
-        # that the fallback behaves exactly as documented.
-        $dcCountFinding = $findings | Where-Object { $_.Issue -eq 'Insufficient Domain Controller Count' }
-        $dcCountFinding | Should -Not -BeNullOrEmpty
-        $dcCountFinding.Details.DomainControllerCount | Should -Be 1
-
-        $falsePositive = $findings | Where-Object { $_.Issue -eq 'Non-Default primaryGroupID (Membership Hiding)' -and $_.AffectedObject -eq 'DC02$' }
-        $falsePositive | Should -Not -BeNullOrEmpty
-    }
-
-    It 'reports the TRUE domain-wide DC count when the snapshot includes the unscoped fields, even though DomainControllers itself is narrowed to one DC' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.TotalDomainControllerCount = 2
-        $snapshot.AllDomainControllerComputerObjectDNs = @(
-            'CN=DC01,OU=Domain Controllers,DC=contoso,DC=com'
-            'CN=DC02,OU=Domain Controllers,DC=contoso,DC=com'
-        )
-
-        $findings = Test-ADStaleObjectDepth -Snapshot $snapshot
-
-        ($findings | Where-Object { $_.Issue -eq 'Insufficient Domain Controller Count' }) | Should -BeNullOrEmpty
-    }
-
-    It 'does NOT misclassify DC02 as a non-DC with a suspicious primaryGroupID when the unscoped DN list includes it' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.TotalDomainControllerCount = 2
-        $snapshot.AllDomainControllerComputerObjectDNs = @(
-            'CN=DC01,OU=Domain Controllers,DC=contoso,DC=com'
-            'CN=DC02,OU=Domain Controllers,DC=contoso,DC=com'
-        )
-
-        $findings = Test-ADStaleObjectDepth -Snapshot $snapshot
-
-        ($findings | Where-Object { $_.Issue -eq 'Non-Default primaryGroupID (Membership Hiding)' }) | Should -BeNullOrEmpty
-    }
-
-    It 'still flags a genuinely non-DC computer object holding primaryGroupID 516' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.TotalDomainControllerCount = 2
-        $snapshot.AllDomainControllerComputerObjectDNs = @(
-            'CN=DC01,OU=Domain Controllers,DC=contoso,DC=com'
-            'CN=DC02,OU=Domain Controllers,DC=contoso,DC=com'
-        )
-        $snapshot.Computers += [PSCustomObject]@{ SamAccountName = 'rogue-host$'; DistinguishedName = 'CN=rogue-host,CN=Computers,DC=contoso,DC=com'; Enabled = $true; userAccountControl = 4096; PrimaryGroupID = 516; ServicePrincipalNames = @() }
-
-        $findings = Test-ADStaleObjectDepth -Snapshot $snapshot
-        $finding = $findings | Where-Object { $_.Issue -eq 'Non-Default primaryGroupID (Membership Hiding)' -and $_.AffectedObject -eq 'rogue-host$' }
-        $finding | Should -Not -BeNullOrEmpty
-    }
-
-    It 'fires Insufficient Domain Controller Count with the true count even when it is still below 2' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.TotalDomainControllerCount = 1
-        $snapshot.AllDomainControllerComputerObjectDNs = @('CN=DC01,OU=Domain Controllers,DC=contoso,DC=com')
-        $snapshot.Computers = @($snapshot.Computers[0])
-
-        $findings = Test-ADStaleObjectDepth -Snapshot $snapshot
-        $finding = $findings | Where-Object { $_.Issue -eq 'Insufficient Domain Controller Count' }
-        $finding | Should -Not -BeNullOrEmpty
-        $finding.Details.DomainControllerCount | Should -Be 1
-    }
-}
-
-Describe 'Test-ADStaleObjectDepth (true DC count / primaryGroupID legitimacy) - Live mode' {
+Describe 'Test-ADStaleObjectDepth (true DC count / primaryGroupID legitimacy)' {
     BeforeEach {
         function Get-ADUser {
             param($Filter, $ResultPageSize, $Server, [switch]$ErrorAction, $Properties)

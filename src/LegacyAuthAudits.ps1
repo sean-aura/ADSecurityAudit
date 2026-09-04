@@ -14,12 +14,7 @@
 # value is not silently missed. It never sets, clears, or otherwise modifies
 # any policy or registry value, and performs no exploitation, coercion,
 # relay, ticket forging, or PoC traffic (e.g. it never triggers Responder-
-# style poisoning or an SMB relay). Per the -FromSnapshot contract of
-# performing NO live AD/network access, and because GPO-linked registry
-# policy state is not part of the current snapshot schema, ALL checks in
-# this module are live-only and are skipped entirely when invoked with
-# -Snapshot (consistent with Test-ADCoercionAndRelayExposure and the
-# anonymous-bind probe in Test-ADDomainHardeningFlags).
+# style poisoning or an SMB relay).
 
 # Registry locations/value names probed by this module. Centralised here so
 # the GPO-lookup and live-fallback code paths always agree on exactly what
@@ -151,32 +146,15 @@ function Test-ADLegacyAuthSurface {
         LLMNR-poisoning risk is flagged unless a disabling GPO is
         confirmed), and WSUS falls back to a live per-DC read of the same
         registry location.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). GPO-linked
-        registry policy state is not part of the current snapshot schema
-        and every check here requires live AD/GPO/registry access, so -
-        consistent with the -FromSnapshot contract of performing NO live
-        AD/network access - this entire function is skipped (returns no
-        findings) when invoked with -Snapshot.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Starting Legacy Auth & Name-Poisoning Surface audit..."
     $findings = @()
     $__adServer = Get-ADSecurityAuditTargetServerValue
-
-    if ($Snapshot) {
-        Write-Verbose "Test-ADLegacyAuthSurface: -Snapshot supplied; GPO-linked registry policy state and live per-DC registry reads are not part of the snapshot schema, so this audit is skipped entirely (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'LegacyAuthSurface' -Check 'Entire test: GPO-linked and per-DC registry policy state' `
-            -Reason 'Live GPO-linked registry policy and per-DC registry reads with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
-        return $findings
-    }
 
     try {
         Import-Module GroupPolicy -ErrorAction Stop

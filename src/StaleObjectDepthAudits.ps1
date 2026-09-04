@@ -114,86 +114,52 @@ function Test-ADStaleObjectDepth {
              is not covered by any defined subnet.
           5. Insufficient Domain Controller Count - flags a domain with
              fewer than two Domain Controllers (no redundancy).
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        the PASSWD_NOTREQD, primaryGroupID, and duplicate-SPN checks read
-        from Snapshot.Users / Snapshot.Computers, and the DC-count check
-        reads from Snapshot.DomainControllers, instead of live AD queries.
-        The DC subnet/site registration check has no snapshot equivalent
-        (AD Sites & Services subnet objects are not part of the current
-        snapshot schema) and is SKIPPED entirely under -Snapshot as of
-        v1.19.1 (with a Write-Warning) - it no longer falls back to a live
-        Get-ADReplicationSubnet call, consistent with the other live-only
-        sub-checks elsewhere in the module (e.g. Test-ADDnsSecurity's
-        zone-level checks).
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Starting Stale-Object & Hygiene Depth audit..."
     $findings = @()
     $__adServer = Get-ADSecurityAuditTargetServerValue
 
     # -------------------------------------------------------------------
-    # Gather users/computers/DCs once, preferring the snapshot.
+    # Gather users/computers/DCs.
     # -------------------------------------------------------------------
     $users = @()
     $computers = @()
     $domainControllers = @()
-    $totalDomainControllerCountOverride = $null
 
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
-            Write-Verbose "Test-ADStaleObjectDepth: using snapshot user data."
-            $users = @($Snapshot.Users)
-        }
-        else {
-            $users = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser (stale-object depth)' -Query {
-                Get-ADUser -Filter '*' -ResultPageSize 500 -Server $__adServer -ErrorAction Stop -Properties `
-                    SamAccountName, DistinguishedName, Enabled, userAccountControl, `
-                    PrimaryGroupID, ServicePrincipalNames
-            })
-        }
+        $users = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADUser (stale-object depth)' -Query {
+            Get-ADUser -Filter '*' -ResultPageSize 500 -Server $__adServer -ErrorAction Stop -Properties `
+                SamAccountName, DistinguishedName, Enabled, userAccountControl, `
+                PrimaryGroupID, ServicePrincipalNames
+        })
     }
     catch {
         Write-Warning "Test-ADStaleObjectDepth: failed to collect users: $_"
     }
 
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('Computers')) {
-            Write-Verbose "Test-ADStaleObjectDepth: using snapshot computer data."
-            $computers = @($Snapshot.Computers)
-        }
-        else {
-            $computers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer (stale-object depth)' -Query {
-                Get-ADComputer -Filter '*' -ResultPageSize 500 -Server $__adServer -ErrorAction Stop -Properties `
-                    SamAccountName, DistinguishedName, Enabled, userAccountControl, `
-                    PrimaryGroupID, ServicePrincipalNames
-            })
-        }
+        $computers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADComputer (stale-object depth)' -Query {
+            Get-ADComputer -Filter '*' -ResultPageSize 500 -Server $__adServer -ErrorAction Stop -Properties `
+                SamAccountName, DistinguishedName, Enabled, userAccountControl, `
+                PrimaryGroupID, ServicePrincipalNames
+        })
     }
     catch {
         Write-Warning "Test-ADStaleObjectDepth: failed to collect computers: $_"
     }
 
     try {
-        if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers')) {
-            Write-Verbose "Test-ADStaleObjectDepth: using snapshot DC inventory."
-            $domainControllers = @($Snapshot.DomainControllers)
-        }
-        else {
-            # Get-ADSecurityAuditDomainController, not a bare
-            # Get-ADDomainController -Filter * - the latter is forest-wide
-            # regardless of -Server; see Common.ps1 for why.
-            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (stale-object depth)' -Query {
-                Get-ADSecurityAuditDomainController -Server $__adServer
-            })
-        }
+        # Get-ADSecurityAuditDomainController, not a bare
+        # Get-ADDomainController -Filter * - the latter is forest-wide
+        # regardless of -Server; see Common.ps1 for why.
+        $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (stale-object depth)' -Query {
+            Get-ADSecurityAuditDomainController -Server $__adServer
+        })
     }
     catch {
         Write-Warning "Test-ADStaleObjectDepth: failed to collect domain controllers: $_"
@@ -230,30 +196,9 @@ function Test-ADStaleObjectDepth {
     # resolved domain rather than narrowing to just the named DC.
     $allDomainControllersInDomain = @()
     try {
-        if ($Snapshot) {
-            if ($Snapshot.ContainsKey('TotalDomainControllerCount') -and $null -ne $Snapshot.TotalDomainControllerCount) {
-                Write-Verbose "Test-ADStaleObjectDepth: using snapshot's true (unscoped) DC inventory for count/legitimacy checks."
-                $allDomainControllersInDomain = @($Snapshot.AllDomainControllerComputerObjectDNs | ForEach-Object {
-                    [PSCustomObject]@{ ComputerObjectDN = $_ }
-                })
-                $totalDomainControllerCountOverride = [int]$Snapshot.TotalDomainControllerCount
-            }
-            else {
-                # Older snapshot, collected before this fix: no unscoped
-                # inventory was captured, so fall back to whatever
-                # DomainControllers the snapshot has - same accuracy
-                # caveat the live path had before this fix (may undercount
-                # if that snapshot was itself collected with -Server
-                # narrowed to one specific DC).
-                Write-Verbose "Test-ADStaleObjectDepth: snapshot predates the true-DC-count fix; falling back to Snapshot.DomainControllers (may undercount if that snapshot was collected with -Server narrowed to one specific DC)."
-                $allDomainControllersInDomain = $domainControllers
-            }
-        }
-        else {
-            $allDomainControllersInDomain = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope (stale-object depth, true count)' -Query {
-                Get-ADSecurityAuditDomainController -Server $__adServer -IgnoreExplicitDCScope
-            })
-        }
+        $allDomainControllersInDomain = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController -IgnoreExplicitDCScope (stale-object depth, true count)' -Query {
+            Get-ADSecurityAuditDomainController -Server $__adServer -IgnoreExplicitDCScope
+        })
     }
     catch {
         Write-Warning "Test-ADStaleObjectDepth: failed to collect the true (unscoped) domain-wide DC inventory; falling back to the -Server-scoped list for the count/legitimacy checks (may undercount or misclassify a real DC if -Server was narrowed to one specific DC): $_"
@@ -457,69 +402,56 @@ function Test-ADStaleObjectDepth {
     # -------------------------------------------------------------------
     # Check 4: DC Subnet/Site Registration Gap
     # -------------------------------------------------------------------
-    # Fixed in v1.19.1: AD Sites & Services subnet objects are not part of
-    # the current snapshot schema. This used to still perform a live
-    # Get-ADReplicationSubnet call even under -Snapshot, which is not
-    # acceptable for a genuinely offline analysis (e.g. re-analysing a
-    # JSON snapshot with no network path to any DC at all). Now skipped
-    # entirely under -Snapshot: zero live AD/network access.
-    if ($Snapshot) {
-        Write-Verbose "Test-ADStaleObjectDepth: -Snapshot supplied; skipping DC subnet/site registration check (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'StaleObjectDepth' -Check 'DC subnet/site registration (AD Sites & Services)' `
-            -Reason 'Subnet objects are not part of the current snapshot schema. Run this check live (without -Snapshot) if you need this coverage.'
-    }
-    else {
-        try {
-            Write-Verbose "Test-ADStaleObjectDepth: checking DC subnet/site registration..."
+    try {
+        Write-Verbose "Test-ADStaleObjectDepth: checking DC subnet/site registration..."
 
-            $subnets = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADReplicationSubnet (stale-object depth)' -Query {
-                Get-ADReplicationSubnet -Filter * -Properties Name, Site -Server $__adServer -ErrorAction Stop
-            })
+        $subnets = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADReplicationSubnet (stale-object depth)' -Query {
+            Get-ADReplicationSubnet -Filter * -Properties Name, Site -Server $__adServer -ErrorAction Stop
+        })
 
-            foreach ($dc in $domainControllers) {
-                $dcIp = $null
-                if ($dc.PSObject.Properties['IPv4Address']) { $dcIp = $dc.IPv4Address }
-                elseif ($dc -is [hashtable] -and $dc.ContainsKey('IPv4Address')) { $dcIp = $dc.IPv4Address }
+        foreach ($dc in $domainControllers) {
+            $dcIp = $null
+            if ($dc.PSObject.Properties['IPv4Address']) { $dcIp = $dc.IPv4Address }
+            elseif ($dc -is [hashtable] -and $dc.ContainsKey('IPv4Address')) { $dcIp = $dc.IPv4Address }
 
-                if ([string]::IsNullOrWhiteSpace($dcIp)) {
-                    Write-Verbose "Test-ADStaleObjectDepth: no IPv4Address available for a DC; skipping subnet check for that DC."
-                    continue
-                }
+            if ([string]::IsNullOrWhiteSpace($dcIp)) {
+                Write-Verbose "Test-ADStaleObjectDepth: no IPv4Address available for a DC; skipping subnet check for that DC."
+                continue
+            }
 
-                $dcName = $dc.Name
-                $covered = $false
-                foreach ($subnet in $subnets) {
-                    if (Test-ADIpInCidrRange -IpAddress $dcIp -CidrRange $subnet.Name) {
-                        $covered = $true
-                        break
-                    }
-                }
-
-                if (-not $covered) {
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'Stale-Object & Hygiene Depth'
-                    $finding.Issue = 'DC Subnet/Site Registration Gap'
-                    $finding.Severity = 'Low'
-                    $finding.SeverityLevel = 1
-                    $finding.AffectedObject = $dcName
-                    $finding.Description = "Domain Controller '$dcName' ($dcIp) is not covered by any AD Sites & Services subnet object, so it cannot be mapped to a site."
-                    $finding.Impact = "Clients and other Domain Controllers that fall outside a defined subnet fall back to slower, less predictable site-selection and replication behaviour, which can cause clients to authenticate against a distant DC and can mask real network-topology issues."
-                    $finding.Remediation = "Create or extend an AD Sites & Services subnet object covering $dcIp and associate it with the correct site (Get-ADReplicationSite / New-ADReplicationSubnet)."
-                    $finding.EstimatedEffort = 'Medium - creating the missing AD Sites and Services subnet object touches the forest-wide sites topology (Configuration NC), so validate the site boundary is correct before publishing it.'
-                    $finding.KnownRisks = 'An incorrect subnet-to-site mapping can send clients or DCs to authenticate across a slow WAN link instead of a local DC, so getting the subnet/site boundary right matters more than simply filling the gap.'
-                    $finding.BackupRollback = 'Easy - remove or correct the subnet object; effective as clients next look up their site, no data loss.'
-                    $finding.Details = @{
-                        DomainController = $dcName
-                        IPv4Address      = $dcIp
-                        KnownSubnets     = @($subnets | ForEach-Object { $_.Name })
-                    }
-                    $findings += $finding
+            $dcName = $dc.Name
+            $covered = $false
+            foreach ($subnet in $subnets) {
+                if (Test-ADIpInCidrRange -IpAddress $dcIp -CidrRange $subnet.Name) {
+                    $covered = $true
+                    break
                 }
             }
+
+            if (-not $covered) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Stale-Object & Hygiene Depth'
+                $finding.Issue = 'DC Subnet/Site Registration Gap'
+                $finding.Severity = 'Low'
+                $finding.SeverityLevel = 1
+                $finding.AffectedObject = $dcName
+                $finding.Description = "Domain Controller '$dcName' ($dcIp) is not covered by any AD Sites & Services subnet object, so it cannot be mapped to a site."
+                $finding.Impact = "Clients and other Domain Controllers that fall outside a defined subnet fall back to slower, less predictable site-selection and replication behaviour, which can cause clients to authenticate against a distant DC and can mask real network-topology issues."
+                $finding.Remediation = "Create or extend an AD Sites & Services subnet object covering $dcIp and associate it with the correct site (Get-ADReplicationSite / New-ADReplicationSubnet)."
+                $finding.EstimatedEffort = 'Medium - creating the missing AD Sites and Services subnet object touches the forest-wide sites topology (Configuration NC), so validate the site boundary is correct before publishing it.'
+                $finding.KnownRisks = 'An incorrect subnet-to-site mapping can send clients or DCs to authenticate across a slow WAN link instead of a local DC, so getting the subnet/site boundary right matters more than simply filling the gap.'
+                $finding.BackupRollback = 'Easy - remove or correct the subnet object; effective as clients next look up their site, no data loss.'
+                $finding.Details = @{
+                    DomainController = $dcName
+                    IPv4Address      = $dcIp
+                    KnownSubnets     = @($subnets | ForEach-Object { $_.Name })
+                }
+                $findings += $finding
+            }
         }
-        catch {
-            Write-Warning "Test-ADStaleObjectDepth: DC subnet/site registration check failed: $_"
-        }
+    }
+    catch {
+        Write-Warning "Test-ADStaleObjectDepth: DC subnet/site registration check failed: $_"
     }
 
     # -------------------------------------------------------------------
@@ -533,18 +465,10 @@ function Test-ADStaleObjectDepth {
         # specific DC always reported "the domain has only 1 Domain
         # Controller" regardless of how many DCs the domain actually has.
         # This is a redundancy assessment of the whole domain, so it must
-        # always use the TRUE, unscoped count: $totalDomainControllerCountOverride
-        # when a snapshot supplied one directly (avoids re-deriving it from
-        # a DN list that may have been flattened without duplicates-safety),
-        # otherwise the count of $allDomainControllersInDomain (the live
-        # -IgnoreExplicitDCScope enumeration, or an older snapshot's
-        # DomainControllers as a last-resort fallback).
-        $dcCount = if ($null -ne $totalDomainControllerCountOverride) {
-            $totalDomainControllerCountOverride
-        }
-        else {
-            @($allDomainControllersInDomain).Count
-        }
+        # always use the TRUE, unscoped count: $allDomainControllersInDomain
+        # (the live -IgnoreExplicitDCScope enumeration), not the possibly
+        # -Server-narrowed $domainControllers.
+        $dcCount = @($allDomainControllersInDomain).Count
 
         if ($dcCount -lt 2) {
             $finding = [ADSecurityFinding]::new()

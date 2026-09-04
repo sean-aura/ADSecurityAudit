@@ -5,8 +5,7 @@
     Right to Broad Principal / A-AnonymousAuthorizedGPO-comparable check).
 
     Test-ADGpoDeployedSecrets is entirely live-only (its whole purpose is
-    reading SYSVOL file content, which has no snapshot representation), so
-    it is skipped entirely under -Snapshot. These tests shadow Import-Module,
+    reading SYSVOL file content). These tests shadow Import-Module,
     Get-GPO, and Get-ADGpoSecretsSysvolPolicyRoot with local functions so no
     real AD module, GroupPolicy module, or SYSVOL share is required - the
     "SYSVOL policy root" is a real temp directory on disk, and real files
@@ -49,13 +48,6 @@ $PrivilegeRightsBody
 "@
         Set-Content -LiteralPath (Join-Path $secEditFolder 'GptTmpl.inf') -Value $content -NoNewline
         return $gpoFolder
-    }
-}
-
-Describe 'Test-ADGpoDeployedSecrets (-Snapshot contract)' {
-    It 'returns no findings and performs no live access when -Snapshot is supplied' {
-        $findings = Test-ADGpoDeployedSecrets -Snapshot @{ Domain = 'placeholder' }
-        $findings.Count | Should -Be 0
     }
 }
 

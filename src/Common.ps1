@@ -256,8 +256,7 @@ function Set-ADSecurityAuditTargetServer {
         Remove-GP* cmdlets (Get-GPO, Get-GPInheritance, Get-GPPermission,
         Get-GPRegistryValue, etc. - all used by this module's GPO-related
         checks: Test-ADGroupPolicies, Test-ADLegacyAuthSurface,
-        Test-ADDomainHardeningFlags, Test-ADKerberosHardening, and
-        Get-ADSnapshot's GPO collection).
+        Test-ADDomainHardeningFlags, Test-ADKerberosHardening).
 
         Prior to this fix, only the ActiveDirectory-module wildcard was
         installed. Cmdlet names in the GroupPolicy module start with
@@ -853,8 +852,8 @@ function Get-ADSecurityAuditDomainController {
         SCOPE. Every one of this module's per-DC probes (anonymous bind,
         null session, Kerberos hardening, legacy auth, audit policy,
         known-DC-vulnerability checks, stale-object depth, RODC security,
-        control-path graph, coercion/relay exposure, the main run's own DC
-        connectivity check, and Get-ADSnapshot) previously used a bare
+        control-path graph, coercion/relay exposure, and the main run's own
+        DC connectivity check) previously used a bare
         `Get-ADDomainController -Filter *` to enumerate DCs to probe. In a
         multi-domain forest this silently returns - and every one of those
         checks then iterates over - Domain Controllers from OTHER domains
@@ -1189,59 +1188,16 @@ function Get-ADTier0Principal {
         other groups the module already treats as privileged) and returns one
         record per unique principal (user, computer, or group) along with the
         list of protected groups that grant it privileged status.
-
-        Accepts an optional -Snapshot (as produced by Get-ADSnapshot) so
-        callers can derive the Tier-0 set offline from a prior collection
-        pass instead of re-querying AD live.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied and
-        it contains a 'Groups' collection with member data, the Tier-0 set is
-        derived from the snapshot instead of live AD queries.
     .OUTPUTS
         PSCustomObject[] with SID, SamAccountName, ObjectClass, DistinguishedName,
         and PrivilegedGroups (the protected groups this principal belongs to).
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Resolving Tier-0 principal set..."
     $tier0 = [System.Collections.ArrayList]::new()
     $seen = @{}
-
-    if ($Snapshot -and $Snapshot.ContainsKey('Groups')) {
-        Write-Verbose "Get-ADTier0Principal: deriving Tier-0 set from snapshot."
-        foreach ($group in $Snapshot.Groups) {
-            if ($group.Name -notin $Script:ProtectedGroups) { continue }
-            foreach ($memberDN in @($group.Members)) {
-                if (-not $memberDN) { continue }
-                if (-not $seen.ContainsKey($memberDN)) {
-                    $seen[$memberDN] = [System.Collections.ArrayList]::new()
-                    [void]$tier0.Add([PSCustomObject]@{
-                        DistinguishedName      = $memberDN
-                        SID                    = $null
-                        SamAccountName         = $null
-                        ObjectClass            = $null
-                        PrivilegedGroups       = $seen[$memberDN]
-                        PrivilegedGroupsString = ''
-                    })
-                }
-                [void]$seen[$memberDN].Add($group.Name)
-            }
-        }
-        return @($tier0 | ForEach-Object { $_.PrivilegedGroupsString = ($_.PrivilegedGroups -join '; '); $_ })
-    }
-    elseif ($Snapshot) {
-        # Fixed in v1.19.1: a -Snapshot was supplied but has no 'Groups' key
-        # (e.g. a malformed or very old snapshot file). This used to fall
-        # through to the live loop below unconditionally - not acceptable
-        # for a genuinely offline analysis. Return an empty Tier-0 set
-        # instead of making any live call.
-        Write-Verbose "Get-ADTier0Principal: -Snapshot supplied but has no 'Groups' key; returning an empty Tier-0 set (no live AD access performed)."
-        return @()
-    }
 
     # Resolved once, explicitly passed to every live AD call below - not
     # relying on the $PSDefaultParameterValues injection alone (see the
@@ -1323,345 +1279,10 @@ function Get-ADTier0Principal {
     return @($tier0 | ForEach-Object { $_.PrivilegedGroupsString = ($_.PrivilegedGroups -join '; '); $_ })
 }
 
-# Recursively resolve group membership entirely in-memory against a
-# Get-ADSnapshot snapshot (introduced in v1.19.0 for the offline-parity
-# backlog, steps 18-29). This is the offline equivalent of
-# Get-ADGroupMember [-Recursive] - it never touches AD; it only walks
-# already-collected Snapshot.Groups/.Users/.Computers data.
-#
-# Detection only: in-memory graph traversal of already-collected snapshot
-# data. No exploitation, coercion, relay, or PoC code.
-function Resolve-ADSnapshotGroupMember {
-    <#
-    .SYNOPSIS
-        Resolves group membership from an in-memory Get-ADSnapshot snapshot,
-        mirroring Get-ADGroupMember [-Recursive] with no live AD access.
-    .DESCRIPTION
-        Walks $Snapshot.Groups[].Members starting from the group identified
-        by -GroupDistinguishedName. Each member DN is cross-referenced
-        against Snapshot.Groups (a nested group - recursed into unless
-        -DirectOnly is set), Snapshot.Users, and Snapshot.Computers (leaf
-        members - emitted directly; computer accounts, gMSAs, etc. can be
-        direct group members just like users).
-
-        Cycle-safe: a $seen hashtable of visited group DNs guards against a
-        group nested inside itself (directly or transitively) - AD does not
-        prevent this. A cycle simply stops recursing back into a group
-        already on the current path; it never hangs or overflows the stack.
-    .PARAMETER Snapshot
-        The snapshot hashtable (from Get-ADSnapshot / ConvertTo-ADHashtable).
-    .PARAMETER GroupDistinguishedName
-        The DistinguishedName of the group to resolve members for.
-    .PARAMETER DirectOnly
-        When set, mirrors plain Get-ADGroupMember (no -Recursive): nested
-        groups are returned as members themselves, and their own members are
-        not walked into.
-    .OUTPUTS
-        PSCustomObject[] with SamAccountName, DistinguishedName, objectClass -
-        the same useful surface Get-ADGroupMember's live output exposes to
-        every consumer in this module.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [hashtable]$Snapshot,
-
-        [Parameter(Mandatory)]
-        [string]$GroupDistinguishedName,
-
-        [switch]$DirectOnly
-    )
-
-    $results = [System.Collections.ArrayList]::new()
-
-    if (-not $Snapshot.ContainsKey('Groups')) {
-        Write-Verbose "Resolve-ADSnapshotGroupMember: snapshot has no 'Groups' key; returning no members."
-        return @()
-    }
-
-    # Build lookup tables once per call. Groups/Users/Computers are already
-    # fully materialised in memory, so this is cheap even for a large
-    # domain - it's just a dictionary index, not a new AD query.
-    $groupsByDN = @{}
-    foreach ($g in @($Snapshot.Groups)) {
-        if ($g -and $g.DistinguishedName) {
-            $groupsByDN[$g.DistinguishedName] = $g
-        }
-    }
-    $usersByDN = @{}
-    if ($Snapshot.ContainsKey('Users')) {
-        foreach ($u in @($Snapshot.Users)) {
-            if ($u -and $u.DistinguishedName) {
-                $usersByDN[$u.DistinguishedName] = $u
-            }
-        }
-    }
-    $computersByDN = @{}
-    if ($Snapshot.ContainsKey('Computers')) {
-        foreach ($c in @($Snapshot.Computers)) {
-            if ($c -and $c.DistinguishedName) {
-                $computersByDN[$c.DistinguishedName] = $c
-            }
-        }
-    }
-
-    $seen = @{}
-
-    function Resolve-Members {
-        param([string]$GroupDN)
-
-        if ($seen.ContainsKey($GroupDN)) {
-            # Cycle detected (group nested inside itself, directly or
-            # transitively) - stop recursing into this branch rather than
-            # hang or stack-overflow. The non-cyclic members already
-            # collected on other branches are unaffected.
-            Write-Verbose "Resolve-ADSnapshotGroupMember: membership cycle detected at '$GroupDN'; not recursing further."
-            return
-        }
-        $seen[$GroupDN] = $true
-
-        $group = $groupsByDN[$GroupDN]
-        if (-not $group) {
-            return
-        }
-
-        foreach ($memberDN in @($group.Members)) {
-            if (-not $memberDN) { continue }
-
-            if ($groupsByDN.ContainsKey($memberDN)) {
-                $nestedGroup = $groupsByDN[$memberDN]
-                if ($DirectOnly) {
-                    [void]$results.Add([PSCustomObject]@{
-                        SamAccountName    = $nestedGroup.Name
-                        DistinguishedName = $nestedGroup.DistinguishedName
-                        objectClass       = 'group'
-                    })
-                }
-                else {
-                    [void]$results.Add([PSCustomObject]@{
-                        SamAccountName    = $nestedGroup.Name
-                        DistinguishedName = $nestedGroup.DistinguishedName
-                        objectClass       = 'group'
-                    })
-                    Resolve-Members -GroupDN $memberDN
-                }
-            }
-            elseif ($usersByDN.ContainsKey($memberDN)) {
-                $u = $usersByDN[$memberDN]
-                [void]$results.Add([PSCustomObject]@{
-                    SamAccountName    = $u.SamAccountName
-                    DistinguishedName = $u.DistinguishedName
-                    objectClass       = 'user'
-                })
-            }
-            elseif ($computersByDN.ContainsKey($memberDN)) {
-                $c = $computersByDN[$memberDN]
-                [void]$results.Add([PSCustomObject]@{
-                    SamAccountName    = $c.SamAccountName
-                    DistinguishedName = $c.DistinguishedName
-                    objectClass       = 'computer'
-                })
-            }
-            else {
-                # Member DN doesn't resolve against any collected
-                # collection (e.g. a foreign-security-principal or an
-                # object class this snapshot doesn't carry). Emit a
-                # best-effort record rather than silently dropping it, the
-                # same "unknown, not a hard failure" posture used elsewhere
-                # in this backlog (see step 20's ObjectClass fallback).
-                [void]$results.Add([PSCustomObject]@{
-                    SamAccountName    = $null
-                    DistinguishedName = $memberDN
-                    objectClass       = 'unknown'
-                })
-            }
-        }
-    }
-
-    Resolve-Members -GroupDN $GroupDistinguishedName
-
-    return @($results)
-}
-
-# --- v1.19.1: offline-analysis skip tracking ---
-# When a test running under -Snapshot skips a sub-check that has no
-# AD-schema/snapshot equivalent (SYSVOL content, live network probes,
-# per-DC remoting, etc.), it records that fact here instead of just
-# writing a Write-Warning that only shows up in the console transcript.
-# Start-ADSecurityAudit resets this list at the start of every run and
-# threads it through to Export-ADSecurityReportHTML so the HTML report
-# itself can show "what wasn't scanned and why", not just the log.
-$Script:ADOfflineSkipNotes = [System.Collections.ArrayList]::new()
-
-function Reset-ADOfflineSkipNotes {
-    <#
-    .SYNOPSIS
-        Clears the offline-skip-note list. Called once at the start of
-        every Start-ADSecurityAudit run (both live and -FromSnapshot) so
-        notes never leak between runs in the same PowerShell session.
-    #>
-    [CmdletBinding()]
-    param()
-    $Script:ADOfflineSkipNotes = [System.Collections.ArrayList]::new()
-}
-
-function Add-ADOfflineSkipNote {
-    <#
-    .SYNOPSIS
-        Records one live-only sub-check for the HTML report's "Offline
-        Mode Coverage Notes" section.
-    .PARAMETER Test
-        The registry name of the test (e.g. 'GroupPolicies'), matching
-        $Script:ADTestFunctionRegistry's keys / Invoke-ADRuleSet's -IncludeTests.
-    .PARAMETER Check
-        Short name of the specific sub-check (e.g. 'SYSVOL file-share ACL').
-    .PARAMETER Reason
-        Why it can't run offline (no AD-schema/snapshot equivalent, live
-        network probe, etc.) - shown verbatim in the report.
-    .PARAMETER Mode
-        'Skipped' (default) - the sub-check did not run at all under
-        -Snapshot, so this coverage is simply missing from the results.
-        'StillLive' - the sub-check ran anyway, over a live network/AD
-        connection, because it has no representation in a snapshot at all
-        (e.g. reading file content). Distinguished from 'Skipped' because
-        it's the opposite finding-coverage story: coverage IS present, but
-        -Snapshot did not actually avoid contacting a DC for this one check.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Test,
-
-        [Parameter(Mandatory)]
-        [string]$Check,
-
-        [Parameter(Mandatory)]
-        [string]$Reason,
-
-        [Parameter()]
-        [ValidateSet('Skipped', 'StillLive')]
-        [string]$Mode = 'Skipped'
-    )
-    [void]$Script:ADOfflineSkipNotes.Add([PSCustomObject]@{
-        Test   = $Test
-        Check  = $Check
-        Reason = $Reason
-        Mode   = $Mode
-    })
-}
-
-function Get-ADOfflineSkipNotes {
-    <#
-    .SYNOPSIS
-        Returns the skip notes recorded so far in this run.
-    #>
-    [CmdletBinding()]
-    param()
-    return @($Script:ADOfflineSkipNotes)
-}
-
-# --- Test coverage tracking: "which checks ran clean, found something,
-# failed, or were excluded" - see Main.ps1's live-mode test loop for the
-# original (live-only) implementation, and Invoke-ADRuleSet for why
-# -FromSnapshot needed this same tracker rather than reusing that loop
-# directly. ---
-#
-# Reported gap: -FromSnapshot mode dispatches tests through
-# Invoke-ADRuleSet, a completely different code path from Main.ps1's live
-# test loop that Add-ADTestCoverageEntry calls below were built for -
-# $testCoverage was simply never assigned for -FromSnapshot runs, so the
-# shared HTML-export call at the end of Start-ADSecurityAudit referenced
-# an undefined variable (silently $null when read). That $null then hit
-# the exact "@($null) has Count 1" quirk documented on
-# ConvertTo-ADFlatFindingsArray, making Export-ADSecurityReportHTML's
-# Test Coverage section gate TRUE (Count -gt 0) while its actual per-row
-# data (built via Sort-Object, which silently drops a $null element)
-# came out empty - rendering a nonsensical "0 check(s) tracked: 0 passed
-# clean, 0 found issue(s), and 0 untested" box on every single
-# -FromSnapshot report, looking like a real (if empty) tracked run rather
-# than "coverage wasn't tracked for this run at all".
-#
-# Mirrors the Offline-Skip-Notes tracker immediately above: a
-# script-scoped list, reset once per Start-ADSecurityAudit call (both
-# live and -FromSnapshot - see Main.ps1), added to as each test
-# completes/fails/is excluded, and read back at export time.
-function Reset-ADTestCoverageTracker {
-    <#
-    .SYNOPSIS
-        Clears the test-coverage tracker. Called once at the start of
-        every Start-ADSecurityAudit run (both live and -FromSnapshot) so
-        entries never leak between runs in the same PowerShell session.
-    #>
-    [CmdletBinding()]
-    param()
-    $Script:ADTestCoverageTracker = [System.Collections.Generic.List[PSCustomObject]]::new()
-}
-
-function Add-ADTestCoverageEntry {
-    <#
-    .SYNOPSIS
-        Records one test's outcome for the current run's Test Coverage
-        section/sidecar.
-    .PARAMETER TestName
-        The $allTests/$Script:ADTestFunctionRegistry key (e.g.
-        'DomainSecurity'), matching the value Main.ps1's live loop uses.
-    .PARAMETER Status
-        'Completed' (ran, regardless of whether it found anything),
-        'Failed' (threw an exception), or 'Excluded' (deliberately
-        skipped - via -ExcludeTests/-IncludeTests, or because it has no
-        -Snapshot support yet and -AllowLiveFallbackForUnsupportedTests
-        wasn't set; the ErrorMessage distinguishes which).
-    .PARAMETER FindingCount
-        Number of findings this test produced. 0 for Failed/Excluded.
-    .PARAMETER ErrorMessage
-        The exception message (Failed) or a short reason (Excluded).
-        $null for a plain Completed entry.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$TestName,
-
-        [Parameter(Mandatory)]
-        [ValidateSet('Completed', 'Failed', 'Excluded')]
-        [string]$Status,
-
-        [Parameter()]
-        [int]$FindingCount = 0,
-
-        [Parameter()]
-        [string]$ErrorMessage = $null
-    )
-    if (-not $Script:ADTestCoverageTracker) {
-        # Defensive - a caller that forgot to Reset-ADTestCoverageTracker
-        # first still gets a working (if unreset) tracker rather than an
-        # error on first use.
-        $Script:ADTestCoverageTracker = [System.Collections.Generic.List[PSCustomObject]]::new()
-    }
-    $Script:ADTestCoverageTracker.Add([PSCustomObject]@{
-        TestName     = $TestName
-        Status       = $Status
-        FindingCount = $FindingCount
-        ErrorMessage = $ErrorMessage
-    })
-}
-
-function Get-ADTestCoverageTracker {
-    <#
-    .SYNOPSIS
-        Returns the test-coverage entries recorded so far in this run.
-    #>
-    [CmdletBinding()]
-    param()
-    return @($Script:ADTestCoverageTracker)
-}
-
 # --- Run-scope notes: "this check ran, but against a narrower/different
 # target than its normal assumption" ---
 #
-# Distinct from the offline-skip-notes above (which are about -Snapshot
-# mode specifically: a sub-check didn't run at all, or ran live anyway).
-# This is for LIVE-mode (or snapshot-COLLECTION-time) scoping conditions
+# This is for LIVE-mode scoping conditions
 # that don't stop a check from running, and don't change what it queries
 # incorrectly - but are still worth surfacing, because the reader might
 # reasonably assume something different happened. The first (and so far
@@ -1675,20 +1296,15 @@ function Get-ADTestCoverageTracker {
 # this run, in case replication lag to that specific DC is a live concern
 # for their engagement.
 #
-# Reset once per Start-ADSecurityAudit run (both live and -FromSnapshot)
-# and once per Get-ADSnapshot collection pass, so notes never leak between
-# runs/collections in the same PowerShell session. A snapshot collection's
-# notes are additionally persisted into the snapshot itself
-# (Snapshot.RunScopeNotes) so a later -FromSnapshot analysis can still
-# surface a scoping condition that was true at COLLECTION time, even
-# though no live resolution happens during the analysis itself.
+# Reset once per Start-ADSecurityAudit run, so notes never leak between
+# runs in the same PowerShell session.
 $Script:ADRunScopeNotes = [System.Collections.ArrayList]::new()
 
 function Reset-ADRunScopeNotes {
     <#
     .SYNOPSIS
         Clears the run-scope-note list. Called once at the start of every
-        Start-ADSecurityAudit run and every Get-ADSnapshot collection pass.
+        Start-ADSecurityAudit run.
     #>
     [CmdletBinding()]
     param()
@@ -2121,13 +1737,7 @@ function Merge-ADFindingNarrativeGaps {
           * The backfilled text is CURRENT guidance for that Issue name,
             not necessarily what an older module version would have
             written at the time - the library has no version history,
-            only "whatever the source says today". For a handful of
-            Issue names PermissionsAudits.ps1 uses in two different
-            finding blocks with slightly different wording, the library
-            only has one (see the maintenance script's own conflict
-            warning) - the backfilled text is representative, not
-            guaranteed identical to what that specific instance would
-            have said.
+            only "whatever the source says today".
           * Only applies when a library entry exists for the finding's
             Issue name at all - most findings (the ones without
             EstimatedEffort/KnownRisks/BackupRollback in the source to
@@ -2404,4 +2014,40 @@ function ConvertTo-ADFriendlyDateText {
     # Plain string (the fixed, current format) or anything else stringy.
     try { return ([datetime]$Value).ToString('yyyy-MM-dd HH:mm:ss') }
     catch { return "$Value" }
+}
+
+function ConvertTo-ADFlatAce {
+    <#
+    .SYNOPSIS
+        Flattens an AuthorizationRuleCollection (nTSecurityDescriptor.Access)
+        into plain, JSON-serialisable records.
+    .DESCRIPTION
+        ActiveDirectoryAccessRule objects don't round-trip through
+        ConvertTo-Json/ConvertFrom-Json cleanly (SID/GUID typed members,
+        circular refs). This captures just the fields the detection modules
+        actually evaluate.
+
+        Relocated here from src/Snapshot.ps1 (removed in the offline/
+        -Snapshot mode removal) since it's a general-purpose ACE-flattening
+        helper consumed by live detection code (ControlPaths.ps1), not
+        something specific to the removed snapshot mechanism.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [array]$Access
+    )
+
+    foreach ($ace in $Access) {
+        [PSCustomObject]@{
+            IdentityReference     = "$($ace.IdentityReference.Value)"
+            ActiveDirectoryRights = "$($ace.ActiveDirectoryRights)"
+            AccessControlType     = "$($ace.AccessControlType)"
+            IsInherited           = [bool]$ace.IsInherited
+            InheritanceType       = "$($ace.InheritanceType)"
+            ObjectType            = "$($ace.ObjectType)"
+            InheritedObjectType   = "$($ace.InheritedObjectType)"
+        }
+    }
 }

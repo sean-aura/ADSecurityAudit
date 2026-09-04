@@ -5,13 +5,12 @@
     src/CertificateServicesExtendedAudits.ps1.
 
     Like the existing ESC8 check, this is live-only: it reads a registry
-    value (policy\EditFlags) on the CA host itself via Invoke-Command, which
-    has no snapshot/AD-attribute representation. These tests call
-    Test-ADCSChaseFallback with NO -Snapshot argument and shadow every live
-    cmdlet it touches: Get-ADRootDSE (via Get-ADRootDSEValue), Get-ADObject,
-    and Invoke-Command. No real Active Directory, CA host, or network access
-    is used - Invoke-Command's -ScriptBlock is invoked directly against a
-    fake registry-shaped object rather than actually running remotely.
+    value (policy\EditFlags) on the CA host itself via Invoke-Command. These
+    tests shadow every live cmdlet it touches: Get-ADRootDSE (via
+    Get-ADRootDSEValue), Get-ADObject, and Invoke-Command. No real Active
+    Directory, CA host, or network access is used - Invoke-Command's
+    -ScriptBlock is invoked directly against a fake registry-shaped object
+    rather than actually running remotely.
 
     Run from the repo root:  Invoke-Pester ./tests/ADCSChaseFallback.Tests.ps1
 #>
@@ -119,28 +118,6 @@ Describe 'Test-ADCSChaseFallback (CVE-2026-54121 / Certighost)' {
 
         { Test-ADCSChaseFallback } | Should -Not -Throw
         $findings = Test-ADCSChaseFallback
-        $findings | Should -BeNullOrEmpty
-    }
-
-    It 'produces no live findings and no live calls when -Snapshot is supplied (offline mode)' {
-        function Invoke-Command {
-            param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)
-            throw "should not be called under -Snapshot"
-        }
-        function Get-ADObject {
-            param($SearchBase, $SearchScope, $Filter, $Properties, $Server, [switch]$ErrorAction)
-            throw "should not be called under -Snapshot"
-        }
-
-        $snapshot = @{
-            ADCS = @{
-                Installed               = $true
-                CertificateAuthorities  = @([PSCustomObject]@{ Name = 'CONTOSO-CA'; dNSHostName = 'ca01.contoso.com' })
-            }
-        }
-
-        { Test-ADCSChaseFallback -Snapshot $snapshot } | Should -Not -Throw
-        $findings = Test-ADCSChaseFallback -Snapshot $snapshot
         $findings | Should -BeNullOrEmpty
     }
 

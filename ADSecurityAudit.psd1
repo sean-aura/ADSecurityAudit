@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.24.2'
+    ModuleVersion = '1.25.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -55,8 +55,6 @@
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
-        'Get-ADSnapshot',
-        'Invoke-ADRuleSet',
         'Get-ADTier0Principal',
         'Invoke-ADQueryWithRetry',
         'ConvertTo-SafeCsvValue'
@@ -71,6 +69,13 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.25.0 - Removed Offline/-Snapshot Mode; Export-ADSecurityReportHTMLFromJson Is Now the Supported Re-Analysis Path
+- BREAKING: Removed offline/-Snapshot mode in its entirety. Get-ADSnapshot, Invoke-ADRuleSet, and ConvertTo-ADHashtable no longer exist; Start-ADSecurityAudit no longer accepts -FromSnapshot or -AllowLiveFallbackForUnsupportedTests; every Test-* function's [hashtable]$Snapshot parameter and offline code branch has been removed, leaving only each function's live AD query path. Export-ADSecurityReportHTML no longer accepts -RunMode, -SnapshotCollectedDate, or -OfflineSkipNotes, and the HTML report's "Offline / Snapshot-Based Report" and "Offline Mode Coverage Notes" boxes are gone.
+- Why: the JSON findings export every live run already produces, together with Export-ADSecurityReportHTMLFromJson (kept, unchanged, and now the sole supported way to regenerate/re-share the HTML report with no live AD access), already covered the real use case without the maintenance cost of a second, independent offline code path across all 27 Test-* functions - a cost documented at length across the v1.19.0-v1.19.1 "offline-parity backlog" entries below and every "Offline Mode Coverage Notes" admission that offline re-analysis could produce different findings than an equivalent live run.
+- Kept, unaffected: the JSON findings export itself, Export-ADSecurityReportHTMLFromJson, Export-ADSecurityReportCSVFromJson, and the v1.23.9 "Run Scope Information" report section (unrelated feature - Get-ADRunScopeNotes/Add-ADRunScopeNote/Reset-ADRunScopeNotes are untouched).
+- Migration: existing .json snapshot files produced by Get-ADSnapshot -ToJson are no longer usable with -FromSnapshot, which no longer exists. If you have scripts calling -FromSnapshot, switch to running Start-ADSecurityAudit live and, if you need to regenerate the HTML report later, run Export-ADSecurityReportHTMLFromJson against its JSON findings output instead. Note this is not a like-for-like replacement for point-in-time re-analysis: Export-ADSecurityReportHTMLFromJson rebuilds the HTML view of already-computed findings (recomputing only the risk score - see its own documented LIMITATIONS) and does not re-run detection logic against a frozen AD state the way -FromSnapshot did.
+- Test suite: removed the "Snapshot mode"/-Snapshot Pester coverage from the affected test files (live-mode coverage in those same files is unchanged) and the dedicated Invoke-ADRuleSet/Get-ADSnapshot infrastructure tests.
+
 v1.24.2 - Example ForcedFail Snapshot Fixtures, New Computer Unconstrained-Delegation Check, Trust Date-Cast Fix
 - Added three tiered, entirely synthetic tests/fixtures/ForcedFail-{100,60,25}pct-Snapshot.json -FromSnapshot fixtures (fake domain, no real environment/identities) exercising the full pipeline end-to-end with no live AD access, generated from one parameterized tools/build-forcedfail-fixtures.py script so all three stay consistent as checks change. Run via tools/Test-ForcedFailFixture.ps1 -Tier <100|60|25> or the tests/ForcedFailFixture.Tests.ps1 Pester smoke test.
 - New finding: "Computer Account with Unconstrained Delegation" (Test-ConstrainedDelegation) - found by tracing the new fixtures against the codebase, Test-ADUserSecurity already flagged bare unconstrained delegation on USER accounts but no equivalent existed for COMPUTER accounts, despite that being the far more common and consequential place to find it in practice. Domain Controllers are correctly excluded.

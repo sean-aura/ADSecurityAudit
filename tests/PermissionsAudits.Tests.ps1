@@ -5,8 +5,7 @@
       - "Non-Standard Permissions on Schema Naming Context"
       - "Non-Standard Permissions on Configuration Naming Context"
 
-    Snapshot-mode tests exercise Snapshot.ACLs.SchemaNamingContext/
-    .ConfigurationNamingContext directly. Live-mode tests shadow every live
+    These tests shadow every live
     AD cmdlet the function touches: Get-ADDomain, Get-ADObject, Get-ADGroup,
     and Get-ADRootDSEValue (via Get-ADRootDSE). No real Active Directory
     access is used.
@@ -38,92 +37,7 @@ function New-FlatAce {
     }
 }
 
-Describe 'Test-ADDangerousPermissions (Schema/Configuration NC ACLs) - Snapshot mode' {
-    function New-BaseSnapshot {
-        @{
-            ACLs = @{
-                SchemaNamingContext        = @{ DistinguishedName = 'CN=Schema,CN=Configuration,DC=contoso,DC=com'; Access = @() }
-                ConfigurationNamingContext = @{ DistinguishedName = 'CN=Configuration,DC=contoso,DC=com'; Access = @() }
-            }
-        }
-    }
-
-    It 'produces no finding when the Schema NC ACL has only expected trustees' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.ACLs.SchemaNamingContext.Access = @(
-            New-FlatAce -IdentityReference 'NT AUTHORITY\SYSTEM' -ActiveDirectoryRights 'GenericAll'
-            New-FlatAce -IdentityReference 'CONTOSO\Schema Admins' -ActiveDirectoryRights 'GenericAll'
-        )
-        $findings = Test-ADDangerousPermissions -Snapshot $snapshot
-        ($findings | Where-Object { $_.Issue -eq 'Non-Standard Permissions on Schema Naming Context' }) | Should -BeNullOrEmpty
-    }
-
-    It 'fires Critical when a non-standard trustee holds a dangerous right on the Schema NC' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.ACLs.SchemaNamingContext.Access = @(
-            New-FlatAce -IdentityReference 'CONTOSO\svc-backup' -ActiveDirectoryRights 'GenericAll'
-        )
-        $findings = Test-ADDangerousPermissions -Snapshot $snapshot
-        $finding = $findings | Where-Object { $_.Issue -eq 'Non-Standard Permissions on Schema Naming Context' }
-
-        $finding | Should -Not -BeNullOrEmpty
-        $finding.Category | Should -Be 'Permissions'
-        $finding.Severity | Should -Be 'Critical'
-        $finding.SeverityLevel | Should -Be 4
-        $finding.AffectedObject | Should -Match 'svc-backup'
-        $finding.Details.Identity | Should -Be 'CONTOSO\svc-backup'
-    }
-
-    It 'ignores inherited ACEs on the Schema NC' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.ACLs.SchemaNamingContext.Access = @(
-            New-FlatAce -IdentityReference 'CONTOSO\svc-backup' -ActiveDirectoryRights 'GenericAll' -IsInherited $true
-        )
-        $findings = Test-ADDangerousPermissions -Snapshot $snapshot
-        ($findings | Where-Object { $_.Issue -eq 'Non-Standard Permissions on Schema Naming Context' }) | Should -BeNullOrEmpty
-    }
-
-    It 'does not accept Schema Admins as a valid trustee on the Configuration NC (Schema-specific allowance)' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.ACLs.ConfigurationNamingContext.Access = @(
-            New-FlatAce -IdentityReference 'CONTOSO\Schema Admins' -ActiveDirectoryRights 'WriteDacl'
-        )
-        $findings = Test-ADDangerousPermissions -Snapshot $snapshot
-        $finding = $findings | Where-Object { $_.Issue -eq 'Non-Standard Permissions on Configuration Naming Context' }
-        $finding | Should -Not -BeNullOrEmpty
-    }
-
-    It 'fires Critical when a non-standard trustee holds a dangerous right on the Configuration NC' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.ACLs.ConfigurationNamingContext.Access = @(
-            New-FlatAce -IdentityReference 'CONTOSO\helpdesk-admins' -ActiveDirectoryRights 'WriteOwner'
-        )
-        $findings = Test-ADDangerousPermissions -Snapshot $snapshot
-        $finding = $findings | Where-Object { $_.Issue -eq 'Non-Standard Permissions on Configuration Naming Context' }
-
-        $finding | Should -Not -BeNullOrEmpty
-        $finding.Severity | Should -Be 'Critical'
-        $finding.Details.Identity | Should -Be 'CONTOSO\helpdesk-admins'
-    }
-
-    It 'does not flag a non-standard trustee holding only a benign (non-dangerous) right' {
-        $snapshot = New-BaseSnapshot
-        $snapshot.ACLs.ConfigurationNamingContext.Access = @(
-            New-FlatAce -IdentityReference 'CONTOSO\helpdesk-admins' -ActiveDirectoryRights 'ReadProperty'
-        )
-        $findings = Test-ADDangerousPermissions -Snapshot $snapshot
-        ($findings | Where-Object { $_.Issue -eq 'Non-Standard Permissions on Configuration Naming Context' }) | Should -BeNullOrEmpty
-    }
-
-    It 'skips both NC checks without throwing when the snapshot predates this ACL collection' {
-        $snapshot = @{ ACLs = @{} }
-        { Test-ADDangerousPermissions -Snapshot $snapshot } | Should -Not -Throw
-        $findings = Test-ADDangerousPermissions -Snapshot $snapshot
-        $findings | Should -BeNullOrEmpty
-    }
-}
-
-Describe 'Test-ADDangerousPermissions (Schema/Configuration NC ACLs) - Live mode' {
+Describe 'Test-ADDangerousPermissions (Schema/Configuration NC ACLs)' {
     BeforeEach {
         function Get-ADDomain {
             param([switch]$ErrorAction, $Server)

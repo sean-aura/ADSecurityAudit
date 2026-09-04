@@ -99,23 +99,6 @@ function Get-ADControlPathGraph {
         collected for every group in the domain since that walk is cheap and
         is needed to discover which groups feed into Tier-0 in the first
         place.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        group membership, DC inventory, and the AdminSDHolder/DomainRoot
-        ACLs are read from it, and NO live AD/network access is performed -
-        as of v1.19.1 (fixed from a prior bug where several resolution
-        steps below still fell back to a live Get-ADDomain/
-        Get-ADDomainController/Get-ADGroup/Get-ADObject call whenever the
-        snapshot was missing a given key or a control-relevant object
-        wasn't AdminSDHolder/DomainRoot). Per-object ACL/ownership edges for
-        control-relevant objects other than AdminSDHolder/DomainRoot have
-        no snapshot equivalent (the snapshot intentionally does not sweep
-        ACLs domain-wide) and are simply absent from the graph under
-        -Snapshot - those objects still contribute MemberOf edges, so
-        direct-membership paths are unaffected, but some ACE/Owner-based
-        indirect paths may be under-reported offline. A single coverage
-        note records this when it happens; run this test live (without
-        -Snapshot) for full ACL/ownership edge coverage.
     .OUTPUTS
         [hashtable] with keys: Edges (PSCustomObject[] From/To/EdgeType/
         Detail), Tier0Targets (PSCustomObject[] DistinguishedName/Label),
@@ -123,10 +106,7 @@ function Get-ADControlPathGraph {
         GeneratedDate.
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Get-ADControlPathGraph: building control-edge graph..."
     $__adServer = Get-ADSecurityAuditTargetServerValue
@@ -138,26 +118,14 @@ function Get-ADControlPathGraph {
     # --- Resolve domain ---
     $domain = $null
     try {
-        $domain = if ($Snapshot -and $Snapshot.ContainsKey('Domain')) {
-            $Snapshot.Domain
-        }
-        elseif ($Snapshot) {
-            # Fixed in v1.19.1: a -Snapshot was supplied but has no 'Domain'
-            # key. This used to fall through to a live Get-ADDomain call -
-            # not acceptable under -Snapshot. $domain simply stays $null;
-            # everything below that depends on it degrades gracefully.
-            $null
-        }
-        else {
-            Get-ADDomain -Server $__adServer -ErrorAction Stop
-        }
+        $domain = Get-ADDomain -Server $__adServer -ErrorAction Stop
     }
     catch {
         Write-Verbose "Get-ADControlPathGraph: failed to resolve domain: $_"
     }
 
     # --- Tier-0 principals (reuses the shared step-02 helper) ---
-    $tier0Principals = @(Get-ADTier0Principal -Snapshot $Snapshot)
+    $tier0Principals = @(Get-ADTier0Principal)
     foreach ($p in $tier0Principals) {
         foreach ($key in @($p.DistinguishedName, $p.SID, $p.SamAccountName)) {
             if ($key) { $tier0Lookup["$key".ToLowerInvariant()] = $true }
@@ -171,24 +139,12 @@ function Get-ADControlPathGraph {
     # --- Domain Controllers ---
     $dcList = @()
     try {
-        $dcList = if ($Snapshot -and $Snapshot.ContainsKey('DomainControllers')) {
-            @($Snapshot.DomainControllers)
-        }
-        elseif ($Snapshot) {
-            # Fixed in v1.19.1: a -Snapshot was supplied but has no
-            # 'DomainControllers' key. This used to fall through to a live
-            # Get-ADDomainController call - not acceptable under -Snapshot.
-            Write-Verbose "Get-ADControlPathGraph: -Snapshot supplied but has no 'DomainControllers' key; DC targets will be absent from the graph (no live AD access performed)."
-            @()
-        }
-        else {
-            # Get-ADSecurityAuditDomainController, not a bare
-            # Get-ADDomainController -Filter * - the latter is forest-wide
-            # regardless of -Server; see Common.ps1 for why.
-            @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (control-path graph)' -Query {
-                Get-ADSecurityAuditDomainController -Server $__adServer
-            })
-        }
+        # Get-ADSecurityAuditDomainController, not a bare
+        # Get-ADDomainController -Filter * - the latter is forest-wide
+        # regardless of -Server; see Common.ps1 for why.
+        $dcList = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (control-path graph)' -Query {
+            Get-ADSecurityAuditDomainController -Server $__adServer
+        })
     }
     catch {
         Write-Verbose "Get-ADControlPathGraph: failed to enumerate domain controllers: $_"
@@ -205,9 +161,6 @@ function Get-ADControlPathGraph {
     # --- AdminSDHolder + domain head ---
     $domainHeadDN = if ($domain) { $domain.DistinguishedName } else { $null }
     $adminSDHolderDN = if ($domainHeadDN) { "CN=AdminSDHolder,CN=System,$domainHeadDN" } else { $null }
-    if (-not $adminSDHolderDN -and $Snapshot -and $Snapshot.ACLs -and $Snapshot.ACLs.AdminSDHolder) {
-        $adminSDHolderDN = $Snapshot.ACLs.AdminSDHolder.DistinguishedName
-    }
 
     if ($adminSDHolderDN) {
         $tier0Lookup["$adminSDHolderDN".ToLowerInvariant()] = $true
@@ -225,27 +178,14 @@ function Get-ADControlPathGraph {
     #     member of it, so they are added as targets in their own right. ---
     foreach ($groupName in $Script:ProtectedGroups) {
         $groupDN = $null
-        if ($Snapshot -and $Snapshot.ContainsKey('Groups')) {
-            $match = $Snapshot.Groups | Where-Object { $_.Name -eq $groupName } | Select-Object -First 1
-            if ($match) { $groupDN = $match.DistinguishedName }
+        try {
+            $g = Invoke-ADQueryWithRetry -OperationName "Get-ADGroup '$groupName' (control-path graph)" -Query {
+                Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
+            }
+            if ($g) { $groupDN = $g.DistinguishedName }
         }
-        # Fixed in v1.19.1: the live Get-ADGroup fallback below used to run
-        # whenever $groupDN was still unresolved, REGARDLESS of whether
-        # -Snapshot was supplied (e.g. if a protected group simply wasn't
-        # present in Snapshot.Groups). That is a live call happening during
-        # a nominally offline run. Now gated on -not $Snapshot as well, so
-        # a group missing from the snapshot is just absent from the graph,
-        # never a live lookup.
-        if (-not $groupDN -and -not $Snapshot) {
-            try {
-                $g = Invoke-ADQueryWithRetry -OperationName "Get-ADGroup '$groupName' (control-path graph)" -Query {
-                    Get-ADGroup -Filter "Name -eq '$groupName'" -Server $__adServer -ErrorAction Stop
-                }
-                if ($g) { $groupDN = $g.DistinguishedName }
-            }
-            catch {
-                Write-Verbose "Get-ADControlPathGraph: failed to resolve protected group '$groupName': $_"
-            }
+        catch {
+            Write-Verbose "Get-ADControlPathGraph: failed to resolve protected group '$groupName': $_"
         }
         if ($groupDN) {
             $tier0Lookup["$groupDN".ToLowerInvariant()] = $true
@@ -255,31 +195,20 @@ function Get-ADControlPathGraph {
 
     # --- Group membership edges (member DN -> group DN) ---
     $groups = @()
-    if ($Snapshot -and $Snapshot.ContainsKey('Groups')) {
-        $groups = @($Snapshot.Groups)
+    try {
+        $rawGroups = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup (control-path graph)' -Query {
+            Get-ADGroup -Filter '*' -ResultPageSize 500 -Properties Members -Server $__adServer -ErrorAction Stop
+        })
+        $groups = @($rawGroups | ForEach-Object {
+            [PSCustomObject]@{
+                Name              = $_.Name
+                DistinguishedName = $_.DistinguishedName
+                Members           = @($_.Members)
+            }
+        })
     }
-    elseif ($Snapshot) {
-        # Fixed in v1.19.1: a -Snapshot was supplied but has no 'Groups'
-        # key. This used to fall through to a live Get-ADGroup enumeration -
-        # not acceptable under -Snapshot. $groups simply stays empty.
-        Write-Verbose "Get-ADControlPathGraph: -Snapshot supplied but has no 'Groups' key; no MemberOf edges will be built (no live AD access performed)."
-    }
-    else {
-        try {
-            $rawGroups = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup (control-path graph)' -Query {
-                Get-ADGroup -Filter '*' -ResultPageSize 500 -Properties Members -Server $__adServer -ErrorAction Stop
-            })
-            $groups = @($rawGroups | ForEach-Object {
-                [PSCustomObject]@{
-                    Name              = $_.Name
-                    DistinguishedName = $_.DistinguishedName
-                    Members           = @($_.Members)
-                }
-            })
-        }
-        catch {
-            Write-Verbose "Get-ADControlPathGraph: failed to enumerate groups: $_"
-        }
+    catch {
+        Write-Verbose "Get-ADControlPathGraph: failed to enumerate groups: $_"
     }
 
     $groupIndex = @{}
@@ -328,45 +257,22 @@ function Get-ADControlPathGraph {
     }
 
     # --- ACL + ownership edges over the control-relevant object set ---
-    # Fixed in v1.19.1: the live Get-ADObject fallback below used to run for
-    # every control-relevant DN that wasn't AdminSDHolder/DomainRoot -
-    # REGARDLESS of -Snapshot - meaning a real audit could make one live ACL
-    # read per group in the escalation chain even during a nominally
-    # offline run. The snapshot only carries ACLs for a small set of fixed
-    # named targets (AdminSDHolder, DomainRoot, a few OUs/containers), never
-    # a domain-wide per-object sweep - so under -Snapshot, any other
-    # control-relevant object's ACL/ownership edges are simply unavailable
-    # and are skipped, once, with a single coverage note (not one per
-    # object, to avoid flooding the report).
-    $aclCoverageGapCount = 0
     foreach ($targetDN in $controlRelevant) {
         $aclInfo = $null
 
-        if ($adminSDHolderDN -and $targetDN -ieq $adminSDHolderDN -and $Snapshot -and $Snapshot.ACLs -and $Snapshot.ACLs.AdminSDHolder) {
-            $aclInfo = $Snapshot.ACLs.AdminSDHolder
-        }
-        elseif ($domainHeadDN -and $targetDN -ieq $domainHeadDN -and $Snapshot -and $Snapshot.ACLs -and $Snapshot.ACLs.DomainRoot) {
-            $aclInfo = $Snapshot.ACLs.DomainRoot
-        }
-        elseif ($Snapshot) {
-            $aclCoverageGapCount++
-            continue
-        }
-        else {
-            try {
-                $obj = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor ($targetDN)" -Query {
-                    Get-ADObject -Identity $targetDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
-                }
-                if ($obj -and $obj.nTSecurityDescriptor) {
-                    $aclInfo = @{
-                        Owner  = "$($obj.nTSecurityDescriptor.Owner)"
-                        Access = @(ConvertTo-ADFlatAce -Access @($obj.nTSecurityDescriptor.Access))
-                    }
+        try {
+            $obj = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor ($targetDN)" -Query {
+                Get-ADObject -Identity $targetDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
+            }
+            if ($obj -and $obj.nTSecurityDescriptor) {
+                $aclInfo = @{
+                    Owner  = "$($obj.nTSecurityDescriptor.Owner)"
+                    Access = @(ConvertTo-ADFlatAce -Access @($obj.nTSecurityDescriptor.Access))
                 }
             }
-            catch {
-                Write-Verbose "Get-ADControlPathGraph: could not read ACL for '$targetDN': $_"
-            }
+        }
+        catch {
+            Write-Verbose "Get-ADControlPathGraph: could not read ACL for '$targetDN': $_"
         }
 
         if (-not $aclInfo) { continue }
@@ -421,11 +327,6 @@ function Get-ADControlPathGraph {
 
     Write-Verbose "Get-ADControlPathGraph: built $($edges.Count) edge(s) across $($controlRelevant.Count) control-relevant object(s) and $($tier0Targets.Count) Tier-0 target(s)."
 
-    if ($Snapshot -and $aclCoverageGapCount -gt 0) {
-        Add-ADOfflineSkipNote -Test 'ControlPaths' -Check "ACL/ownership edges on $aclCoverageGapCount control-relevant object(s) beyond AdminSDHolder/DomainRoot" `
-            -Reason 'The snapshot only carries ACLs for a small set of fixed named targets; a domain-wide per-object ACL sweep is intentionally out of scope for Get-ADSnapshot. These objects contribute MemberOf edges only, not ACE/Owner edges, so some indirect paths may be under-reported. Run this test live (without -Snapshot) for full coverage.'
-    }
-
     return @{
         Edges         = @($edges)
         Tier0Targets  = @($tier0Targets)
@@ -456,9 +357,6 @@ function Test-ADControlPaths {
         Detection only - read-only graph traversal over data already
         collected by Get-ADControlPathGraph. No exploitation, coercion,
         relay, ticket forging, or PoC traffic is ever sent to any host.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot), forwarded to
-        Get-ADControlPathGraph.
     .PARAMETER BloodHoundExportPath
         Optional path. When supplied, the underlying graph is also exported
         as a BloodHound-compatible generic-edge JSON file via
@@ -470,9 +368,6 @@ function Test-ADControlPaths {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot,
-
-        [Parameter()]
         [string]$BloodHoundExportPath
     )
 
@@ -480,7 +375,7 @@ function Test-ADControlPaths {
     $findings = @()
 
     try {
-        $graph = Get-ADControlPathGraph -Snapshot $Snapshot
+        $graph = Get-ADControlPathGraph
 
         if ($BloodHoundExportPath) {
             try {
