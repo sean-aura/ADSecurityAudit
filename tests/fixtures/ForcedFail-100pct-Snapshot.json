@@ -1,0 +1,1397 @@
+{
+  "CollectedDate": "2026-09-04T08:00:00",
+  "Domain": {
+    "DistinguishedName": "DC=contoso,DC=local",
+    "DNSRoot": "contoso.local",
+    "NetBIOSName": "CONTOSO",
+    "Forest": "contoso.local",
+    "DomainSID": "S-1-5-21-1111111111-2222222222-3333333333"
+  },
+  "DomainControllers": [
+    {
+      "Name": "DC01",
+      "HostName": "dc01.contoso.local",
+      "ComputerObjectDN": "CN=DC01,OU=Domain Controllers,DC=contoso,DC=local",
+      "IPv4Address": "10.0.0.10",
+      "IsReadOnly": false,
+      "IsGlobalCatalog": true,
+      "Enabled": true,
+      "Site": "Default-First-Site-Name",
+      "OperatingSystem": "Windows Server 2022 Standard"
+    },
+    {
+      "Name": "DC02",
+      "HostName": "dc02.contoso.local",
+      "ComputerObjectDN": "CN=DC02,OU=Domain Controllers,DC=contoso,DC=local",
+      "IPv4Address": "10.0.0.11",
+      "IsReadOnly": false,
+      "IsGlobalCatalog": true,
+      "Enabled": true,
+      "Site": "Default-First-Site-Name",
+      "OperatingSystem": "Windows Server 2022 Standard"
+    }
+  ],
+  "TotalDomainControllerCount": 2,
+  "AllDomainControllerComputerObjectDNs": [
+    "CN=DC01,OU=Domain Controllers,DC=contoso,DC=local",
+    "CN=DC02,OU=Domain Controllers,DC=contoso,DC=local"
+  ],
+  "Users": [
+    {
+      "Name": "Administrator",
+      "SamAccountName": "Administrator",
+      "DistinguishedName": "CN=Administrator,CN=Users,DC=contoso,DC=local",
+      "UserPrincipalName": "administrator@contoso.local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-500",
+      "Description": "Built-in account for administering the computer/domain",
+      "Enabled": true,
+      "DoesNotRequirePreAuth": false,
+      "UseDESKeyOnly": false,
+      "AllowReversiblePasswordEncryption": false,
+      "PasswordNeverExpires": true,
+      "TrustedForDelegation": false,
+      "LastLogonDate": "2026-09-04T08:00:00",
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [],
+      "MemberOf": [
+        "CN=Domain Admins,CN=Users,DC=contoso,DC=local"
+      ],
+      "adminCount": 1,
+      "msDS-SupportedEncryptionTypes": 4,
+      "userAccountControl": 512,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "msDS-AllowedToDelegateTo": [],
+      "SIDHistory": [],
+      "PrimaryGroupID": 513,
+      "TrustedToAuthForDelegation": false,
+      "scriptPath": null,
+      "HasShadowCredentials": false
+    },
+    {
+      "Name": "KRBTGT",
+      "SamAccountName": "krbtgt",
+      "DistinguishedName": "CN=krbtgt,CN=Users,DC=contoso,DC=local",
+      "UserPrincipalName": null,
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-502",
+      "Description": "Key Distribution Center Service Account",
+      "Enabled": false,
+      "DoesNotRequirePreAuth": false,
+      "UseDESKeyOnly": false,
+      "AllowReversiblePasswordEncryption": false,
+      "PasswordNeverExpires": true,
+      "TrustedForDelegation": false,
+      "LastLogonDate": null,
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [],
+      "MemberOf": [],
+      "adminCount": 1,
+      "msDS-SupportedEncryptionTypes": 4,
+      "userAccountControl": 514,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "msDS-AllowedToDelegateTo": [],
+      "SIDHistory": [],
+      "PrimaryGroupID": 513,
+      "TrustedToAuthForDelegation": false,
+      "scriptPath": null,
+      "HasShadowCredentials": false
+    },
+    {
+      "Name": "svc-sql",
+      "SamAccountName": "svc-sql",
+      "DistinguishedName": "CN=svc-sql,CN=Managed Service Accounts,DC=contoso,DC=local",
+      "UserPrincipalName": "svc-sql@contoso.local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1105",
+      "Description": "SQL Server service account",
+      "Enabled": true,
+      "DoesNotRequirePreAuth": false,
+      "UseDESKeyOnly": false,
+      "AllowReversiblePasswordEncryption": false,
+      "PasswordNeverExpires": true,
+      "TrustedForDelegation": false,
+      "LastLogonDate": "2026-09-04T08:00:00",
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [
+        "MSSQLSvc/sql01.contoso.local:1433"
+      ],
+      "MemberOf": [],
+      "adminCount": 0,
+      "msDS-SupportedEncryptionTypes": 4,
+      "userAccountControl": 512,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "msDS-AllowedToDelegateTo": [],
+      "SIDHistory": [],
+      "PrimaryGroupID": 513,
+      "TrustedToAuthForDelegation": false,
+      "scriptPath": null,
+      "HasShadowCredentials": false
+    },
+    {
+      "Name": "J. Smith",
+      "SamAccountName": "j.smith",
+      "DistinguishedName": "CN=j.smith,CN=Users,DC=contoso,DC=local",
+      "UserPrincipalName": "j.smith@contoso.local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1106",
+      "Description": "Marketing",
+      "Enabled": true,
+      "DoesNotRequirePreAuth": true,
+      "UseDESKeyOnly": false,
+      "AllowReversiblePasswordEncryption": false,
+      "PasswordNeverExpires": false,
+      "TrustedForDelegation": false,
+      "LastLogonDate": "2026-09-04T08:00:00",
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [],
+      "MemberOf": [],
+      "adminCount": 0,
+      "msDS-SupportedEncryptionTypes": 24,
+      "userAccountControl": 4194816,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "msDS-AllowedToDelegateTo": [],
+      "SIDHistory": [],
+      "PrimaryGroupID": 513,
+      "TrustedToAuthForDelegation": false,
+      "scriptPath": null,
+      "HasShadowCredentials": false
+    },
+    {
+      "Name": "migration.svc",
+      "SamAccountName": "migration.svc",
+      "DistinguishedName": "CN=migration.svc,CN=Users,DC=contoso,DC=local",
+      "UserPrincipalName": "migration.svc@contoso.local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1107",
+      "Description": "Legacy migration account",
+      "Enabled": true,
+      "DoesNotRequirePreAuth": false,
+      "UseDESKeyOnly": false,
+      "AllowReversiblePasswordEncryption": false,
+      "PasswordNeverExpires": true,
+      "TrustedForDelegation": false,
+      "LastLogonDate": "2025-07-31T08:00:00",
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [],
+      "MemberOf": [
+        "CN=Backup Operators,CN=Builtin,DC=contoso,DC=local"
+      ],
+      "adminCount": 0,
+      "msDS-SupportedEncryptionTypes": 24,
+      "userAccountControl": 512,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "msDS-AllowedToDelegateTo": [],
+      "SIDHistory": [
+        "S-1-5-21-1111111111-2222222222-3333333333-500"
+      ],
+      "PrimaryGroupID": 513,
+      "TrustedToAuthForDelegation": false,
+      "scriptPath": "legacy-logon.bat",
+      "HasShadowCredentials": false
+    },
+    {
+      "Name": "old.admin",
+      "SamAccountName": "old.admin",
+      "DistinguishedName": "CN=old.admin,CN=Users,DC=contoso,DC=local",
+      "UserPrincipalName": "old.admin@contoso.local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1108",
+      "Description": "Former helpdesk lead",
+      "Enabled": true,
+      "DoesNotRequirePreAuth": false,
+      "UseDESKeyOnly": false,
+      "AllowReversiblePasswordEncryption": false,
+      "PasswordNeverExpires": true,
+      "TrustedForDelegation": false,
+      "LastLogonDate": "2025-07-31T08:00:00",
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [],
+      "MemberOf": [],
+      "adminCount": 1,
+      "msDS-SupportedEncryptionTypes": 24,
+      "userAccountControl": 512,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "msDS-AllowedToDelegateTo": [],
+      "SIDHistory": [],
+      "PrimaryGroupID": 513,
+      "TrustedToAuthForDelegation": false,
+      "scriptPath": null,
+      "HasShadowCredentials": false
+    },
+    {
+      "Name": "IT Helpdesk Service",
+      "SamAccountName": "svc-helpdesk",
+      "DistinguishedName": "CN=svc-helpdesk,CN=Users,DC=contoso,DC=local",
+      "UserPrincipalName": "svc-helpdesk@contoso.local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1109",
+      "Description": "Helpdesk automation account",
+      "Enabled": true,
+      "DoesNotRequirePreAuth": false,
+      "UseDESKeyOnly": false,
+      "AllowReversiblePasswordEncryption": false,
+      "PasswordNeverExpires": true,
+      "TrustedForDelegation": false,
+      "LastLogonDate": "2026-09-04T08:00:00",
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [],
+      "MemberOf": [],
+      "adminCount": 0,
+      "msDS-SupportedEncryptionTypes": 24,
+      "userAccountControl": 512,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "msDS-AllowedToDelegateTo": [],
+      "SIDHistory": [],
+      "PrimaryGroupID": 513,
+      "TrustedToAuthForDelegation": false,
+      "scriptPath": null,
+      "HasShadowCredentials": false
+    },
+    {
+      "Name": "Backup Service",
+      "SamAccountName": "svc-backup",
+      "DistinguishedName": "CN=svc-backup,CN=Users,DC=contoso,DC=local",
+      "UserPrincipalName": "svc-backup@contoso.local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1110",
+      "Description": "Backup software service account",
+      "Enabled": true,
+      "DoesNotRequirePreAuth": false,
+      "UseDESKeyOnly": false,
+      "AllowReversiblePasswordEncryption": false,
+      "PasswordNeverExpires": true,
+      "TrustedForDelegation": false,
+      "LastLogonDate": "2026-09-04T08:00:00",
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [],
+      "MemberOf": [],
+      "adminCount": 0,
+      "msDS-SupportedEncryptionTypes": 24,
+      "userAccountControl": 512,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "msDS-AllowedToDelegateTo": [],
+      "SIDHistory": [],
+      "PrimaryGroupID": 513,
+      "TrustedToAuthForDelegation": false,
+      "scriptPath": null,
+      "HasShadowCredentials": false
+    }
+  ],
+  "PrivilegedUserAcls": [
+    {
+      "DistinguishedName": "CN=Administrator,CN=Users,DC=contoso,DC=local",
+      "SamAccountName": "Administrator",
+      "Owner": "CONTOSO\\Domain Admins",
+      "Access": [
+        {
+          "IdentityReference": "CONTOSO\\svc-helpdesk",
+          "ActiveDirectoryRights": "GenericWrite",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\svc-helpdesk",
+          "ActiveDirectoryRights": "GenericWrite",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    }
+  ],
+  "Computers": [
+    {
+      "Name": "DC01",
+      "SamAccountName": "DC01$",
+      "DistinguishedName": "CN=DC01,OU=Domain Controllers,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1001",
+      "Enabled": true,
+      "OperatingSystem": "Windows Server 2022 Standard",
+      "OperatingSystemVersion": "10.0 (20348)",
+      "LastLogonDate": "2026-09-04T08:00:00",
+      "TrustedForDelegation": true,
+      "msDS-AllowedToDelegateTo": [],
+      "PrimaryGroupID": 516,
+      "ms-Mcs-AdmPwdExpirationTime": null,
+      "msLAPS-PasswordExpirationTime": null,
+      "userAccountControl": 532480,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [
+        "HOST/dc01.contoso.local"
+      ],
+      "TrustedToAuthForDelegation": false,
+      "HasRbcdConfigured": false,
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "HasShadowCredentials": false,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    },
+    {
+      "Name": "DC02",
+      "SamAccountName": "DC02$",
+      "DistinguishedName": "CN=DC02,OU=Domain Controllers,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1002",
+      "Enabled": true,
+      "OperatingSystem": "Windows Server 2022 Standard",
+      "OperatingSystemVersion": "10.0 (20348)",
+      "LastLogonDate": "2026-09-04T08:00:00",
+      "TrustedForDelegation": true,
+      "msDS-AllowedToDelegateTo": [],
+      "PrimaryGroupID": 516,
+      "ms-Mcs-AdmPwdExpirationTime": null,
+      "msLAPS-PasswordExpirationTime": null,
+      "userAccountControl": 532480,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [
+        "HOST/dc02.contoso.local"
+      ],
+      "TrustedToAuthForDelegation": false,
+      "HasRbcdConfigured": false,
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "HasShadowCredentials": false,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    },
+    {
+      "Name": "LEGACY-SRV01",
+      "SamAccountName": "LEGACY-SRV01$",
+      "DistinguishedName": "CN=LEGACY-SRV01,CN=Computers,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1201",
+      "Enabled": true,
+      "OperatingSystem": "Windows Server 2008 R2 Standard",
+      "OperatingSystemVersion": "6.1 (7601)",
+      "LastLogonDate": "2025-07-31T08:00:00",
+      "TrustedForDelegation": true,
+      "msDS-AllowedToDelegateTo": [],
+      "PrimaryGroupID": 515,
+      "ms-Mcs-AdmPwdExpirationTime": null,
+      "msLAPS-PasswordExpirationTime": null,
+      "userAccountControl": 4096,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [
+        "HOST/legacy-srv01.contoso.local"
+      ],
+      "TrustedToAuthForDelegation": false,
+      "HasRbcdConfigured": false,
+      "PasswordLastSet": "2025-07-31T08:00:00",
+      "HasShadowCredentials": true,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    },
+    {
+      "Name": "WEB01",
+      "SamAccountName": "WEB01$",
+      "DistinguishedName": "CN=WEB01,CN=Computers,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1202",
+      "Enabled": true,
+      "OperatingSystem": "Windows Server 2022 Standard",
+      "OperatingSystemVersion": "10.0 (20348)",
+      "LastLogonDate": "2026-09-04T08:00:00",
+      "TrustedForDelegation": false,
+      "msDS-AllowedToDelegateTo": [],
+      "PrimaryGroupID": 515,
+      "ms-Mcs-AdmPwdExpirationTime": 133700000000000000,
+      "msLAPS-PasswordExpirationTime": null,
+      "userAccountControl": 4096,
+      "WhenCreated": "2025-07-31T08:00:00",
+      "ServicePrincipalNames": [
+        "HTTP/web01.contoso.local"
+      ],
+      "TrustedToAuthForDelegation": false,
+      "HasRbcdConfigured": true,
+      "PasswordLastSet": "2026-09-04T08:00:00",
+      "HasShadowCredentials": false,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    }
+  ],
+  "Groups": [
+    {
+      "Name": "Domain Admins",
+      "DistinguishedName": "CN=Domain Admins,CN=Users,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-512",
+      "Description": "Designated administrators of the domain",
+      "GroupType": "-2147483646",
+      "AdminCount": 1,
+      "Members": [
+        "CN=Administrator,CN=Users,DC=contoso,DC=local"
+      ]
+    },
+    {
+      "Name": "Enterprise Admins",
+      "DistinguishedName": "CN=Enterprise Admins,CN=Users,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-519",
+      "Description": "Designated administrators of the enterprise",
+      "GroupType": "-2147483646",
+      "AdminCount": 1,
+      "Members": []
+    },
+    {
+      "Name": "Schema Admins",
+      "DistinguishedName": "CN=Schema Admins,CN=Users,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-518",
+      "Description": "Designated administrators of the schema",
+      "GroupType": "-2147483646",
+      "AdminCount": 1,
+      "Members": []
+    },
+    {
+      "Name": "Administrators",
+      "DistinguishedName": "CN=Administrators,CN=Builtin,DC=contoso,DC=local",
+      "SID": "S-1-5-32-544",
+      "Description": "Administrators have complete and unrestricted access",
+      "GroupType": "-2147483643",
+      "AdminCount": 1,
+      "Members": [
+        "CN=Domain Admins,CN=Users,DC=contoso,DC=local"
+      ]
+    },
+    {
+      "Name": "Backup Operators",
+      "DistinguishedName": "CN=Backup Operators,CN=Builtin,DC=contoso,DC=local",
+      "SID": "S-1-5-32-551",
+      "Description": "Backup Operators can override security restrictions",
+      "GroupType": "-2147483643",
+      "AdminCount": 0,
+      "Members": [
+        "CN=migration.svc,CN=Users,DC=contoso,DC=local"
+      ]
+    },
+    {
+      "Name": "Account Operators",
+      "DistinguishedName": "CN=Account Operators,CN=Builtin,DC=contoso,DC=local",
+      "SID": "S-1-5-32-548",
+      "Description": "Members can administer domain user and group accounts",
+      "GroupType": "-2147483643",
+      "AdminCount": 0,
+      "Members": []
+    },
+    {
+      "Name": "Server Operators",
+      "DistinguishedName": "CN=Server Operators,CN=Builtin,DC=contoso,DC=local",
+      "SID": "S-1-5-32-549",
+      "Description": "Members can administer domain servers",
+      "GroupType": "-2147483643",
+      "AdminCount": 0,
+      "Members": []
+    },
+    {
+      "Name": "Print Operators",
+      "DistinguishedName": "CN=Print Operators,CN=Builtin,DC=contoso,DC=local",
+      "SID": "S-1-5-32-550",
+      "Description": "Members can administer domain printers",
+      "GroupType": "-2147483643",
+      "AdminCount": 0,
+      "Members": []
+    },
+    {
+      "Name": "Cryptographic Operators",
+      "DistinguishedName": "CN=Cryptographic Operators,CN=Builtin,DC=contoso,DC=local",
+      "SID": "S-1-5-32-569",
+      "Description": "Members are authorized to perform cryptographic operations",
+      "GroupType": "-2147483643",
+      "AdminCount": 0,
+      "Members": []
+    },
+    {
+      "Name": "Distributed COM Users",
+      "DistinguishedName": "CN=Distributed COM Users,CN=Builtin,DC=contoso,DC=local",
+      "SID": "S-1-5-32-562",
+      "Description": "Members are allowed to launch, activate and use DCOM objects",
+      "GroupType": "-2147483643",
+      "AdminCount": 0,
+      "Members": []
+    },
+    {
+      "Name": "Group Policy Creator Owners",
+      "DistinguishedName": "CN=Group Policy Creator Owners,CN=Users,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-520",
+      "Description": "Members can modify Group Policy for the domain",
+      "GroupType": "-2147483646",
+      "AdminCount": 0,
+      "Members": []
+    },
+    {
+      "Name": "Domain Controllers",
+      "DistinguishedName": "CN=Domain Controllers,CN=Users,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-516",
+      "Description": "All domain controllers in the domain",
+      "GroupType": "-2147483646",
+      "AdminCount": 1,
+      "Members": [
+        "CN=DC01,OU=Domain Controllers,DC=contoso,DC=local",
+        "CN=DC02,OU=Domain Controllers,DC=contoso,DC=local"
+      ]
+    },
+    {
+      "Name": "Enterprise Domain Controllers",
+      "DistinguishedName": "CN=Enterprise Domain Controllers,CN=ForeignSecurityPrincipals,DC=contoso,DC=local",
+      "SID": "S-1-5-9",
+      "Description": "Well-known group",
+      "GroupType": "-2147483646",
+      "AdminCount": 0,
+      "Members": []
+    },
+    {
+      "Name": "Read-only Domain Controllers",
+      "DistinguishedName": "CN=Read-only Domain Controllers,CN=Users,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-521",
+      "Description": "Members are Read-Only Domain Controllers",
+      "GroupType": "-2147483646",
+      "AdminCount": 0,
+      "Members": []
+    },
+    {
+      "Name": "Enterprise Key Admins",
+      "DistinguishedName": "CN=Enterprise Key Admins,CN=Users,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-527",
+      "Description": "Members can perform administrative actions on key objects",
+      "GroupType": "-2147483646",
+      "AdminCount": 0,
+      "Members": []
+    },
+    {
+      "Name": "DnsAdmins",
+      "DistinguishedName": "CN=DnsAdmins,CN=Users,DC=contoso,DC=local",
+      "SID": "S-1-5-21-1111111111-2222222222-3333333333-1151",
+      "Description": "DNS Administrators Group",
+      "GroupType": "-2147483646",
+      "AdminCount": 0,
+      "Members": [
+        "CN=svc-backup,CN=Users,DC=contoso,DC=local"
+      ]
+    }
+  ],
+  "GPOs": [
+    {
+      "Id": "11111111-1111-1111-1111-111111111111",
+      "DisplayName": "Default Domain Policy",
+      "GpoStatus": "AllSettingsEnabled",
+      "CreationTime": "2025-07-31T08:00:00",
+      "ModificationTime": "2025-07-31T08:00:00",
+      "Permissions": [
+        {
+          "Trustee": "Domain Admins",
+          "Permission": "GpoEditDeleteModifySecurity"
+        },
+        {
+          "Trustee": "Authenticated Users",
+          "Permission": "GpoEditDeleteModifySecurity"
+        }
+      ],
+      "LinkedTo": [
+        "DC=contoso,DC=local"
+      ]
+    },
+    {
+      "Id": "22222222-2222-2222-2222-222222222222",
+      "DisplayName": "Old Test Policy - 2019",
+      "GpoStatus": "AllSettingsEnabled",
+      "CreationTime": "2025-07-31T08:00:00",
+      "ModificationTime": "2025-07-31T08:00:00",
+      "Permissions": [
+        {
+          "Trustee": "Domain Admins",
+          "Permission": "GpoEditDeleteModifySecurity"
+        }
+      ],
+      "LinkedTo": []
+    }
+  ],
+  "ACLs": {
+    "AdminSDHolder": {
+      "DistinguishedName": "CN=AdminSDHolder,CN=System,DC=contoso,DC=local",
+      "Owner": "CONTOSO\\Domain Admins",
+      "HasAuditRules": false,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\svc-helpdesk",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\svc-helpdesk",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "bf967a86-0de6-11d0-a285-00aa003049e2",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\svc-backup",
+          "ActiveDirectoryRights": "WriteProperty",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    },
+    "DomainRoot": {
+      "DistinguishedName": "DC=contoso,DC=local",
+      "Owner": "CONTOSO\\Domain Admins",
+      "HasAuditRules": false,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\svc-sync",
+          "ActiveDirectoryRights": "ExtendedRight",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "1131f6aa-9c07-11d1-f79f-00c04fc2dcd2",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\svc-sync",
+          "ActiveDirectoryRights": "ExtendedRight",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "1131f6ad-9c07-11d1-f79f-00c04fc2dcd2",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Key Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Exchange Trusted Subsystem",
+          "ActiveDirectoryRights": "WriteDacl",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    },
+    "SchemaNamingContext": {
+      "DistinguishedName": "CN=Schema,CN=Configuration,DC=contoso,DC=local",
+      "Owner": "CONTOSO\\Domain Admins",
+      "HasAuditRules": true,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\svc-helpdesk",
+          "ActiveDirectoryRights": "WriteDacl",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    },
+    "ConfigurationNamingContext": {
+      "DistinguishedName": "CN=Configuration,DC=contoso,DC=local",
+      "Owner": "CONTOSO\\Domain Admins",
+      "HasAuditRules": true,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\svc-helpdesk",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\svc-helpdesk",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "bf967a86-0de6-11d0-a285-00aa003049e2",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    },
+    "DomainControllersOU": {
+      "DistinguishedName": "OU=Domain Controllers,DC=contoso,DC=local",
+      "Owner": "CONTOSO\\Domain Admins",
+      "HasAuditRules": true,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\svc-helpdesk",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    },
+    "UsersContainer": {
+      "DistinguishedName": "CN=Users,DC=contoso,DC=local",
+      "Owner": "CONTOSO\\Domain Admins",
+      "HasAuditRules": true,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    },
+    "ComputersContainer": {
+      "DistinguishedName": "CN=Computers,DC=contoso,DC=local",
+      "Owner": "CONTOSO\\Domain Admins",
+      "HasAuditRules": true,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    },
+    "CertificateTemplatesContainer": {
+      "DistinguishedName": "CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=contoso,DC=local",
+      "Owner": "CONTOSO\\Domain Admins",
+      "HasAuditRules": false,
+      "Access": [
+        {
+          "IdentityReference": "NT AUTHORITY\\SYSTEM",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Domain Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "CONTOSO\\Enterprise Admins",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+          "IdentityReference": "BUILTIN\\Administrators",
+          "ActiveDirectoryRights": "GenericAll",
+          "AccessControlType": "Allow",
+          "IsInherited": false,
+          "InheritanceType": "None",
+          "ObjectType": "00000000-0000-0000-0000-000000000000",
+          "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+        }
+      ]
+    }
+  },
+  "ADCS": {
+    "Installed": true,
+    "CertificateTemplates": [
+      {
+        "Name": "VulnWebServer",
+        "DistinguishedName": "CN=VulnWebServer,CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,DC=contoso,DC=local",
+        "displayName": "Vulnerable Web Server Template",
+        "msPKI-Certificate-Name-Flag": 1,
+        "msPKI-Enrollment-Flag": 0,
+        "msPKI-Certificate-Application-Policy": [],
+        "pKIExtendedKeyUsage": [],
+        "msPKI-RA-Signature": 0,
+        "Access": [
+          {
+            "IdentityReference": "NT AUTHORITY\\SYSTEM",
+            "ActiveDirectoryRights": "GenericAll",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "00000000-0000-0000-0000-000000000000",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\Domain Admins",
+            "ActiveDirectoryRights": "GenericAll",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "00000000-0000-0000-0000-000000000000",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\Enterprise Admins",
+            "ActiveDirectoryRights": "GenericAll",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "00000000-0000-0000-0000-000000000000",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "BUILTIN\\Administrators",
+            "ActiveDirectoryRights": "GenericAll",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "00000000-0000-0000-0000-000000000000",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\Domain Users",
+            "ActiveDirectoryRights": "ExtendedRight",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "0e10c968-78fb-11d2-90d4-00c04f79dc55",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\Domain Users",
+            "ActiveDirectoryRights": "ExtendedRight",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "a05b8cc2-17bc-4802-a710-e7c15ab866a2",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\Domain Users",
+            "ActiveDirectoryRights": "WriteDacl",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "00000000-0000-0000-0000-000000000000",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          }
+        ]
+      }
+    ],
+    "CertificateAuthorities": [
+      {
+        "Name": "CONTOSO-CA01",
+        "DistinguishedName": "CN=CONTOSO-CA01,CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,DC=contoso,DC=local",
+        "dNSHostName": "ca01.contoso.local",
+        "cACertificate": [],
+        "Access": [
+          {
+            "IdentityReference": "NT AUTHORITY\\SYSTEM",
+            "ActiveDirectoryRights": "GenericAll",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "00000000-0000-0000-0000-000000000000",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\Domain Admins",
+            "ActiveDirectoryRights": "GenericAll",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "00000000-0000-0000-0000-000000000000",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\Enterprise Admins",
+            "ActiveDirectoryRights": "GenericAll",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "00000000-0000-0000-0000-000000000000",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "BUILTIN\\Administrators",
+            "ActiveDirectoryRights": "GenericAll",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "00000000-0000-0000-0000-000000000000",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\svc-helpdesk",
+            "ActiveDirectoryRights": "GenericAll",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "00000000-0000-0000-0000-000000000000",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\svc-helpdesk",
+            "ActiveDirectoryRights": "GenericAll",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "bf967a86-0de6-11d0-a285-00aa003049e2",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\Domain Users",
+            "ActiveDirectoryRights": "ExtendedRight",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "0e10c968-78fb-11d2-90d4-00c04f79dc55",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          },
+          {
+            "IdentityReference": "CONTOSO\\Domain Users",
+            "ActiveDirectoryRights": "ExtendedRight",
+            "AccessControlType": "Allow",
+            "IsInherited": false,
+            "InheritanceType": "None",
+            "ObjectType": "a05b8cc2-17bc-4802-a710-e7c15ab866a2",
+            "InheritedObjectType": "00000000-0000-0000-0000-000000000000"
+          }
+        ]
+      }
+    ],
+    "NTAuthCertificates": [],
+    "AIACertificates": [],
+    "RootCACertificates": []
+  },
+  "DnsZones": [
+    {
+      "Name": "contoso.local",
+      "DistinguishedName": "DC=contoso.local,CN=MicrosoftDNS,DC=DomainDnsZones,DC=contoso,DC=local"
+    },
+    {
+      "Name": "_msdcs.contoso.local",
+      "DistinguishedName": "DC=_msdcs.contoso.local,CN=MicrosoftDNS,DC=ForestDnsZones,DC=contoso,DC=local"
+    }
+  ],
+  "Trusts": [
+    {
+      "Target": "partner.external",
+      "trustAttributes": 8,
+      "Direction": "Bidirectional",
+      "TrustType": "Uplevel",
+      "SIDFilteringQuarantined": false,
+      "SelectiveAuthentication": false,
+      "Created": "2025-07-31T08:00:00",
+      "Modified": "2025-07-31T08:00:00"
+    }
+  ],
+  "MachineAccountQuota": 10,
+  "RunScopeNotes": [],
+  "DsHeuristics": null,
+  "DsHeuristicsDN": "CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,DC=contoso,DC=local",
+  "PreWin2000GroupDN": "CN=Pre-Windows 2000 Compatible Access,CN=Builtin,DC=contoso,DC=local",
+  "PreWin2000Members": [
+    "CN=ANONYMOUS LOGON,CN=WellKnown Security Principals,CN=Configuration,DC=contoso,DC=local"
+  ],
+  "LapsSchema": {
+    "LegacyLapsPresent": false,
+    "WindowsLapsPresent": false
+  },
+  "PasswordPolicy": {
+    "MinPasswordLength": 7,
+    "ComplexityEnabled": false,
+    "ReversibleEncryptionEnabled": true
+  },
+  "Forest": {
+    "ForestMode": "Windows2008R2Forest"
+  },
+  "TombstoneLifetimeDays": 60,
+  "RecycleBinEnabled": false
+}
