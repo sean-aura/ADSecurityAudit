@@ -688,6 +688,23 @@ function Test-ADCSChaseFallback {
     # here to reuse.
     $editfEnableChaseClientDc = 0x00100000
 
+    # EDITF_ATTRIBUTESUBJECTALTNAME2 (0x00040000) - a CA-wide policy flag
+    # that lets ANY certificate template on the CA accept a caller-supplied
+    # Subject Alternative Name (SAN) in the certificate request, regardless
+    # of the individual template's own "Enrollee Supplies Subject" setting.
+    # This is the well-known ESC6 misconfiguration: with this flag set, a
+    # low-privileged requester can obtain a certificate asserting the
+    # identity of any other user or computer object - including Tier-0
+    # accounts - via a template that would otherwise be safe, since the
+    # flag operates at the CA level, above and independent of per-template
+    # ACLs/settings. Read from the SAME already-fetched policy\EditFlags
+    # registry value as the chase-fallback check above - one remote read,
+    # two independent bit checks - explicitly named as a top AD CS
+    # mitigation in ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's "Detecting and
+    # mitigating Active Directory compromises" (Sept 2026): "Ensure that
+    # the CA is not configured with the EDITF_ATTRIBUTESUBJECTALTNAME2 flag."
+    $editfAttributeSubjectAltName2 = 0x00040000
+
     $certAuthorities = @()
     $adcsInstalled = $false
 
@@ -808,6 +825,30 @@ function Test-ADCSChaseFallback {
                 EditFlagBit       = 'EDITF_ENABLECHASECLIENTDC (0x00100000)'
                 CVE               = 'CVE-2026-54121'
                 PatchDate         = '2026-07-14'
+            }
+            $findings += $finding
+        }
+
+        $sanFlagEnabled = (($editFlagsResult.EditFlags -band $editfAttributeSubjectAltName2) -ne 0)
+
+        if ($sanFlagEnabled) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Certificate Services'
+            $finding.Issue = 'CA-Wide SAN Attribute Flag Enabled (ESC6)'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = "$caName ($caHost)"
+            $finding.Description = "Certificate Authority '$caName' ($caHost) has the EDITF_ATTRIBUTESUBJECTALTNAME2 policy flag set on its policy\EditFlags registry value. This allows a Subject Alternative Name (SAN) to be supplied in a certificate request for ANY certificate template on this CA, regardless of that template's own 'Enrollee Supplies Subject' setting."
+            $finding.Impact = "This is the well-known ESC6 misconfiguration: because the flag operates CA-wide rather than per-template, a low-privileged requester can supply an arbitrary SAN - including the identity of a Tier-0 account - when enrolling against ANY template on this CA that permits client authentication, even templates whose own configuration would otherwise be considered safe. The resulting certificate can then be used to authenticate as the impersonated identity."
+            $finding.Remediation = "Clear the EDITF_ATTRIBUTESUBJECTALTNAME2 flag: certutil -config `"$caName`" -setreg policy\EditFlags -EDITF_ATTRIBUTESUBJECTALTNAME2, then restart Certificate Services (Restart-Service CertSvc -Force). Confirm no legitimate enrollment workflow relies on CA-wide SAN supply before disabling - if SAN supply is genuinely needed for a specific template, configure it on that template individually instead ('Enrollee Supplies Subject') rather than CA-wide."
+            $finding.EstimatedEffort = 'Medium - a single registry flag, but requires first identifying which templates/workflows (if any) currently rely on CA-wide SAN supply so their enrollment isn''t broken.'
+            $finding.KnownRisks = 'Clearing this flag breaks enrollment for any legitimate workflow that currently depends on supplying a SAN CA-wide (rather than via an individual template''s own Enrollee Supplies Subject setting) - identify and migrate those workflows to per-template configuration first.'
+            $finding.BackupRollback = 'Easy - the change is a single registry value; re-enable via certutil and restart CertSvc to restore the prior behavior immediately if something breaks, with no data loss.'
+            $finding.Details = @{
+                DistinguishedName = $ca.DistinguishedName
+                CAHost            = $caHost
+                EditFlags         = ('0x{0:X}' -f $editFlagsResult.EditFlags)
+                EditFlagBit       = 'EDITF_ATTRIBUTESUBJECTALTNAME2 (0x00040000)'
             }
             $findings += $finding
         }

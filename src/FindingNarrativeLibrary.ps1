@@ -129,6 +129,12 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - the change is a single registry value; if a legitimate enrollment workflow breaks, re-enable EDITF_ENABLECHASECLIENTDC via certutil and restart CertSvc to restore the prior behavior immediately, with no data loss.'
         OperationalNotes = 'Re-enabling the flag as a rollback restores the CVE-2026-54121 exposure, so treat it as strictly temporary and monitor Certificate Services event ID 4886 (a cert request carrying a client-DC hint that doesn''t match a known DC) while investigating any dependency.'
     }
+    'CA-Wide SAN Attribute Flag Enabled (ESC6)' = @{
+        EstimatedEffort  = 'Medium - a single registry flag, but requires first identifying which templates/workflows (if any) currently rely on CA-wide SAN supply so their enrollment isn''t broken.'
+        KnownRisks       = 'Clearing this flag breaks enrollment for any legitimate workflow that currently depends on supplying a SAN CA-wide (rather than via an individual template''s own Enrollee Supplies Subject setting) - identify and migrate those workflows to per-template configuration first.'
+        BackupRollback   = 'Easy - the change is a single registry value; re-enable via certutil and restart CertSvc to restore the prior behavior immediately if something breaks, with no data loss.'
+        OperationalNotes = ''
+    }
     'Print Spooler Running on Domain Controller' = @{
         EstimatedEffort  = 'Low - stop and disable a single service on each DC (or via GPO).'
         KnownRisks       = 'Disabling the Spooler service on a DC breaks any printing initiated directly from that DC itself, which is essentially never a legitimate DC role; it has no effect on printing by domain clients, which don''t route jobs through DCs.'
@@ -249,6 +255,12 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Hard/Limited - sIDHistory can''t be restored to its prior value without re-injecting it via the same migration tooling (e.g. ADMT) that originally populated it; treat clearing it as a one-way cleanup once confirmed unauthorized.'
         OperationalNotes = ''
     }
+    'SID History Attribute Populated' = @{
+        EstimatedEffort  = 'Low - clearing sIDHistory is a single-attribute change once a completed migration is confirmed.'
+        KnownRisks       = 'Clearing sIDHistory before every migrated resource''s ACL has been updated to the new SID breaks the account''s access to resources that still only trust the old SID - confirm migration completion first.'
+        BackupRollback   = 'Hard/Limited - sIDHistory can''t be restored without re-injecting it via the same migration tooling (e.g. ADMT) that originally populated it.'
+        OperationalNotes = ''
+    }
     'Legacy Logon Script Defined' = @{
         EstimatedEffort  = 'Low - a single scriptPath/userWorkstations-style attribute per account.'
         KnownRisks       = 'Removing or migrating a working legacy logon script could break whatever the script does for affected users until an equivalent modern (GPO-based) replacement is validated.'
@@ -307,6 +319,18 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - disabling the setting alone doesn''t clear already-stored reversibly-encrypted password copies for existing accounts, so plan a follow-up forced password change for previously affected accounts.'
         KnownRisks       = 'The existing stored reversible-encryption copy persists for each account until its next password change, so disabling the GPO setting alone doesn''t retroactively protect current passwords, a documented Microsoft behavior.'
         BackupRollback   = 'Easy - revert the GPO setting; no data loss, though re-enabling doesn''t restore already-cleared reversible copies.'
+        OperationalNotes = ''
+    }
+    'Account Lockout Disabled' = @{
+        EstimatedEffort  = 'Medium - a Default Domain Policy GPO change; confirm any legitimate break-glass/service accounts that must never lock out are covered by a separate Fine-Grained Password Policy first, since this change applies domain-wide.'
+        KnownRisks       = 'Enabling lockout can itself become a denial-of-service vector if an attacker deliberately fails logons for a target account to lock it out - a documented trade-off, not a reason to leave lockout disabled entirely.'
+        BackupRollback   = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
+        OperationalNotes = ''
+    }
+    'Account Lockout Threshold Above Recommended Maximum' = @{
+        EstimatedEffort  = 'Low - a single Default Domain Policy GPO value change.'
+        KnownRisks       = 'Lowering the threshold increases the chance a legitimate user locks themselves out after a few genuine mistyped passwords, which may increase helpdesk password-reset/unlock volume.'
+        BackupRollback   = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
         OperationalNotes = ''
     }
     'Outdated Domain Functional Level' = @{
@@ -405,6 +429,12 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - restore the GPO permission via GPMC; effective immediately, though the change still needs to replicate to all DCs.'
         OperationalNotes = ''
     }
+    'Non-Standard GPO Owner' = @{
+        EstimatedEffort  = 'Low - a single ownership change on one GPO object; confirm the current owner isn''t an intentional, actively-used delegated GPO-management account first.'
+        KnownRisks       = 'Procedural - confirm the current owner isn''t a legitimate delegated GPO administrator for this specific GPO before changing ownership.'
+        BackupRollback   = 'Easy - ownership can be changed back to the prior value at any time by an administrator; effective immediately, no data loss.'
+        OperationalNotes = ''
+    }
     'Unlinked GPO' = @{
         EstimatedEffort  = 'Low - this is a hygiene finding; typical remediation is to delete the unused GPO or formally document/retain it.'
         KnownRisks       = 'Deleting an unlinked GPO is safe in the sense that it isn''t currently applied anywhere, but if it''s only temporarily unlinked (e.g. staged for a future rollout), deleting it loses that work - confirm with whoever created it first.'
@@ -439,6 +469,12 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - removing a broad principal from a User Rights Assignment in one GPO; confirm no legitimate broad-access scenario (e.g. an intentional kiosk deployment) depends on it.'
         KnownRisks       = 'Removing a broad principal from a sensitive logon right can lock out any system or service that currently relies on that broad grant, so confirm intent before narrowing.'
         BackupRollback   = 'Easy - revert the User Rights Assignment setting in the GPO; effective at next Group Policy refresh, no data loss.'
+        OperationalNotes = ''
+    }
+    'GPO Deploys Restricted Groups Membership' = @{
+        EstimatedEffort  = 'Medium - editing the Restricted Groups membership list in one GPO; confirm with the owning team which members are actually still needed before removing any.'
+        KnownRisks       = 'Removing a member that legitimately needs local admin/RDP/backup rights on the affected computers will revoke that access at the next Group Policy refresh - confirm current legitimate use before narrowing.'
+        BackupRollback   = 'Easy - restore the prior Restricted Groups membership list in the GPO; effective at next Group Policy refresh, no data loss.'
         OperationalNotes = ''
     }
     'Cross-Domain Privileged Group Membership' = @{
@@ -555,6 +591,18 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Moderate - revert the WSUS client GPO to the HTTP URL and the IIS binding to HTTP; requires a Group Policy refresh across clients to fully take effect.'
         OperationalNotes = ''
     }
+    'NTLM Authentication Not Restricted in Domain' = @{
+        EstimatedEffort  = 'High - fully restricting NTLM requires first auditing which applications/services still depend on it (often significant in legacy environments), then migrating or explicitly exempting each one, before enforcement can be raised to a deny level without breaking authentication.'
+        KnownRisks       = 'Moving straight to a deny level without an audit period first will break authentication for any application, service, or legacy client that still relies on NTLM and has no Kerberos alternative configured - a real and common operational risk in mixed environments.'
+        BackupRollback   = 'Easy - revert the GPO setting to 0 (Allow all); effective at next Group Policy refresh, no data loss.'
+        OperationalNotes = ''
+    }
+    'LSA Protection (RunAsPPL) Not Enabled on Domain Controller' = @{
+        EstimatedEffort  = 'Medium - a single registry value per DC, but requires a restart to take effect and should be preceded by auditing which LSA plugins/drivers are currently loaded (via audit mode) so none are unexpectedly blocked once enforced.'
+        KnownRisks       = 'A currently-loaded LSA plugin or driver that does not meet Microsoft''s signing requirements will fail to load once LSA Protection is enabled, which can break third-party smart-card, authentication-extension, or security-vendor software that hooks LSA - audit first with LSA Protection in audit-only mode if available.'
+        BackupRollback   = 'Easy - revert the registry value to 0 (or delete it) and restart the DC; no data loss.'
+        OperationalNotes = ''
+    }
     'Default Machine Account Quota Not Restricted' = @{
         EstimatedEffort  = 'Low - a single domain-wide attribute (ms-DS-MachineAccountQuota).'
         KnownRisks       = 'Lowering or zeroing this quota only prevents self-service computer joins by regular users; legitimate machine joins performed by an account with delegated Create Computer Objects rights are unaffected.'
@@ -565,6 +613,18 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Low - a single domain-wide attribute (ms-DS-MachineAccountQuota).'
         KnownRisks       = 'Lowering the quota to zero only prevents self-service computer joins by regular users; legitimate machine joins via delegated Create Computer Objects rights are unaffected.'
         BackupRollback   = 'Easy - revert the ms-DS-MachineAccountQuota attribute to its prior value; effective immediately, no data loss.'
+        OperationalNotes = ''
+    }
+    'gMSA Password Retrievable by Broad Principal' = @{
+        EstimatedEffort  = 'Low - a single-attribute change on the gMSA object; confirm the actual hosting server(s) first so they remain in the narrowed list.'
+        KnownRisks       = 'If the narrowed list omits a server that legitimately hosts this service, that server will fail to retrieve the password at its next rotation/lookup and the service will stop authenticating - confirm every real host before narrowing.'
+        BackupRollback   = 'Easy - restore the prior PrincipalsAllowedToRetrieveManagedPassword value; takes effect immediately, no data loss.'
+        OperationalNotes = ''
+    }
+    'Privileged gMSA Password Retrieval Not Tightly Scoped' = @{
+        EstimatedEffort  = 'Low - a single-attribute change; requires confirming with the service owner which hosts are actually legitimate.'
+        KnownRisks       = 'Removing a host that legitimately runs this service breaks its ability to authenticate as the gMSA at next password lookup - confirm current hosting before narrowing.'
+        BackupRollback   = 'Easy - restore the prior PrincipalsAllowedToRetrieveManagedPassword value; takes effect immediately, no data loss.'
         OperationalNotes = ''
     }
     'Enterprise Key Admins Over-Privileged (Misconfiguration Bug)' = @{
@@ -703,6 +763,18 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - Protected Users enforces several non-configurable protections (no NTLM, no DES/RC4, no delegation, no long-lived TGT renewal) that can break dependent legitimate functionality, so Microsoft''s own guidance is to pilot it on a test group first.'
         KnownRisks       = 'Protected Users membership blocks NTLM authentication and Kerberos delegation for that account outright; any legitimate use of the account that relies on NTLM or delegation will break the moment it''s added.'
         BackupRollback   = 'Easy - remove the account from Protected Users; effective on next logon/ticket renewal, no data loss.'
+        OperationalNotes = ''
+    }
+    'Privileged Account Not Configured as Sensitive and Cannot Be Delegated' = @{
+        EstimatedEffort  = 'Low - a single account flag; takes effect at next ticket request, no other configuration required.'
+        KnownRisks       = 'If this account genuinely needs to be delegated for a legitimate, currently-working scenario, enabling this flag will break that delegation - confirm the account has no legitimate delegation dependency first.'
+        BackupRollback   = 'Easy - clear the flag again if needed; effective at next ticket request, no data loss.'
+        OperationalNotes = ''
+    }
+    'Built-in Administrator Account Enabled and Not Recently Rotated' = @{
+        EstimatedEffort  = 'Low - a password reset (and optionally disabling the account) on a single well-known object; confirm no automation or legacy process depends on this specific account first.'
+        KnownRisks       = 'Disabling this account entirely is safe in virtually all modern environments, but confirm no legacy script or process authenticates as it directly before doing so, since it has no other owner to consult.'
+        BackupRollback   = 'Easy - re-enable the account or reset the password again if needed; no data loss either way.'
         OperationalNotes = ''
     }
 }

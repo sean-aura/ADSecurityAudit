@@ -28,7 +28,7 @@ Describe 'Test-ADDomainSecurity (Outdated Forest Functional Level / Short Tombst
         }
         function Get-ADDefaultDomainPasswordPolicy {
             param($Server)
-            [PSCustomObject]@{ MinPasswordLength = 14; ComplexityEnabled = $true; ReversibleEncryptionEnabled = $false }
+            [PSCustomObject]@{ MinPasswordLength = 14; ComplexityEnabled = $true; ReversibleEncryptionEnabled = $false; LockoutThreshold = 5 }
         }
         function Get-ADForest {
             param($Server)
@@ -82,5 +82,76 @@ Describe 'Test-ADDomainSecurity (Outdated Forest Functional Level / Short Tombst
         { Test-ADDomainSecurity } | Should -Not -Throw
         $findings = Test-ADDomainSecurity
         ($findings | Where-Object { $_.Issue -eq 'Short Tombstone Lifetime' }) | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-ADDomainSecurity (Account Lockout Policy)' {
+    BeforeEach {
+        function Get-ADDomain {
+            param([switch]$ErrorAction, $Server)
+            [PSCustomObject]@{ DistinguishedName = 'DC=contoso,DC=com'; DNSRoot = 'contoso.com'; DomainMode = 'Windows2016Domain'; NetBIOSName = 'CONTOSO'; DomainSID = 'S-1-5-21-1-2-3'; Forest = 'contoso.com' }
+        }
+        function Get-ADForest {
+            param($Server)
+            [PSCustomObject]@{ ForestMode = 'Windows2016Forest' }
+        }
+        function Get-ADRootDSE {
+            param([switch]$ErrorAction, $Server)
+            [PSCustomObject]@{ configurationNamingContext = 'CN=Configuration,DC=contoso,DC=com' }
+        }
+        function Get-ADObject {
+            param($Identity, $Properties, $Server, [switch]$ErrorAction)
+            [PSCustomObject]@{ tombstoneLifetime = 180 }
+        }
+        function Get-ADOptionalFeature {
+            param($Filter, $Server)
+            [PSCustomObject]@{ EnabledScopes = @('CN=Configuration,DC=contoso,DC=com') }
+        }
+        function Get-ADComputer {
+            param($Filter, $Properties, $LDAPFilter, $Server)
+            @()
+        }
+    }
+
+    It 'flags Account Lockout Disabled (Critical) when LockoutThreshold is 0' {
+        function Get-ADDefaultDomainPasswordPolicy {
+            param($Server)
+            [PSCustomObject]@{ MinPasswordLength = 14; ComplexityEnabled = $true; ReversibleEncryptionEnabled = $false; LockoutThreshold = 0 }
+        }
+
+        $findings = Test-ADDomainSecurity
+        $finding = $findings | Where-Object { $_.Issue -eq 'Account Lockout Disabled' }
+
+        $finding | Should -Not -BeNullOrEmpty
+        $finding.Severity | Should -Be 'Critical'
+        $finding.Details.LockoutThreshold | Should -Be 0
+        # Mutually exclusive with the "above maximum" finding.
+        ($findings | Where-Object { $_.Issue -eq 'Account Lockout Threshold Above Recommended Maximum' }) | Should -BeNullOrEmpty
+    }
+
+    It 'flags Account Lockout Threshold Above Recommended Maximum (Medium) when the threshold exceeds 5' {
+        function Get-ADDefaultDomainPasswordPolicy {
+            param($Server)
+            [PSCustomObject]@{ MinPasswordLength = 14; ComplexityEnabled = $true; ReversibleEncryptionEnabled = $false; LockoutThreshold = 10 }
+        }
+
+        $findings = Test-ADDomainSecurity
+        $finding = $findings | Where-Object { $_.Issue -eq 'Account Lockout Threshold Above Recommended Maximum' }
+
+        $finding | Should -Not -BeNullOrEmpty
+        $finding.Severity | Should -Be 'Medium'
+        $finding.Details.LockoutThreshold | Should -Be 10
+        ($findings | Where-Object { $_.Issue -eq 'Account Lockout Disabled' }) | Should -BeNullOrEmpty
+    }
+
+    It 'does not flag either lockout finding when the threshold is within the recommended range (1-5)' {
+        function Get-ADDefaultDomainPasswordPolicy {
+            param($Server)
+            [PSCustomObject]@{ MinPasswordLength = 14; ComplexityEnabled = $true; ReversibleEncryptionEnabled = $false; LockoutThreshold = 5 }
+        }
+
+        $findings = Test-ADDomainSecurity
+        ($findings | Where-Object { $_.Issue -eq 'Account Lockout Disabled' }) | Should -BeNullOrEmpty
+        ($findings | Where-Object { $_.Issue -eq 'Account Lockout Threshold Above Recommended Maximum' }) | Should -BeNullOrEmpty
     }
 }

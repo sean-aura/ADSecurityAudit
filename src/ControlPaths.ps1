@@ -34,7 +34,17 @@
 
 # Broad/well-known principals that make any path they sit on Critical,
 # regardless of how many hops separate them from the Tier-0 target.
-$Script:ControlPathBroadPrincipalPattern = '(^|\\)(Everyone|Authenticated Users|Domain Users|ANONYMOUS LOGON)$'
+# Domain Computers added per ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's "Detecting
+# and mitigating Active Directory compromises" (Sept 2026), which
+# specifically calls out this group in TWO separate techniques
+# (MachineAccountQuota compromise and Silver Ticket): every computer
+# object in the domain - including one a low-privileged user creates via
+# the default MachineAccountQuota=10 - is a member of Domain Computers, so
+# a dangerous ACE or Tier-0-group membership held by Domain Computers is
+# functionally as broad a path as one held by Domain Users, and was
+# previously NOT treated as broad here despite the module's other checks
+# (Test-ADMachineAccountQuota) already flagging the underlying quota issue.
+$Script:ControlPathBroadPrincipalPattern = '(^|\\)(Everyone|Authenticated Users|Domain Users|Domain Computers|ANONYMOUS LOGON)$'
 
 function Add-ADControlPathEdge {
     <#

@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.25.0'
+    ModuleVersion = '1.27.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -24,12 +24,14 @@
         'Test-KRBTGTAccount',
         'Test-ADDomainTrusts',
         'Test-LAPSDeployment',
+        'Test-ADManagedServiceAccountSecurity',
         'Test-AuditPolicyConfiguration',
         'Test-ConstrainedDelegation',
         'Test-ADDomainAdminEquivalence',
         'Test-ADMachineAccountQuota',
         'Test-ADDomainHardeningFlags',
         'Test-ADCoercionAndRelayExposure',
+        'Test-ADLsaProtection',
         'Test-ADDnsSecurity',
         'Test-ADLegacyAuthSurface',
         'Test-ADKerberosHardening',

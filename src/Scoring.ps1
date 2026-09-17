@@ -100,6 +100,8 @@ $Script:ADFindingMetadataMap = @{
     'Privileged Account with SPN (Kerberoasting Risk)'     = @{ Mitre = 'T1558.003'; Anssi = 'vuln1_priv_spn_kerberoast';     Weight = 40 }
     'User Account with SPN (Kerberoasting Risk)'           = @{ Mitre = 'T1558.003'; Anssi = 'vuln3_spn_kerberoast';          Weight = 10 }
     'Privileged Account Not in Protected Users Group'      = @{ Mitre = 'T1003';     Anssi = 'vuln3_protected_users';         Weight = 10 }
+    'Privileged Account Not Configured as Sensitive and Cannot Be Delegated' = @{ Mitre = 'T1558'; Anssi = 'vuln2_priv_account_delegatable'; Weight = 20 }
+    'Built-in Administrator Account Enabled and Not Recently Rotated' = @{ Mitre = 'T1110'; Anssi = 'vuln2_builtin_admin_stale_password'; Weight = 20 }
 
     # --- Privileged Groups ---
     'Excessive Privileged Group Membership'                = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_privileged_members';      Weight = 20 }
@@ -128,6 +130,8 @@ $Script:ADFindingMetadataMap = @{
     'Weak Minimum Password Length'                         = @{ Mitre = 'T1110';     Anssi = 'vuln2_weak_min_pwd_length';     Weight = 20 }
     'Password Complexity Disabled'                         = @{ Mitre = 'T1110';     Anssi = 'vuln2_pwd_complexity_disabled'; Weight = 20 }
     'Reversible Encryption Enabled Domain-Wide'            = @{ Mitre = 'T1003';     Anssi = 'vuln1_reversible_domain_wide';  Weight = 40 }
+    'Account Lockout Disabled'                             = @{ Mitre = 'T1110';     Anssi = 'vuln1_lockout_disabled';        Weight = 40 }
+    'Account Lockout Threshold Above Recommended Maximum'  = @{ Mitre = 'T1110';     Anssi = 'vuln3_lockout_threshold_high';  Weight = 10 }
     'Outdated Domain Functional Level'                     = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_outdated_dfl';            Weight = 4  }
     'Outdated Forest Functional Level'                     = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_outdated_ffl';            Weight = 4  }
     # Lower weight than the "Outdated" pair above (4): Windows2016 is fully
@@ -164,6 +168,7 @@ $Script:ADFindingMetadataMap = @{
     'ROCA-Vulnerable Certificate Key'                                  = @{ Mitre = 'T1649'; Anssi = 'vuln2_adcs_roca';        Weight = 20 }
     'Weak Signature Algorithm in PKI Trust Store'                      = @{ Mitre = 'T1649'; Anssi = 'vuln3_adcs_weak_signature'; Weight = 10 }
     'CA Chase-Fallback Enabled (CVE-2026-54121 / Certighost Exposure)' = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_certighost_chase'; Weight = 40 }
+    'CA-Wide SAN Attribute Flag Enabled (ESC6)'            = @{ Mitre = 'T1649';     Anssi = 'vuln1_adcs_esc6_san_flag';       Weight = 40 }
 
     # --- Kerberos Security (KRBTGT) ---
     'KRBTGT Password Age Exceeds Recommended Threshold'   = @{ Mitre = 'T1558.001'; Anssi = 'vuln1_krbtgt_age';              Weight = 40 }
@@ -197,6 +202,7 @@ $Script:ADFindingMetadataMap = @{
     'Shadow Credentials Detected'                        = @{ Mitre = 'T1556';     Anssi = 'vuln1_shadow_credentials';       Weight = 40 }
     'SID History Injection (Same Domain)'                = @{ Mitre = 'T1134.005'; Anssi = 'vuln1_sid_history_injection';     Weight = 40 }
     'Privileged SID in History'                          = @{ Mitre = 'T1134.005'; Anssi = 'vuln1_privileged_sid_history';    Weight = 40 }
+    'SID History Attribute Populated'                    = @{ Mitre = 'T1134.005'; Anssi = 'vuln5_sid_history_populated';     Weight = 1  }
     'Legacy Logon Script Defined'                        = @{ Mitre = 'T1037';     Anssi = 'vuln4_legacy_logon_script';      Weight = 4  }
     'Domain Admin Equivalent Access Detected'            = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_da_equivalent_access';      Weight = 20 }
 
@@ -216,6 +222,9 @@ $Script:ADFindingMetadataMap = @{
     'LDAP Signing Not Enforced on Domain Controller'     = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_ldap_signing_not_enforced'; Weight = 40 }
     'LDAP Channel Binding Not Enforced'                  = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_ldap_channel_binding_not_enforced'; Weight = 40 }
 
+    # --- LSA Protection (Skeleton Key mitigation) ---
+    'LSA Protection (RunAsPPL) Not Enabled on Domain Controller' = @{ Mitre = 'T1547.005'; Anssi = 'vuln2_lsa_protection_disabled'; Weight = 20 }
+
     # --- DNS Security (AD-integrated DNS) ---
     'Non-Default Members in DnsAdmins'                        = @{ Mitre = 'T1574.002'; Anssi = 'vuln1_dnsadmins_members';        Weight = 40 }
     'DNS Zone Transfer Allowed'                               = @{ Mitre = 'T1590.002'; Anssi = 'vuln3_dns_zone_transfer';        Weight = 10 }
@@ -229,6 +238,7 @@ $Script:ADFindingMetadataMap = @{
     'LM/NTLMv1 Authentication Permitted'                  = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_lm_ntlmv1_permitted';     Weight = 40 }
     'LLMNR Not Disabled by Policy'                        = @{ Mitre = 'T1557.001'; Anssi = 'vuln3_llmnr_not_disabled';     Weight = 10 }
     'WSUS Delivered over HTTP'                            = @{ Mitre = 'T1210';     Anssi = 'vuln1_wsus_http';              Weight = 40 }
+    'NTLM Authentication Not Restricted in Domain'         = @{ Mitre = 'T1557.001'; Anssi = 'vuln3_ntlm_not_restricted';     Weight = 10 }
 
     # --- Kerberos Hardening Depth (AES enforcement, FAST/armoring, cross-trust TGT delegation) ---
     'RC4 Kerberos Encryption Still Permitted'             = @{ Mitre = 'T1558.003'; Anssi = 'vuln2_rc4_kerberos_permitted'; Weight = 20 }
@@ -269,6 +279,14 @@ $Script:ADFindingMetadataMap = @{
     'Indirect Control Path to Tier-0 Object'               = @{ Mitre = 'T1098'; Anssi = 'vuln2_control_path_indirect';        Weight = 20 }
     'Everyone/Authenticated Users on a Control Path to Tier-0' = @{ Mitre = 'T1098'; Anssi = 'vuln1_control_path_broad';       Weight = 40 }
     'Owner of Tier-0 Object is Non-Privileged'             = @{ Mitre = 'T1098'; Anssi = 'vuln2_control_path_owner';           Weight = 20 }
+
+    # --- Managed Service Accounts (gMSA password-retrieval rights) ---
+    'gMSA Password Retrievable by Broad Principal'         = @{ Mitre = 'T1552.005'; Anssi = 'vuln1_gmsa_broad_retrieval';    Weight = 40 }
+    'Privileged gMSA Password Retrieval Not Tightly Scoped' = @{ Mitre = 'T1552.005'; Anssi = 'vuln2_gmsa_tier0_retrieval';   Weight = 20 }
+
+    # --- Group Policy (Restricted Groups / GPO ownership additions) ---
+    'GPO Deploys Restricted Groups Membership'             = @{ Mitre = 'T1098.007'; Anssi = 'vuln1_gpo_restricted_groups';   Weight = 40 }
+    'Non-Standard GPO Owner'                               = @{ Mitre = 'T1484.001'; Anssi = 'vuln2_gpo_non_admin_owner';     Weight = 20 }
 }
 
 function Get-ADFindingMetadataMap {

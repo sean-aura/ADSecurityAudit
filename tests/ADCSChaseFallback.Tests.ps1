@@ -77,6 +77,49 @@ Describe 'Test-ADCSChaseFallback (CVE-2026-54121 / Certighost)' {
         $finding.Details.CAHost | Should -Be 'ca01.contoso.com'
     }
 
+    It 'fires Critical for CA-Wide SAN Attribute Flag Enabled (ESC6) when EDITF_ATTRIBUTESUBJECTALTNAME2 is set, independent of the chase-fallback bit' {
+        function Invoke-Command {
+            param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)
+            # EDITF_ATTRIBUTESUBJECTALTNAME2 (0x40000) set; chase-fallback
+            # bit (0x100000) explicitly absent, to confirm the two checks
+            # are independent (reusing the same registry read, not
+            # conflated into one condition).
+            [PSCustomObject]@{ EditFlagsRead = $true; EditFlags = 0x40000; Error = $null }
+        }
+
+        $findings = Test-ADCSChaseFallback
+        $escFinding = $findings | Where-Object { $_.Issue -eq 'CA-Wide SAN Attribute Flag Enabled (ESC6)' }
+
+        $escFinding | Should -Not -BeNullOrEmpty
+        $escFinding.Category | Should -Be 'Certificate Services'
+        $escFinding.Severity | Should -Be 'Critical'
+        $escFinding.SeverityLevel | Should -Be 4
+        $escFinding.Description | Should -Match 'EDITF_ATTRIBUTESUBJECTALTNAME2'
+        $escFinding.Details.EditFlagBit | Should -Match 'EDITF_ATTRIBUTESUBJECTALTNAME2'
+        ($findings | Where-Object { $_.Issue -eq 'CA Chase-Fallback Enabled (CVE-2026-54121 / Certighost Exposure)' }) | Should -BeNullOrEmpty
+    }
+
+    It 'fires both CA-Wide SAN Attribute Flag Enabled (ESC6) and the chase-fallback finding when both bits are set (one registry read, two independent checks)' {
+        function Invoke-Command {
+            param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)
+            [PSCustomObject]@{ EditFlagsRead = $true; EditFlags = (0x40000 -bor 0x100000); Error = $null }
+        }
+
+        $findings = Test-ADCSChaseFallback
+        ($findings | Where-Object { $_.Issue -eq 'CA-Wide SAN Attribute Flag Enabled (ESC6)' }) | Should -Not -BeNullOrEmpty
+        ($findings | Where-Object { $_.Issue -eq 'CA Chase-Fallback Enabled (CVE-2026-54121 / Certighost Exposure)' }) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'produces neither finding when neither EditFlags bit is set' {
+        function Invoke-Command {
+            param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)
+            [PSCustomObject]@{ EditFlagsRead = $true; EditFlags = 0; Error = $null }
+        }
+
+        $findings = Test-ADCSChaseFallback
+        $findings | Should -BeNullOrEmpty
+    }
+
     It 'still fires when the flag is set even if the CA host reports no error (patched-but-still-flagged case)' {
         function Invoke-Command {
             param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)

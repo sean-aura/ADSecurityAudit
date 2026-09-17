@@ -32,30 +32,35 @@ A PowerShell module that finds misconfigurations and security vulnerabilities in
 ## Features
 
 ### Core checks
-User account risks (AS-REP Roasting, weak/reversible encryption, unconstrained delegation, Kerberoasting, inactive accounts) · privileged group hygiene (excessive/nested membership, disabled users) · AdminSDHolder tampering · GPO misconfigurations (over-permissioned, insecure SYSVOL, mislinked) · DCSync detection · domain security settings (password policy, domain/forest functional level, tombstone lifetime, legacy systems) · dangerous ACL permissions on AD objects (critical OUs, Schema/Configuration naming context head objects).
+User account risks (AS-REP Roasting, weak/reversible encryption, unconstrained delegation, Kerberoasting, inactive accounts, privileged accounts missing the "cannot be delegated" flag, the built-in Administrator account) · privileged group hygiene (excessive/nested membership, disabled users) · AdminSDHolder tampering · GPO misconfigurations (over-permissioned, insecure SYSVOL, mislinked) · DCSync detection · domain security settings (password policy, account lockout policy, domain/forest functional level, tombstone lifetime, legacy systems) · dangerous ACL permissions on AD objects (critical OUs, Schema/Configuration naming context head objects).
 
 <details>
 <summary><strong>Advanced checks (click to expand — 20+ modules)</strong></summary>
 
-- **AD CS (Certificate Services)**: ESC1/ESC2/ESC3/ESC7, plus **Extended**: ESC4 (weak template ACLs), ESC8 (HTTP enrollment without EPA), ROCA-vulnerable keys (CVE-2017-15361), weak signature/RSA sizes across CA + NTAuth/AIA/Root store, and CA chase-fallback exposure (CVE-2026-54121 "Certighost").
+- **AD CS (Certificate Services)**: ESC1/ESC2/ESC3/ESC7, plus **Extended**: ESC4 (weak template ACLs), ESC6 (CA-wide `EDITF_ATTRIBUTESUBJECTALTNAME2` SAN flag), ESC8 (HTTP enrollment without EPA), ROCA-vulnerable keys (CVE-2017-15361), weak signature/RSA sizes across CA + NTAuth/AIA/Root store, and CA chase-fallback exposure (CVE-2026-54121 "Certighost").
 - **KRBTGT password age**: flags rotation older than the 180-day recommendation (Golden Ticket risk).
 - **Domain trusts**: SID filtering, selective auth, direction, bidirectional exposure.
 - **LAPS**: schema presence, coverage %, static local-admin passwords.
+- **Managed Service Accounts (gMSA)**: who can retrieve each gMSA's managed password (`PrincipalsAllowedToRetrieveManagedPassword`), flagging broad grants and non-Tier-0 access to privileged gMSAs.
 - **Audit policy**: critical policies enabled, SACLs on sensitive objects.
 - **Delegation**: constrained delegation, protocol transition (T2A4D), resource-based constrained delegation (RBCD).
 - **Risk Scoring / ANSSI Maturity / MITRE ATT&CK**: rolls findings into a 0–100 score with per-category sub-scores, a 1–5 ANSSI maturity level, and MITRE technique tags — all from one mapping table (`Get-ADRiskScore`, `Set-ADFindingMetadata`).
 - **Machine Account Quota**: flags the unmodified default of 10 (or any non-zero value) — a common RBCD/SamAccountName-spoofing foothold.
 - **Domain hardening flags**: dangerous `dSHeuristics` settings, broad membership in Pre-Windows 2000 Compatible Access, anonymous LDAP bind, and null-session pipe/share access (`RestrictNullSessAccess`).
 - **Coercion & NTLM relay exposure**: Print Spooler / WebClient running on DCs, LDAP signing/channel binding not enforced.
+- **LSA Protection**: flags a Domain Controller where LSA Protection (`RunAsPPL`) isn't enabled — the primary mitigation against Skeleton Key and other LSASS-process-tampering techniques.
 - **AD-integrated DNS**: DnsAdmins membership (DC code-exec path), zone-transfer exposure, insecure dynamic updates, broad CreateChild rights (ADIDNS spoofing), and stale/dangling zone delegations (subdomain-takeover risk).
-- **Legacy auth & name-poisoning surface**: SMBv1, SMB signing, LM/NTLMv1, LLMNR, WSUS-over-HTTP — distinguishing policy-enforced values from unset ones.
+- **Domain security settings**: password policy (length, complexity, reversible encryption), account lockout policy (disabled or above the recommended 5-attempt threshold), domain/forest functional level, tombstone lifetime, legacy systems.
+- **Legacy auth & name-poisoning surface**: SMBv1, SMB signing, LM/NTLMv1, LLMNR, WSUS-over-HTTP, and NTLM authentication left unrestricted domain-wide (`RestrictNTLMInDomain`, distinct from the LM/NTLMv1-downgrade check above) — distinguishing policy-enforced values from unset ones.
 - **Kerberos hardening depth**: RC4 still permitted for Tier-0/krbtgt, trusts missing AES-only, Kerberos Armoring (FAST), cross-trust TGT delegation.
 - **Stale-object & hygiene depth**: PASSWD_NOTREQD accounts, non-default `primaryGroupID` (membership-hiding technique), duplicate SPNs, DCs missing from AD Sites subnets, insufficient DC count.
-- **GPO-deployed secrets**: leftover GPP `cpassword` (MS14-025), credential patterns in deployed scripts, insecure GPO settings (firewall, RDP NLA), and User Rights Assignments handing sensitive logon rights to broad principals.
+- **GPO-deployed secrets**: leftover GPP `cpassword` (MS14-025), credential patterns in deployed scripts, insecure GPO settings (firewall, RDP NLA), User Rights Assignments handing sensitive logon rights to broad principals, and Restricted Groups pushing local group membership (Administrators, Backup Operators, Remote Desktop Users, Power Users) - a direct, GPO-wide privilege grant equivalent to a BloodHound "AdminTo via GPO" edge.
+- **GPO ownership & link scope**: flags a non-standard GPO owner (resolved by SID, not name) since an owner can always rewrite the DACL regardless of current permissions; the "linked to Domain Controllers with weak permissions" check resolves the actual DC-containing OU(s) dynamically rather than matching a hardcoded OU name, so a renamed/reorganized DC OU is still caught.
 - **Known DC vulnerabilities by patch/build**: ZeroLogon, EternalBlue, MS14-068, PrintNightmare, CVE-2026-41089 (Netlogon RCE), and BadSuccessor/dMSA exposure on Server 2025 DCs (per-DC CVE-2025-53779 patch classification) — all inferred from build/hotfix level, never exploitation.
 - **Exchange-in-AD privilege escalation**: Exchange security principals holding dangerous rights on the domain object or AdminSDHolder — fires even on residual ACEs after Exchange is decommissioned.
 - **RODC security posture**: cached/revealable Tier-0 secrets, overly broad replication policy, orphaned RODC krbtgt accounts.
-- **Attack-path graph**: builds a control-edge graph (dangerous ACEs, group membership, ownership) and computes reachability from any non-Tier-0 principal to Tier-0 targets, with full hop chains and an optional BloodHound-compatible export.
+- **Attack-path graph**: builds a control-edge graph (dangerous ACEs, group membership, ownership) and computes reachability from any non-Tier-0 principal to Tier-0 targets, with full hop chains and an optional BloodHound-compatible export. Broad principals (Everyone, Authenticated Users, Domain Users, Domain Computers, ANONYMOUS LOGON) on any path are always flagged Critical. The Tier-0 target set can be extended beyond the built-in privileged groups via `-AdditionalTier0DN` (e.g. a backup service account with rights over every DC) - every check built on the shared Tier-0 definition (`Get-ADTier0Principal`) picks up the addition automatically, including the constrained-delegation-target check below.
+- **Domain Admin equivalence**: correlates ACLs, delegation, and attribute-level signals (Shadow Credentials, WriteSPN, RBCD) into effective Domain Admin-equivalent access, even without explicit group membership; constrained-delegation targets are checked against the full Tier-0 set, not just Domain Controllers. Also flags any populated `sIDHistory` not already caught by the same-domain-injection or privileged-well-known-RID checks — covering both leftover migration artifacts and cross-domain/cross-forest "domain hopping" SID injection.
 - **Multi-domain/forest consolidation**: rolls up prior per-domain JSON exports into one forest score, heatmap, and comparison table — a free equivalent to PingCastle's paid "Conso" feature.
 
 </details>
@@ -128,6 +133,12 @@ Start-ADSecurityAudit -Server domainb.corp.com -ExportPath "C:\ADReports"
 Start-ADSecurityAudit -Server dc01.domainb.corp.com -ExportPath "C:\ADReports"
 ```
 Every standalone audit function accepts the same `-Server` parameter. Full detail (PDC Emulator resolution, `runas /netonly` limitation, internals): see [Multi-Domain / Forest Targeting](#multi-domain--forest-targeting).
+
+**Declaring additional Tier-0 assets** (objects that are privileged in practice but aren't nested in a built-in privileged group — e.g. a backup service account with rights over every DC):
+```powershell
+Start-ADSecurityAudit -ExportPath "C:\ADReports" -AdditionalTier0DN "CN=svc-backup,OU=ServiceAccounts,DC=contoso,DC=com"
+```
+Picked up automatically by every check built on the shared Tier-0 definition (`Get-ADTier0Principal`) — currently the attack-path graph, the Exchange escalation check, and the constrained-delegation-target check.
 
 **Recreate a report later, with no live AD access:**
 ```powershell
@@ -528,5 +539,9 @@ Review the [Troubleshooting](#troubleshooting) section, check PowerShell event l
 ## Acknowledgments
 
 Built on industry-standard AD security assessment methodologies, inspired by Microsoft Security Best Practices, the MITRE ATT&CK Framework, Purple Knight, BloodHound's graph theory, and [PingCastle](https://github.com/netwrix/pingcastle) (Netwrix) — see the Independence note at the top of this README.
+
+Also informed by ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's joint guidance, *["Detecting and mitigating Active Directory compromises"](https://www.cyber.gov.au)* (Sept 2026, 17 common AD compromise techniques) — every check added in v1.27.0 (account lockout policy, "sensitive and cannot be delegated" on privileged accounts, the built-in Administrator account, Domain Computers as a broad principal, ESC6, cross-domain sIDHistory hygiene, LSA Protection, and NTLM restriction) closes a gap this guidance's preventive/configuration mitigations called out that no existing check here covered. The guidance's own event-log/SIEM detection sections are a different tool category (log correlation, not point-in-time config auditing) and are intentionally out of this project's scope.
+
+**On borrowing ideas, not code:** this project treats every AD security assessment tool and piece of authoritative guidance — PingCastle, Purple Knight, BloodHound, government advisories like the one above — as a source of *ideas* worth independently verifying against this codebase, never as a source to copy from. Every check here is our own detection logic, written and tested against this module's own conventions. The goal isn't to match any one tool's feature list; it's to keep building the most capable free, open-source AD security assessment tool available — one that, check for check, already goes further than the commercial and community tools it's inspired by (attack-path graphing with BloodHound-compatible export, retest/trend tracking, forest consolidation, exception/remediation-state tracking, and MITRE/ANSSI-mapped scoring, on top of the breadth covered above).
 
 Thanks to Claude (Anthropic) for AI-assisted source analysis and implementation/bug-fix work across v1.2.0–v1.18.0, and to [denandz](https://github.com/denandz) for the patch that independently identified and fixed the `-Server` reliability issue.

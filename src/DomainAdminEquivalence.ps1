@@ -118,6 +118,28 @@ function Test-ADDomainAdminEquivalence {
             $dcNames = $dcComputers | ForEach-Object { $_.Name }
         }
 
+        # Tier-0 lookup for the constrained-delegation-target check below:
+        # generalizes "delegation to a Domain Controller" to "delegation to
+        # ANY Tier-0 principal" (a Domain Admin's own workstation, a Tier-0
+        # service account, or anything in a user-declared -AdditionalTier0DN
+        # scope - see Get-ADTier0Principal in Common.ps1). Keyed on the
+        # short hostname/SamAccountName (trailing '$' trimmed for computer
+        # accounts) since msDS-AllowedToDelegateTo stores SPNs
+        # (service/host), not DNs, and the delegation target is matched by
+        # SPN host component, same as the existing $dcNames match just
+        # below.
+        $tier0SamAccountLookup = @{}
+        try {
+            foreach ($t0 in @(Get-ADTier0Principal)) {
+                if (-not $t0.SamAccountName) { continue }
+                $tier0SamAccountLookup[$t0.SamAccountName.ToLowerInvariant()] = $true
+                $tier0SamAccountLookup[$t0.SamAccountName.TrimEnd('$').ToLowerInvariant()] = $true
+            }
+        }
+        catch {
+            Write-Verbose "Test-ADDomainAdminEquivalence: failed to resolve Tier-0 principal set for delegation-target check: $_"
+        }
+
         function Add-Evidence {
             param(
                 [string]$Principal,
@@ -438,8 +460,10 @@ function Test-ADDomainAdminEquivalence {
         foreach ($user in $sidHistoryUsers) {
             foreach ($sid in $user.sIDHistory) {
                 $sidStr = $sid.ToString()
-                
-                if ($sidStr -like "$domainSID*") {
+                $isSameDomainSid = [bool]($sidStr -like "$domainSID*")
+                $isPrivilegedRidSid = [bool]($sidStr -match '-(500|512|519)$')
+
+                if ($isSameDomainSid) {
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Admin Equivalence'
                     $finding.Issue = 'SID History Injection (Same Domain)'
@@ -461,7 +485,7 @@ function Test-ADDomainAdminEquivalence {
                     $findings += $finding
                 }
                 
-                if ($sidStr -match '-(500|512|519)$') {
+                if ($isPrivilegedRidSid) {
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'Admin Equivalence'
                     $finding.Issue = 'Privileged SID in History'
@@ -478,6 +502,46 @@ function Test-ADDomainAdminEquivalence {
                         UserDN       = $user.DistinguishedName
                         PrivilegedSID = $sidStr
                         Domain       = $domain.DNSRoot
+                    }
+                    $findings += $finding
+                }
+
+                # Catch-all hygiene finding for any populated sIDHistory
+                # entry that ISN'T already caught by the two more specific
+                # checks above (same-domain injection, or a privileged
+                # well-known RID). Per ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's
+                # "Detecting and mitigating Active Directory compromises"
+                # (Sept 2026): sIDHistory "should be checked weekly" and
+                # "should not be used" outside active migration, and the
+                # guidance separately describes "domain hopping with
+                # Golden Ticket + SID History" - injecting a FOREIGN
+                # domain's security-group SID (not necessarily one of the
+                # three well-known RIDs above) to move laterally across a
+                # forest trust. Without this, a cross-domain sIDHistory
+                # entry for a custom (non-500/512/519) group produced NO
+                # finding at all, regardless of whether it was a genuine
+                # leftover migration artifact or an injected foreign SID.
+                # Lower severity than the two checks above since a
+                # legitimate, still-in-progress domain migration is a
+                # much more likely explanation here than for either of
+                # those two more specific, higher-confidence indicators.
+                if (-not $isSameDomainSid -and -not $isPrivilegedRidSid) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Admin Equivalence'
+                    $finding.Issue = 'SID History Attribute Populated'
+                    $finding.Severity = 'Low'
+                    $finding.SeverityLevel = 1
+                    $finding.AffectedObject = $user.SamAccountName
+                    $finding.Description = "User has a SID from a different domain ($sidStr) in its SID History."
+                    $finding.Impact = "sIDHistory is legitimate only during an active, in-progress domain migration. If this entry is a leftover from a completed migration, it grants the account whatever access the source-domain SID had - access that won't appear in any group-membership review of this domain. It is also the mechanism used in a 'domain hopping' attack that combines a Golden Ticket with an injected foreign-domain SID to move laterally across a forest trust."
+                    $finding.Remediation = "Confirm whether this is an active, still-in-progress domain migration. If the migration is complete (all resource ACLs updated to the new SID), clear the sIDHistory attribute: Set-ADUser -Identity '$($user.SamAccountName)' -Remove @{sIDHistory=`"$sidStr`"}. If migration is still underway, leave it in place until complete."
+                    $finding.EstimatedEffort = 'Low - clearing sIDHistory is a single-attribute change once a completed migration is confirmed.'
+                    $finding.KnownRisks = 'Clearing sIDHistory before every migrated resource''s ACL has been updated to the new SID breaks the account''s access to resources that still only trust the old SID - confirm migration completion first.'
+                    $finding.BackupRollback = 'Hard/Limited - sIDHistory can''t be restored without re-injecting it via the same migration tooling (e.g. ADMT) that originally populated it.'
+                    $finding.Details = @{
+                        UserDN      = $user.DistinguishedName
+                        ForeignSID  = $sidStr
+                        Domain      = $domain.DNSRoot
                     }
                     $findings += $finding
                 }
@@ -640,6 +704,26 @@ function Test-ADDomainAdminEquivalence {
                         Target = $targetHostShort
                         SPN = $targetSPN
                         Attack = "Impersonate users to DC via S4U2Proxy"
+                    }
+                }
+
+                # Beyond DCs specifically: constrained delegation to ANY
+                # Tier-0 principal (a Domain Admin's own workstation
+                # account, a Tier-0 service account, etc. - not just a DC
+                # computer object) is the same S4U2Proxy impersonation
+                # risk, just against a different privileged target. Uses
+                # the same Tier-0 lookup ControlPaths.ps1 builds from
+                # Get-ADTier0Principal (which also folds in any
+                # user-declared -AdditionalTier0DN scope), matched against
+                # the delegation target's short hostname/SamAccountName -
+                # msDS-AllowedToDelegateTo stores SPNs (service/host), not
+                # DNs, so the match has to go through the SPN's host
+                # component rather than a direct DN/SID lookup.
+                if ($targetHostShort -notin $dcNames -and $tier0SamAccountLookup -and $tier0SamAccountLookup.ContainsKey($targetHostShort.ToLowerInvariant())) {
+                    Add-Evidence -Principal $obj.Name -Reason "Admin Equivalence Edge: AllowedToDelegate to Tier-0 Principal $targetHostShort" -Context @{
+                        Target = $targetHostShort
+                        SPN    = $targetSPN
+                        Attack = "Impersonate users to a Tier-0 principal via S4U2Proxy"
                     }
                 }
             }

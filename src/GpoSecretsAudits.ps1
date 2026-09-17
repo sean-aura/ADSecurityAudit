@@ -53,6 +53,22 @@ $Script:GpoSecretsSensitiveLogonRights = @{
     'SeRemoteInteractiveLogonRight' = 'Allow log on through Remote Desktop Services'
 }
 
+# Well-known LOCAL built-in group SIDs (constant across every computer,
+# unlike domain-relative RIDs) that GptTmpl.inf's [Group Membership]
+# ("Restricted Groups") section can push membership into. Only the
+# security-sensitive ones are checked - granting/replacing membership in
+# any of these via GPO is a direct, GPO-wide privilege-escalation
+# mechanism (every computer the GPO applies to gets the same membership
+# pushed to it), and it is a common, straightforward BloodHound-style
+# "AdminTo via GPO" edge that is otherwise easy to miss since it lives in
+# a security template, not a conventional ACE.
+$Script:GpoSecretsRestrictedGroupSids = @{
+    'S-1-5-32-544' = 'Administrators'
+    'S-1-5-32-555' = 'Remote Desktop Users'
+    'S-1-5-32-551' = 'Backup Operators'
+    'S-1-5-32-547' = 'Power Users'
+}
+
 # Lightweight, conservative patterns for spotting a credential embedded in a
 # script. These intentionally match on structure (a credential-flavoured
 # keyword next to an assignment/parameter), not on any specific secret
@@ -412,6 +428,93 @@ function Test-ADGpoDeployedSecrets {
                         GpoId       = $gpo.Id
                         FilePath    = $gptTmplPath
                         BroadGrants = $broadRightGrants
+                    }
+                    $findings += $finding
+                }
+
+                # -----------------------------------------------------------
+                # Check 5 - GPO pushes local group membership via
+                # "Restricted Groups" (GptTmpl.inf's [Group Membership]
+                # section). This is a direct, GPO-wide privilege grant -
+                # every computer the GPO applies to gets the listed
+                # membership pushed to it - and is a common, otherwise
+                # easy-to-miss "AdminTo via GPO" style edge, since it lives
+                # in a security template file rather than a conventional
+                # ACE any of the ACL-based checks elsewhere in this module
+                # would catch. Entries look like
+                # "*S-1-5-32-544__Members = *S-1-5-21-...-1104,CORP\jdoe" -
+                # matched on the well-known LOCAL group SID (constant
+                # across every computer), same convention as the broad-
+                # principal check above.
+                # -----------------------------------------------------------
+                $restrictedGroupHits = @()
+                $groupMembershipSection = [regex]::Match($tmplContent, '(?ims)^\[Group Membership\]\s*(.*?)(^\[|\z)')
+                if ($groupMembershipSection.Success) {
+                    $groupMembershipBody = $groupMembershipSection.Groups[1].Value
+
+                    foreach ($sid in $Script:GpoSecretsRestrictedGroupSids.Keys) {
+                        $membersMatch = [regex]::Match($groupMembershipBody, "(?im)^\*?$([regex]::Escape($sid))__Members\s*=\s*(.*)\s*$")
+                        if (-not $membersMatch.Success) { continue }
+
+                        $rawMembers = $membersMatch.Groups[1].Value.Trim()
+                        if ([string]::IsNullOrWhiteSpace($rawMembers)) { continue }
+
+                        # Each entry is either '*<SID>' or a plain
+                        # 'DOMAIN\name'. Resolve SIDs to a display name on
+                        # a best-effort basis (translation can fail for a
+                        # SID from a domain/forest this session can't
+                        # resolve); fall back to the raw SID string.
+                        $memberNames = @($rawMembers -split ',' | ForEach-Object {
+                            $entry = $_.Trim()
+                            if ($entry.StartsWith('*')) {
+                                $rawSid = $entry.TrimStart('*')
+                                try {
+                                    (New-Object System.Security.Principal.SecurityIdentifier($rawSid)).Translate([System.Security.Principal.NTAccount]).Value
+                                }
+                                catch {
+                                    $rawSid
+                                }
+                            }
+                            else {
+                                $entry
+                            }
+                        } | Where-Object { $_ })
+
+                        if ($memberNames.Count -eq 0) { continue }
+
+                        $restrictedGroupHits += [PSCustomObject]@{
+                            GroupSid   = $sid
+                            GroupName  = $Script:GpoSecretsRestrictedGroupSids[$sid]
+                            Members    = $memberNames
+                        }
+                    }
+                }
+
+                if ($restrictedGroupHits.Count -gt 0) {
+                    $restrictedGroupBullets = ($restrictedGroupHits | ForEach-Object {
+                        "- $($_.GroupName) membership set to: $(($_.Members) -join ', ')"
+                    }) -join "`n"
+
+                    $sensitiveGroupNames = @($restrictedGroupHits.GroupName)
+                    $severity = if ($sensitiveGroupNames -contains 'Administrators' -or $sensitiveGroupNames -contains 'Backup Operators') { 'Critical' } else { 'High' }
+                    $severityLevel = if ($severity -eq 'Critical') { 4 } else { 3 }
+
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Group Policy'
+                    $finding.Issue = 'GPO Deploys Restricted Groups Membership'
+                    $finding.Severity = $severity
+                    $finding.SeverityLevel = $severityLevel
+                    $finding.AffectedObject = $gpo.DisplayName
+                    $finding.Description = "GPO '$($gpo.DisplayName)' uses Restricted Groups to set local group membership on every computer it applies to:`n$restrictedGroupBullets"
+                    $finding.Impact = "Restricted Groups REPLACES the target local group's membership on every computer the GPO applies to (it does not just add to it), so this GPO is a direct, GPO-wide grant of local privilege - equivalent to a BloodHound 'AdminTo' edge from a GPO. Anyone who can edit or is granted membership by this GPO gains that local privilege on every affected computer at the next Group Policy refresh."
+                    $finding.Remediation = "Review the Restricted Groups membership pushed by this GPO (Computer Configuration > Windows Settings > Security Settings > Restricted Groups) and confirm every listed member is intended and still needed. Remove any unexpected principal, and consider scoping the GPO link more narrowly if the membership isn't appropriate for every computer it currently applies to."
+                    $finding.EstimatedEffort = 'Medium - editing the Restricted Groups membership list in one GPO; confirm with the owning team which members are actually still needed before removing any.'
+                    $finding.KnownRisks = 'Removing a member that legitimately needs local admin/RDP/backup rights on the affected computers will revoke that access at the next Group Policy refresh - confirm current legitimate use before narrowing.'
+                    $finding.BackupRollback = 'Easy - restore the prior Restricted Groups membership list in the GPO; effective at next Group Policy refresh, no data loss.'
+                    $finding.Details = @{
+                        GpoId            = $gpo.Id
+                        FilePath         = $gptTmplPath
+                        RestrictedGroups = $restrictedGroupHits
                     }
                     $findings += $finding
                 }

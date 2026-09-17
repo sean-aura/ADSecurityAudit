@@ -38,7 +38,22 @@ function Start-ADSecurityAudit {
         # Resolve-ADSecurityAuditTargetServer in Common.ps1 for why the
         # default can't reliably detect that case on its own).
         [Parameter()]
-        [string]$Server
+        [string]$Server,
+
+        # User-declared additions to the Tier-0 scope, on top of the
+        # built-in privileged groups/DCs/AdminSDHolder that
+        # Get-ADTier0Principal already resolves on its own (see
+        # Common.ps1). Pass one or more distinguished names of objects
+        # that are Tier-0 in THIS environment even though they aren't
+        # nested in a built-in privileged group - e.g. a backup service
+        # account with rights over every DC, or a custom-named
+        # "Tier0-Admins" group. Consumed by every check that calls
+        # Get-ADTier0Principal (currently ControlPaths.ps1's
+        # Test-ADControlPaths/Get-ADControlPathGraph,
+        # ExchangeEscalationAudits.ps1, and the constrained-delegation
+        # Tier-0-target check in DomainAdminEquivalence.ps1).
+        [Parameter()]
+        [string[]]$AdditionalTier0DN = @()
     )
     
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -68,6 +83,12 @@ function Start-ADSecurityAudit {
     # Start-ADSecurityAudit call in the same PowerShell session never leak
     # into this run's HTML report - see Common.ps1.
     Reset-ADRunScopeNotes
+
+    # Reset (then repopulate) the shared additional-Tier-0-scope list on
+    # every run, same reasoning as Reset-ADRunScopeNotes above: without
+    # this, a value from a previous Start-ADSecurityAudit call in the same
+    # PowerShell session (or its absence) would leak into this run.
+    $Script:AdditionalTier0DistinguishedNames = @($AdditionalTier0DN)
     
     if (-not (Test-Path $ExportPath)) {
         try {
@@ -230,6 +251,7 @@ function Start-ADSecurityAudit {
             'MachineAccountQuota' = { Test-ADMachineAccountQuota -Server $effectiveServer }
             'DomainHardeningFlags' = { Test-ADDomainHardeningFlags }
             'CoercionAndRelayExposure' = { Test-ADCoercionAndRelayExposure }
+            'LsaProtection' = { Test-ADLsaProtection }
             'DnsSecurity' = { Test-ADDnsSecurity }
             'LegacyAuthSurface' = { Test-ADLegacyAuthSurface }
             'KerberosHardening' = { Test-ADKerberosHardening }
@@ -239,6 +261,7 @@ function Start-ADSecurityAudit {
             'ExchangeEscalation' = { Test-ADExchangeEscalation }
             'RodcSecurity' = { Test-ADRodcSecurity }
             'ControlPaths' = { Test-ADControlPaths }
+            'ManagedServiceAccounts' = { Test-ADManagedServiceAccountSecurity }
         }
         
         # Determine which tests to run

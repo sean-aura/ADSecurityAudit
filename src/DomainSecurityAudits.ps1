@@ -91,6 +91,52 @@ function Test-ADDomainSecurity {
             }
             $findings += $finding
         }
+
+        # Account lockout threshold/duration. Called out explicitly in
+        # ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's "Detecting and mitigating
+        # Active Directory compromises" (Sept 2026) as a top password-
+        # spraying mitigation: "Lock out user objects, except for break
+        # glass accounts, after a maximum of five failed logon attempts."
+        # $defaultPasswordPolicy is already fetched above for the other
+        # password-policy checks - LockoutThreshold/LockoutDuration are
+        # additional properties on that same object, not a new query.
+        if ($defaultPasswordPolicy.LockoutThreshold -eq 0) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Security'
+            $finding.Issue = 'Account Lockout Disabled'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = 'Default Domain Password Policy'
+            $finding.Description = "The domain's account lockout threshold is 0 (disabled) - accounts are never locked out regardless of how many failed logon attempts occur."
+            $finding.Impact = "With lockout disabled, an attacker can attempt unlimited passwords against every account in the domain without ever being blocked, removing password spraying's main practical constraint."
+            $finding.Remediation = "Set an account lockout threshold of 5 or fewer failed attempts (excluding break-glass accounts, which should be excluded from lockout via a dedicated Fine-Grained Password Policy instead): Set-ADDefaultDomainPasswordPolicy -LockoutThreshold 5 -Identity $($domain.DNSRoot)"
+            $finding.EstimatedEffort = 'Medium - a Default Domain Policy GPO change; confirm any legitimate break-glass/service accounts that must never lock out are covered by a separate Fine-Grained Password Policy first, since this change applies domain-wide.'
+            $finding.KnownRisks = 'Enabling lockout can itself become a denial-of-service vector if an attacker deliberately fails logons for a target account to lock it out - a documented trade-off, not a reason to leave lockout disabled entirely.'
+            $finding.BackupRollback = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
+            $finding.Details = @{
+                LockoutThreshold = $defaultPasswordPolicy.LockoutThreshold
+            }
+            $findings += $finding
+        }
+        elseif ($defaultPasswordPolicy.LockoutThreshold -gt 5) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Domain Security'
+            $finding.Issue = 'Account Lockout Threshold Above Recommended Maximum'
+            $finding.Severity = 'Medium'
+            $finding.SeverityLevel = 2
+            $finding.AffectedObject = 'Default Domain Password Policy'
+            $finding.Description = "The domain's account lockout threshold is $($defaultPasswordPolicy.LockoutThreshold) failed attempts, above the recommended maximum of 5."
+            $finding.Impact = "A higher threshold gives an attacker more password guesses per account before lockout, making password spraying (which deliberately stays under the threshold to avoid detection) more effective."
+            $finding.Remediation = "Lower the account lockout threshold to 5 or fewer failed attempts: Set-ADDefaultDomainPasswordPolicy -LockoutThreshold 5 -Identity $($domain.DNSRoot)"
+            $finding.EstimatedEffort = 'Low - a single Default Domain Policy GPO value change.'
+            $finding.KnownRisks = 'Lowering the threshold increases the chance a legitimate user locks themselves out after a few genuine mistyped passwords, which may increase helpdesk password-reset/unlock volume.'
+            $finding.BackupRollback = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
+            $finding.Details = @{
+                LockoutThreshold = $defaultPasswordPolicy.LockoutThreshold
+                RecommendedMaximum = 5
+            }
+            $findings += $finding
+        }
         
         # Check domain functional level
         $domainLevel = $domain.DomainMode

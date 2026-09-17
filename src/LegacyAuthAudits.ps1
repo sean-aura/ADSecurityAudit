@@ -40,6 +40,10 @@ $Script:LegacyAuthRegistryTargets = @{
         Key       = 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
         ValueName = 'WUServer'
     }
+    RestrictNtlmInDomain = @{
+        Key       = 'HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+        ValueName = 'RestrictNTLMInDomain'
+    }
 }
 
 # Resolves the GPOs linked to a given AD container, ordered so that the
@@ -472,6 +476,78 @@ function Test-ADLegacyAuthSurface {
     }
     catch {
         Write-Warning "Test-ADLegacyAuthSurface: error evaluating WSUS delivery protocol: $_"
+    }
+
+    # -------------------------------------------------------------------
+    # Check 6: NTLM Authentication Not Restricted in Domain
+    # (RestrictNTLMInDomain)
+    # -------------------------------------------------------------------
+    # Distinct from Check 3 (LmCompatibilityLevel) above: that setting
+    # only restricts which NTLM *version* is permitted (blocking LM/NTLMv1
+    # downgrade while still allowing NTLMv2), whereas RestrictNTLMInDomain
+    # controls whether NTLM authentication is permitted AT ALL for
+    # authentication within the domain, evaluated by Domain Controllers.
+    # Called out explicitly in ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's
+    # "Detecting and mitigating Active Directory compromises" (Sept 2026)
+    # for both password spraying ("Disable the NTLM protocol wherever
+    # possible... this negates MFA requirements since NTLM does not
+    # support MFA") and DCSync (NTLM password hashes retrieved via DCSync
+    # are usable immediately, with no need to crack them, as long as NTLM
+    # itself remains accepted).
+    try {
+        $target = $Script:LegacyAuthRegistryTargets.RestrictNtlmInDomain
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
+
+        $isUnrestricted = $false
+        $source = $null
+        $detail = @{}
+
+        if ($policy) {
+            # 0 = "Allow all" (not restricted); 1-6 = various audit/deny
+            # levels; 7 = "Deny all". Only "Allow all" (or an explicitly
+            # 0 value) is flagged - any non-zero value means the domain
+            # has at least moved to auditing or partially restricting
+            # NTLM, a deliberate step beyond the unconfigured default.
+            $isUnrestricted = ([int]$policy.Value -eq 0)
+            $source = "GPO: $($policy.Source)"
+            $detail = @{ EnforcedValue = [int]$policy.Value; Source = $source }
+        }
+        else {
+            $perDc = Get-ADLiveRegistryValuePerDc -DomainControllers $domainControllers -Key $target.Key -ValueName $target.ValueName
+            # Missing (no enforcing GPO, no live value) is the OS default
+            # of "Allow all" (unrestricted) for RestrictNTLMInDomain -
+            # unlike LmCompatibilityLevel above, whose unset default (3)
+            # is already reasonably safe, NTLM restriction defaults to
+            # fully permissive, so a genuinely absent value on every DC
+            # is itself flagged here, not treated as compliant-by-default.
+            $unrestrictedDCs = @($perDc | Where-Object { $null -eq $_.Value -or [int]$_.Value -eq 0 } | ForEach-Object { $_.DomainController })
+            $isUnrestricted = $unrestrictedDCs.Count -gt 0
+            $source = 'No enforcing GPO found; observed via direct per-DC registry read'
+            $detail = @{ Source = $source; AffectedDomainControllers = $unrestrictedDCs; PerDomainControllerState = @($perDc) }
+        }
+
+        if ($isUnrestricted) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Legacy Auth & Name Poisoning'
+            $finding.Issue = 'NTLM Authentication Not Restricted in Domain'
+            $finding.Severity = 'Medium'
+            $finding.SeverityLevel = 2
+            $finding.AffectedObject = if ($policy) { $dcOuDn } else { ($detail.AffectedDomainControllers -join ', ') }
+            $finding.Description = "`RestrictNTLMInDomain` is not configured to restrict NTLM authentication within the domain ($source) - NTLM is fully permitted."
+            $finding.Impact = "NTLM authenticates directly to a Domain Controller and does not support MFA, so any control relying on MFA to stop password spraying or credential reuse can be bypassed via NTLM regardless of MFA enforcement elsewhere. NTLM password hashes obtained via DCSync or ntds.dit are also immediately usable (no cracking required) for as long as NTLM authentication remains accepted."
+            $finding.Remediation = "Configure 'Network security: Restrict NTLM: NTLM authentication in this domain' via GPO, starting with an audit-only level (e.g. 1 or 2) to baseline legitimate NTLM usage in Netlogon/NTLM auditing logs before moving to a deny level (6 or 7) once dependencies are identified and migrated to Kerberos."
+            $finding.EstimatedEffort = 'High - fully restricting NTLM requires first auditing which applications/services still depend on it (often significant in legacy environments), then migrating or explicitly exempting each one, before enforcement can be raised to a deny level without breaking authentication.'
+            $finding.KnownRisks = 'Moving straight to a deny level without an audit period first will break authentication for any application, service, or legacy client that still relies on NTLM and has no Kerberos alternative configured - a real and common operational risk in mixed environments.'
+            $finding.BackupRollback = 'Easy - revert the GPO setting to 0 (Allow all); effective at next Group Policy refresh, no data loss.'
+            $finding.Details = $detail
+            $findings += $finding
+        }
+        else {
+            Write-Verbose "Test-ADLegacyAuthSurface: NTLM authentication is at least partially restricted in the domain (policy-enforced or observed live)."
+        }
+    }
+    catch {
+        Write-Warning "Test-ADLegacyAuthSurface: error evaluating RestrictNTLMInDomain: $_"
     }
 
     Write-Verbose "Legacy Auth & Name-Poisoning Surface audit complete. Found $($findings.Count) issue(s)."

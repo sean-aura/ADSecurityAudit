@@ -353,11 +353,14 @@ function Test-ADUserSecurity {
                 $findings += $finding
             }
             
+            # Computed regardless of whether the Protected Users group
+            # lookup succeeded, since the new NOT_DELEGATED check below
+            # doesn't depend on that group's existence.
+            $isHighlyPrivileged = $Script:ProtectedGroups | Where-Object {
+                $user.MemberOf -match "CN=$([regex]::Escape($_)),"
+            } | Where-Object { $_ -in @('Domain Admins', 'Enterprise Admins', 'Schema Admins') }
+
             if ($protectedUsersGroup) {
-                $isHighlyPrivileged = $Script:ProtectedGroups | Where-Object {
-                    $user.MemberOf -match "CN=$([regex]::Escape($_)),"
-                } | Where-Object { $_ -in @('Domain Admins', 'Enterprise Admins', 'Schema Admins') }
-                
                 if ($isHighlyPrivileged -and $user.MemberOf -notmatch 'CN=Protected Users,') {
                     $finding = [ADSecurityFinding]::new()
                     $finding.Category = 'User Account'
@@ -378,8 +381,101 @@ function Test-ADUserSecurity {
                     $findings += $finding
                 }
             }
+
+            # 'Account is sensitive and cannot be delegated' (the
+            # userAccountControl NOT_DELEGATED bit, 0x100000) - called out
+            # explicitly in ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's "Detecting
+            # and mitigating Active Directory compromises" (Sept 2026) as
+            # a top mitigation for BOTH unconstrained delegation AND the
+            # built-in Administrator account specifically: a privileged
+            # account with this flag set can never have its TGT cached on
+            # a computer configured for unconstrained delegation, and
+            # can't be used as a delegation target/source at all, closing
+            # off that whole class of TGT-theft even if unconstrained
+            # delegation exists elsewhere in the domain. userAccountControl
+            # is already fetched above for the encryption-type checks, so
+            # this is a bitmask check against data already in hand, not a
+            # new query. Independent of - and in addition to - Protected
+            # Users membership, which already implies this protection but
+            # isn't the only way to get it.
+            if ($isHighlyPrivileged) {
+                $notDelegated = (($user.userAccountControl -band 0x100000) -ne 0)
+                if (-not $notDelegated) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'User Account'
+                    $finding.Issue = 'Privileged Account Not Configured as Sensitive and Cannot Be Delegated'
+                    $finding.Severity = 'High'
+                    $finding.SeverityLevel = 3
+                    $finding.AffectedObject = $user.SamAccountName
+                    $finding.Description = "Highly privileged account '$($user.SamAccountName)' does not have the 'Account is sensitive and cannot be delegated' flag set."
+                    $finding.Impact = "Without this flag, a copy of this account's TGT can be cached in memory on any computer configured for unconstrained delegation if the account authenticates to it - letting an attacker who compromises that computer extract and reuse the TGT to impersonate this privileged account."
+                    $finding.Remediation = "Enable 'Account is sensitive and cannot be delegated' on the account: Set-ADAccountControl -Identity '$($user.SamAccountName)' -AccountNotDelegated `$true"
+                    $finding.EstimatedEffort = 'Low - a single account flag; takes effect at next ticket request, no other configuration required.'
+                    $finding.KnownRisks = 'If this account genuinely needs to be delegated for a legitimate, currently-working scenario, enabling this flag will break that delegation - confirm the account has no legitimate delegation dependency first.'
+                    $finding.BackupRollback = 'Easy - clear the flag again if needed; effective at next ticket request, no data loss.'
+                    $finding.Details = @{
+                        DistinguishedName  = $user.DistinguishedName
+                        PrivilegedGroups   = $isHighlyPrivileged -join '; '
+                        UserAccountControl = $user.userAccountControl
+                    }
+                    $findings += $finding
+                }
+            }
         }
         
+        # Built-in Administrator account (well-known RID 500) - called
+        # out with its own dedicated section in ASD/CISA/NSA/CCCS/
+        # NCSC-NZ/NCSC-UK's "Detecting and mitigating Active Directory
+        # compromises" (Sept 2026): this account is EXEMPT from the
+        # domain's account lockout policy (a failed-attempt lockout
+        # doesn't apply to it, and even a reported "locked" state clears
+        # on the next correct password), making it an especially
+        # attractive password-spraying target precisely because none of
+        # the lockout-threshold protection (see the new Account Lockout
+        # checks in DomainSecurityAudits.ps1) applies to it. Identified
+        # by SID (domain SID + "-500"), not by name, since renaming this
+        # account is itself a common, legitimate hardening practice this
+        # check must not penalize.
+        try {
+            $domainSidValue = (Get-ADDomain -Server $__adServer).DomainSID.Value
+            $builtInAdminSid = "$domainSidValue-500"
+            $builtInAdmin = if ($__adServer) {
+                Get-ADUser -Identity $builtInAdminSid -Properties Enabled, PasswordLastSet, SamAccountName, DistinguishedName -Server $__adServer -ErrorAction Stop
+            }
+            else {
+                Get-ADUser -Identity $builtInAdminSid -Properties Enabled, PasswordLastSet, SamAccountName, DistinguishedName -ErrorAction Stop
+            }
+
+            if ($builtInAdmin -and $builtInAdmin.Enabled) {
+                $adminPasswordAge = if ($builtInAdmin.PasswordLastSet) { (Get-Date) - $builtInAdmin.PasswordLastSet } else { [TimeSpan]::MaxValue }
+
+                if ($adminPasswordAge.Days -gt $PasswordAgeThreshold -or -not $builtInAdmin.PasswordLastSet) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'User Account'
+                    $finding.Issue = 'Built-in Administrator Account Enabled and Not Recently Rotated'
+                    $finding.Severity = 'High'
+                    $finding.SeverityLevel = 3
+                    $finding.AffectedObject = $builtInAdmin.SamAccountName
+                    $finding.Description = "The built-in Administrator account (RID 500, currently named '$($builtInAdmin.SamAccountName)') is enabled and its password " + $(if ($builtInAdmin.PasswordLastSet) { "was last set $($adminPasswordAge.Days) days ago, exceeding the $PasswordAgeThreshold-day threshold." } else { "has apparently never been changed since the account was created." })
+                    $finding.Impact = "This account is exempt from the domain's account lockout policy, so a failed-attempt lockout never blocks password-guessing attempts against it - it can be sprayed indefinitely without the protection every other account in the domain has. Combined with an old or default-set password, this makes it an especially attractive target."
+                    $finding.Remediation = "If this account is not required to be enabled, disable it and use a named, individually-attributable admin account instead: Disable-ADAccount -Identity '$($builtInAdmin.SamAccountName)'. If it must remain enabled as a break-glass account, set a long (30-character minimum), unique, unpredictable, managed password immediately and store it in a password vault, restricting its use to genuine emergencies only."
+                    $finding.EstimatedEffort = 'Low - a password reset (and optionally disabling the account) on a single well-known object; confirm no automation or legacy process depends on this specific account first.'
+                    $finding.KnownRisks = 'Disabling this account entirely is safe in virtually all modern environments, but confirm no legacy script or process authenticates as it directly before doing so, since it has no other owner to consult.'
+                    $finding.BackupRollback = 'Easy - re-enable the account or reset the password again if needed; no data loss either way.'
+                    $finding.Details = @{
+                        DistinguishedName = $builtInAdmin.DistinguishedName
+                        SID               = $builtInAdminSid
+                        PasswordLastSet   = $builtInAdmin.PasswordLastSet
+                        PasswordAgeDays   = if ($builtInAdmin.PasswordLastSet) { $adminPasswordAge.Days } else { 'Unknown' }
+                    }
+                    $findings += $finding
+                }
+            }
+        }
+        catch {
+            Write-Verbose "Test-ADUserSecurity: failed to evaluate the built-in Administrator account (RID 500): $_"
+        }
+
         Write-Progress -Activity "Scanning User Accounts" -Completed
         Write-Verbose "User account audit complete. Found $($findings.Count) issues."
         return $findings

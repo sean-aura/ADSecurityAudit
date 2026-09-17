@@ -20,6 +20,21 @@ $Script:SeverityLevels = @{
     Info = 0
 }
 
+# User-defined additions to the Tier-0 scope, beyond the built-in
+# privileged groups/DCs/AdminSDHolder Get-ADTier0Principal already resolves
+# on its own. Populated from Start-ADSecurityAudit's -AdditionalTier0DN
+# parameter (Main.ps1) at the start of each run, and reset to empty there
+# too, so a value from a previous Start-ADSecurityAudit call in the same
+# PowerShell session never leaks into a later run that omits the
+# parameter. Exists because the default Tier-0 set is necessarily generic
+# (the well-known privileged groups every AD domain has) - real
+# environments routinely have additional objects that are Tier-0 in
+# practice (e.g. a backup service account with rights over every DC, or a
+# custom-named "Tier0-Admins" group) without being nested in a built-in
+# privileged group at all. See Get-ADTier0Principal below for how this is
+# consumed.
+$Script:AdditionalTier0DistinguishedNames = @()
+
 $Script:ThresholdCriticalGroupSize = 5
 $Script:ThresholdStandardGroupSize = 10
 $Script:ThresholdInactiveDays = 90
@@ -146,6 +161,55 @@ class ADSecurityFinding {
 }
 
 # Retry helper function for AD queries with exponential backoff
+function Resolve-ADPrincipalNameToSid {
+    <#
+    .SYNOPSIS
+        Best-effort translation of a 'DOMAIN\Name'-style principal name to
+        its SID string.
+    .DESCRIPTION
+        Wraps the raw .NET NTAccount.Translate(SecurityIdentifier) call.
+        Extracted as its own function - rather than inlined at each call
+        site - for two reasons: (1) it's the one piece of several
+        SID/name-translation call sites in this module (GpoAudits.ps1,
+        GpoSecretsAudits.ps1, DomainAdminEquivalence.ps1, ReplicationAudits.ps1
+        each do their own inline Translate() calls) that specifically goes
+        NAME -> SID, used where a caller needs to compare against a
+        SID-keyed allowlist rather than just display a resolved name; and
+        (2) a raw .NET method call can't be shadowed/mocked the way a
+        PowerShell function can, so testing any code that calls
+        NTAccount.Translate() directly is entirely at the mercy of the live
+        security-provider context (LSA/domain availability) - which varies
+        by OS and by whether the test run has any real AD context at all,
+        making the SUCCESS path effectively untestable inline. Wrapping it
+        in a named function lets tests substitute a deterministic result
+        instead.
+
+        Returns $null - never throws - when translation fails for any
+        reason (an orphaned SID, a foreign/cross-forest principal this
+        session can't resolve, or simply no security-provider context
+        available at all), so callers get a clean success/failure signal
+        to build their own fallback behavior on.
+    .PARAMETER Name
+        The principal name to translate, e.g. 'CONTOSO\Domain Admins' or
+        'BUILTIN\Administrators'.
+    .OUTPUTS
+        [string] the SID, or $null if translation failed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    try {
+        return (New-Object System.Security.Principal.NTAccount($Name)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+    }
+    catch {
+        Write-Verbose "Resolve-ADPrincipalNameToSid: failed to translate '$Name' to a SID: $_"
+        return $null
+    }
+}
+
 function Invoke-ADQueryWithRetry {
     [CmdletBinding()]
     param(
@@ -1188,12 +1252,29 @@ function Get-ADTier0Principal {
         other groups the module already treats as privileged) and returns one
         record per unique principal (user, computer, or group) along with the
         list of protected groups that grant it privileged status.
+        Also includes any DNs from $Script:AdditionalTier0DistinguishedNames
+        (set via Start-ADSecurityAudit's -AdditionalTier0DN, or passed
+        directly via -AdditionalTier0DN below) - user-declared Tier-0 scope
+        beyond the built-in privileged groups, e.g. a backup service
+        account or custom-named admin group that isn't nested in any of
+        $Script:ProtectedGroups. Each is tagged with PrivilegedGroups =
+        'Additional Tier-0 Scope (user-defined)' so callers/reports can
+        still tell it apart from a built-in-group-derived Tier-0 member.
     .OUTPUTS
         PSCustomObject[] with SID, SamAccountName, ObjectClass, DistinguishedName,
         and PrivilegedGroups (the protected groups this principal belongs to).
+    .PARAMETER AdditionalTier0DN
+        Extra distinguished names to fold into the Tier-0 set for this call,
+        in addition to whatever is already in
+        $Script:AdditionalTier0DistinguishedNames. Mainly for direct/test
+        use; a normal run populates the script-scoped list instead (see
+        Start-ADSecurityAudit -AdditionalTier0DN).
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter()]
+        [string[]]$AdditionalTier0DN = @()
+    )
 
     Write-Verbose "Resolving Tier-0 principal set..."
     $tier0 = [System.Collections.ArrayList]::new()
@@ -1275,7 +1356,48 @@ function Get-ADTier0Principal {
         }
     }
 
-    Write-Verbose "Get-ADTier0Principal: resolved $($tier0.Count) unique Tier-0 principals."
+    # --- User-declared additional Tier-0 scope (e.g. a backup service
+    #     account or custom admin group that isn't nested in any built-in
+    #     privileged group). Each DN is resolved directly via Get-ADObject
+    #     rather than via group membership - it's added to the Tier-0 SET
+    #     itself, not assumed to be a group whose members should be
+    #     expanded. Best-effort: a DN that no longer resolves (typo,
+    #     deleted object, wrong domain) is skipped with a verbose warning
+    #     rather than failing the whole run. ---
+    $additionalDNs = @($Script:AdditionalTier0DistinguishedNames) + @($AdditionalTier0DN) | Where-Object { $_ } | Select-Object -Unique
+    foreach ($dn in $additionalDNs) {
+        $obj = $null
+        try {
+            $obj = if ($__adServer) {
+                Get-ADObject -Identity $dn -Properties objectSID, sAMAccountName -Server $__adServer -ErrorAction Stop
+            }
+            else {
+                Get-ADObject -Identity $dn -Properties objectSID, sAMAccountName -ErrorAction Stop
+            }
+        }
+        catch {
+            Write-Verbose "Get-ADTier0Principal: failed to resolve additional Tier-0 DN '$dn': $_"
+            continue
+        }
+
+        $sid = if ($obj.objectSID) { $obj.objectSID.Value } else { $null }
+        $key = if ($sid) { $sid } else { $obj.DistinguishedName }
+
+        if (-not $seen.ContainsKey($key)) {
+            $seen[$key] = [System.Collections.ArrayList]::new()
+            [void]$tier0.Add([PSCustomObject]@{
+                DistinguishedName      = $obj.DistinguishedName
+                SID                    = $sid
+                SamAccountName         = $obj.sAMAccountName
+                ObjectClass            = $obj.objectClass
+                PrivilegedGroups       = $seen[$key]
+                PrivilegedGroupsString = ''
+            })
+        }
+        [void]$seen[$key].Add('Additional Tier-0 Scope (user-defined)')
+    }
+
+    Write-Verbose "Get-ADTier0Principal: resolved $($tier0.Count) unique Tier-0 principals ($($additionalDNs.Count) from user-defined additional scope)."
     return @($tier0 | ForEach-Object { $_.PrivilegedGroupsString = ($_.PrivilegedGroups -join '; '); $_ })
 }
 
