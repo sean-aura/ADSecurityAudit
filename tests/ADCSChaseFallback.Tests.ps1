@@ -174,4 +174,83 @@ Describe 'Test-ADCSChaseFallback (CVE-2026-54121 / Certighost)' {
         $findings = Test-ADCSChaseFallback
         $findings | Should -BeNullOrEmpty
     }
+
+    It 'fires Critical for ESC11 when IF_ENFORCEENCRYPTICERTREQUEST is absent from InterfaceFlags' {
+        function Invoke-Command {
+            param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)
+            [PSCustomObject]@{ EditFlagsRead = $true; EditFlags = 0; InterfaceFlagsRead = $true; InterfaceFlags = 0; DisableExtensionListRead = $true; DisableExtensionList = @(); Error = $null }
+        }
+
+        $findings = Test-ADCSChaseFallback
+        $hit = $findings | Where-Object { $_.Issue -eq 'CA RPC Enrollment Encryption Not Enforced (ESC11)' }
+
+        $hit | Should -Not -BeNullOrEmpty
+        $hit.Severity | Should -Be 'Critical'
+        $hit.Details.RequiredBit | Should -Match 'IF_ENFORCEENCRYPTICERTREQUEST'
+    }
+
+    It 'does not flag ESC11 when IF_ENFORCEENCRYPTICERTREQUEST (0x200) is set' {
+        function Invoke-Command {
+            param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)
+            [PSCustomObject]@{ EditFlagsRead = $true; EditFlags = 0; InterfaceFlagsRead = $true; InterfaceFlags = 0x200; DisableExtensionListRead = $true; DisableExtensionList = @(); Error = $null }
+        }
+
+        $findings = Test-ADCSChaseFallback
+        ($findings | Where-Object { $_.Issue -eq 'CA RPC Enrollment Encryption Not Enforced (ESC11)' }) | Should -BeNullOrEmpty
+    }
+
+    It 'does not evaluate ESC11 at all when InterfaceFlags could not be read (avoids a false positive on a read failure)' {
+        function Invoke-Command {
+            param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)
+            [PSCustomObject]@{ EditFlagsRead = $true; EditFlags = 0; InterfaceFlagsRead = $false; InterfaceFlags = $null; DisableExtensionListRead = $true; DisableExtensionList = @(); Error = $null }
+        }
+
+        $findings = Test-ADCSChaseFallback
+        ($findings | Where-Object { $_.Issue -eq 'CA RPC Enrollment Encryption Not Enforced (ESC11)' }) | Should -BeNullOrEmpty
+    }
+
+    It 'fires Critical for ESC16 when szOID_NTDS_CA_SECURITY_EXT is in DisableExtensionList' {
+        function Invoke-Command {
+            param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)
+            [PSCustomObject]@{ EditFlagsRead = $true; EditFlags = 0; InterfaceFlagsRead = $true; InterfaceFlags = 0x200; DisableExtensionListRead = $true; DisableExtensionList = @('1.3.6.1.4.1.311.25.2'); Error = $null }
+        }
+
+        $findings = Test-ADCSChaseFallback
+        $hit = $findings | Where-Object { $_.Issue -eq 'CA-Wide Security Extension Disabled (ESC16)' }
+
+        $hit | Should -Not -BeNullOrEmpty
+        $hit.Severity | Should -Be 'Critical'
+        $hit.Details.DisabledExtension | Should -Match 'szOID_NTDS_CA_SECURITY_EXT'
+    }
+
+    It 'does not flag ESC16 when DisableExtensionList does not contain the security extension OID' {
+        function Invoke-Command {
+            param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)
+            [PSCustomObject]@{ EditFlagsRead = $true; EditFlags = 0; InterfaceFlagsRead = $true; InterfaceFlags = 0x200; DisableExtensionListRead = $true; DisableExtensionList = @('1.2.3.4.5'); Error = $null }
+        }
+
+        $findings = Test-ADCSChaseFallback
+        ($findings | Where-Object { $_.Issue -eq 'CA-Wide Security Extension Disabled (ESC16)' }) | Should -BeNullOrEmpty
+    }
+
+    It 'fires all four independent findings together when every bit/OID is present (one registry connection, four checks)' {
+        function Invoke-Command {
+            param($ComputerName, [switch]$ErrorAction, $ScriptBlock, $ArgumentList)
+            [PSCustomObject]@{
+                EditFlagsRead            = $true
+                EditFlags                = (0x00100000 -bor 0x00040000)
+                InterfaceFlagsRead       = $true
+                InterfaceFlags           = 0
+                DisableExtensionListRead = $true
+                DisableExtensionList     = @('1.3.6.1.4.1.311.25.2')
+                Error                    = $null
+            }
+        }
+
+        $findings = Test-ADCSChaseFallback
+        @($findings.Issue) | Should -Contain 'CA Chase-Fallback Enabled (CVE-2026-54121 / Certighost Exposure)'
+        @($findings.Issue) | Should -Contain 'CA-Wide SAN Attribute Flag Enabled (ESC6)'
+        @($findings.Issue) | Should -Contain 'CA RPC Enrollment Encryption Not Enforced (ESC11)'
+        @($findings.Issue) | Should -Contain 'CA-Wide Security Extension Disabled (ESC16)'
+    }
 }

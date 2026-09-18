@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.27.1'
+    ModuleVersion = '1.28.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -21,6 +21,7 @@
         'Test-ADCertificateServices',
         'Test-ADCSExtended',
         'Test-ADCSChaseFallback',
+        'Test-ADCSWeakCertificateBinding',
         'Test-KRBTGTAccount',
         'Test-ADDomainTrusts',
         'Test-LAPSDeployment',
@@ -71,6 +72,16 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.28.0 - Eight New AD CS Checks: ESC5, ESC9, ESC10, ESC11, ESC13, ESC14, ESC16, ESC17
+- New: ESC17 (Test-ADCertificateServices) - Server Authentication EKU + enrollee-supplied SAN + low-priv enrollment + no manager approval. Disclosed by the Digitrace team in early 2026; new enough that even commercial AD CS scanners generally only flag it rather than fully validate it.
+- New: ESC5 (Test-ADCSExtended) - weak ACLs on non-template PKI container objects (Public Key Services, AIA, Certification Authorities, Enrollment Services, KRA, OID), extending the existing ESC4 template-ACL pattern.
+- New: ESC9 - a template with CT_FLAG_NO_SECURITY_EXTENSION (0x80000) combined with low-privileged enrollment.
+- New: ESC13 - a template's Issuance Policy OID linked (msDS-OIDToGroupLink) to a privileged group, combined with a client-auth EKU and low-priv enrollment.
+- New: ESC11 and ESC16 (Test-ADCSChaseFallback) - unencrypted CA RPC enrollment (InterfaceFlags missing IF_ENFORCEENCRYPTICERTREQUEST) and CA-wide security-extension disabling (DisableExtensionList), both reusing the same remote-registry connection already opened for the chase-fallback/ESC6 checks.
+- New: ESC10 (new Test-ADCSWeakCertificateBinding) - reads CertificateBackdatingCompensation on Domain Controllers. Deliberately does NOT check the more commonly-cited StrongCertificateBindingEnforcement value, since Microsoft made full enforcement permanent and unconditional as of the September 9, 2025 security update, making that older value moot to check on a patched DC.
+- New: ESC14 (DomainAdminEquivalence.ps1) - a weak (Issuer+Subject) altSecurityIdentities mapping on a privileged account, plus a new evidence edge for write access to that attribute (checked against both its own schema GUID and the broader Public-Information property-set GUID that can also grant write access to it).
+- Excludes ESC12 (CA private key on external HSM device) - requires CA-server shell access to verify, outside this module's AD-object/registry detection model.
+
 v1.27.1 - Cleanup: Removed Orphaned ForcedFail Fixture Files Left Behind by v1.25.0
 - Cleanup only - no check logic, scoring, or test behavior changed. When offline/-Snapshot mode was removed in v1.25.0, that release's notes claimed the ForcedFail fixture ecosystem was removed too, but tests/fixtures/ForcedFail-{100,60,25}pct-Snapshot.json and tools/build-forcedfail-fixtures.py were never actually deleted - only marked "not currently runnable" in a fixtures README. tools/Test-ForcedFailFixture.ps1 and tests/ForcedFailFixture.Tests.ps1, referenced throughout that README, never existed in this repo at all. Confirmed via full-repo grep that nothing in src/ or tests/ loaded or executed any of these files before removing them.
 - Removed: tools/build-forcedfail-fixtures.py, the three tests/fixtures/ForcedFail-*pct-Snapshot.json files, tests/fixtures/README.md, and the now-empty tests/fixtures/ directory.

@@ -81,6 +81,12 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - revert the required-signature count to 0 on the template; effective immediately for new requests.'
         OperationalNotes = ''
     }
+    'Certificate Template Allows Arbitrary Server Certificate (ESC17)' = @{
+        EstimatedEffort  = 'Medium - same considerations as ESC1: confirm which systems currently request server certificates from this template before narrowing SAN supply or enrollment rights.'
+        KnownRisks       = 'Restricting enrollee-supplied SAN or enrollment rights can break legitimate automated server-certificate provisioning that currently relies on this template''s current configuration.'
+        BackupRollback   = 'Moderate - AD CS templates are versioned, so a prior version''s settings can be restored and republished; certificates already issued during the vulnerable window remain valid until revoked or expired.'
+        OperationalNotes = ''
+    }
     'Overly Permissive CA Permissions (ESC7)' = @{
         EstimatedEffort  = 'Medium - removing Manage CA / Manage Certificates rights from an unexpected principal on the CA object''s own ACL; confirm with the PKI team it isn''t a legitimate delegated administrator.'
         KnownRisks       = 'Procedural - confirm the principal isn''t an active, legitimate delegated CA administrator before removing their rights.'
@@ -97,6 +103,24 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - a single-template ACE removal, but confirm the trustee isn''t a legitimate certificate-lifecycle-management tool or service account before removing.'
         KnownRisks       = 'Procedural - confirm the trustee isn''t an active cert-management automation account before removing; no realistic legitimate technical break otherwise.'
         BackupRollback   = 'Moderate - export the template''s ACL (certutil -v -template or PSPKI) before changing it so the exact ACE can be restored if needed.'
+        OperationalNotes = ''
+    }
+    'Weak ACL on PKI Container Object (ESC5)' = @{
+        EstimatedEffort  = 'Medium - a container-level ACE removal; confirm the trustee isn''t a legitimate PKI-management tool or delegated administrator before removing.'
+        KnownRisks       = 'Procedural - confirm the trustee isn''t an active PKI-management automation account or delegated admin before removing; no realistic legitimate technical break otherwise.'
+        BackupRollback   = 'Moderate - export the container''s ACL (dsacls or PSPKI) before changing it so the exact ACE can be restored if needed.'
+        OperationalNotes = ''
+    }
+    'Certificate Template Missing Security Extension (ESC9)' = @{
+        EstimatedEffort  = 'Low - a single template flag; confirm no legitimate enrollment workflow depends on the omitted extension first (rare).'
+        KnownRisks       = 'Minimal - clearing this flag only adds information to newly-issued certificates; it does not change any existing legitimate authentication behavior.'
+        BackupRollback   = 'Easy - AD CS templates are versioned, so the prior flag value can be restored and republished if needed.'
+        OperationalNotes = ''
+    }
+    'Certificate Template Issuance Policy Linked to Privileged Group (ESC13)' = @{
+        EstimatedEffort  = 'Medium - confirm whether the OID-to-group link is an intentional AD FS claims scenario before removing it, since removing it changes real, currently-working claims-based access for legitimate users too.'
+        KnownRisks       = 'Removing the group link breaks any legitimate AD FS claims-based access that currently depends on it - confirm the link is unintentional/unused before removing.'
+        BackupRollback   = 'Easy - restore the msDS-OIDToGroupLink value on the OID object if needed; effective immediately.'
         OperationalNotes = ''
     }
     'Certificate Template Allows High-Risk Enrollment Without Manager Approval' = @{
@@ -133,6 +157,24 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - a single registry flag, but requires first identifying which templates/workflows (if any) currently rely on CA-wide SAN supply so their enrollment isn''t broken.'
         KnownRisks       = 'Clearing this flag breaks enrollment for any legitimate workflow that currently depends on supplying a SAN CA-wide (rather than via an individual template''s own Enrollee Supplies Subject setting) - identify and migrate those workflows to per-template configuration first.'
         BackupRollback   = 'Easy - the change is a single registry value; re-enable via certutil and restart CertSvc to restore the prior behavior immediately if something breaks, with no data loss.'
+        OperationalNotes = ''
+    }
+    'CA RPC Enrollment Encryption Not Enforced (ESC11)' = @{
+        EstimatedEffort  = 'Low - a single registry flag; the on-by-default setting is occasionally disabled for legacy client compatibility (e.g. Windows XP), so confirm no such client still enrolls against this CA before enabling.'
+        KnownRisks       = 'Enabling packet-privacy enforcement will break enrollment for any client that cannot negotiate RPC_C_AUTHN_LEVEL_PKT_PRIVACY - in practice, only very old (pre-Vista-era) clients, which should not be enrolling in a modern environment regardless.'
+        BackupRollback   = 'Easy - the change is a single registry value; revert with certutil -setreg CA\InterfaceFlags -IF_ENFORCEENCRYPTICERTREQUEST and restart CertSvc if something breaks.'
+        OperationalNotes = ''
+    }
+    'CA-Wide Security Extension Disabled (ESC16)' = @{
+        EstimatedEffort  = 'Low - a single registry list entry; this setting has no known legitimate ongoing use in a modern (KB5014754+) environment.'
+        KnownRisks       = 'Minimal - re-enabling the extension only adds information to newly-issued certificates; it does not change any existing legitimate authentication behavior.'
+        BackupRollback   = 'Easy - the change is a single registry value; re-add the OID to DisableExtensionList and restart CertSvc to restore the prior behavior if needed, with no data loss.'
+        OperationalNotes = ''
+    }
+    'Weak Certificate Binding Compensation Enabled (ESC10)' = @{
+        EstimatedEffort  = 'Medium - requires first confirming every certificate relying on the compensation window has been re-issued with strong mapping before removing the opt-out, or authentication for those certificates will break.'
+        KnownRisks       = 'Removing this value before all weak-mapped certificates it was covering have been re-issued will break authentication for whatever legitimately still depends on the compensation window - confirm coverage first.'
+        BackupRollback   = 'Easy - restore the prior CertificateBackdatingCompensation value if needed; effective immediately, no data loss.'
         OperationalNotes = ''
     }
     'Print Spooler Running on Domain Controller' = @{
@@ -241,6 +283,12 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Low - clearing the msDS-KeyCredentialLink attribute is a single-attribute change on one object.'
         KnownRisks       = 'Removing an unauthorized key credential has no legitimate compatibility impact unless it is actually a currently-enrolled Windows Hello for Business or passwordless-auth key, so confirm the key isn''t legitimate before clearing.'
         BackupRollback   = 'Moderate - export the current msDS-KeyCredentialLink value before clearing so a legitimate key can be restored if the removal turns out to affect a real passwordless sign-in.'
+        OperationalNotes = ''
+    }
+    'Weak Explicit Certificate Mapping on Privileged Account (ESC14)' = @{
+        EstimatedEffort  = 'Medium - requires identifying the specific certificate this mapping should be bound to and updating altSecurityIdentities accordingly, coordinated with whoever manages the account''s smart card/certificate.'
+        KnownRisks       = 'Replacing the mapping incorrectly (wrong SKI/key hash) will break this account''s certificate-based authentication until corrected - verify the target certificate before changing.'
+        BackupRollback   = 'Easy - restore the prior altSecurityIdentities value if needed; effective immediately, no data loss.'
         OperationalNotes = ''
     }
     'SID History Injection (Same Domain)' = @{

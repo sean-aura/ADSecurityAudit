@@ -169,6 +169,14 @@ $Script:ADFindingMetadataMap = @{
     'Weak Signature Algorithm in PKI Trust Store'                      = @{ Mitre = 'T1649'; Anssi = 'vuln3_adcs_weak_signature'; Weight = 10 }
     'CA Chase-Fallback Enabled (CVE-2026-54121 / Certighost Exposure)' = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_certighost_chase'; Weight = 40 }
     'CA-Wide SAN Attribute Flag Enabled (ESC6)'            = @{ Mitre = 'T1649';     Anssi = 'vuln1_adcs_esc6_san_flag';       Weight = 40 }
+    'Certificate Template Allows Arbitrary Server Certificate (ESC17)' = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_esc17';       Weight = 40 }
+    'Weak ACL on PKI Container Object (ESC5)'              = @{ Mitre = 'T1649';     Anssi = 'vuln1_adcs_esc5';                Weight = 40 }
+    'Certificate Template Missing Security Extension (ESC9)' = @{ Mitre = 'T1649';   Anssi = 'vuln2_adcs_esc9';                Weight = 20 }
+    'Weak Certificate Binding Compensation Enabled (ESC10)' = @{ Mitre = 'T1649';    Anssi = 'vuln2_adcs_esc10';               Weight = 20 }
+    'CA RPC Enrollment Encryption Not Enforced (ESC11)'    = @{ Mitre = 'T1649';     Anssi = 'vuln1_adcs_esc11';               Weight = 40 }
+    'Certificate Template Issuance Policy Linked to Privileged Group (ESC13)' = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_esc13'; Weight = 40 }
+    'Weak Explicit Certificate Mapping on Privileged Account (ESC14)' = @{ Mitre = 'T1649'; Anssi = 'vuln2_adcs_esc14';        Weight = 20 }
+    'CA-Wide Security Extension Disabled (ESC16)'          = @{ Mitre = 'T1649';     Anssi = 'vuln1_adcs_esc16';               Weight = 40 }
 
     # --- Kerberos Security (KRBTGT) ---
     'KRBTGT Password Age Exceeds Recommended Threshold'   = @{ Mitre = 'T1558.001'; Anssi = 'vuln1_krbtgt_age';              Weight = 40 }

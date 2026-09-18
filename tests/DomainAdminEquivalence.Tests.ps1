@@ -197,3 +197,110 @@ Describe 'Test-ADDomainAdminEquivalence - sIDHistory checks' {
         $issues | Should -Not -Contain 'SID History Attribute Populated'
     }
 }
+
+Describe 'Test-ADDomainAdminEquivalence - ESC14 (weak/writable altSecurityIdentities)' {
+    BeforeEach {
+        function Get-ADGroup {
+            param($Filter, $Server, [switch]$ErrorAction)
+            if ($Filter -match 'Domain Admins') {
+                return [PSCustomObject]@{ Name = 'Domain Admins'; DistinguishedName = 'CN=Domain Admins,CN=Users,DC=contoso,DC=com' }
+            }
+            return $null
+        }
+        function Get-ADGroupMember {
+            param($Identity, [switch]$Recursive, $Server, [switch]$ErrorAction)
+            if ($Identity.Name -eq 'Domain Admins') {
+                return @([PSCustomObject]@{ DistinguishedName = 'CN=svcadmin,CN=Users,DC=contoso,DC=com'; SamAccountName = 'svcadmin'; objectClass = 'user'; SID = [PSCustomObject]@{ Value = 'S-1-5-21-1111-2222-3333-1105' } })
+            }
+            return @()
+        }
+    }
+
+    It 'flags a privileged account with a weak (Issuer+Subject) explicit certificate mapping' {
+        function Get-ADUser {
+            param($Filter, $LDAPFilter, $Server, $Properties, $ErrorAction, $Identity)
+            if ($Identity -eq 'CN=svcadmin,CN=Users,DC=contoso,DC=com') {
+                return [PSCustomObject]@{
+                    nTSecurityDescriptor = [PSCustomObject]@{ Access = @() }
+                    altSecurityIdentities = @('X509:<I>DC=com,DC=contoso,CN=contoso-CA<S>DC=com,DC=contoso,CN=Users,CN=svcadmin')
+                }
+            }
+            return @()
+        }
+
+        $findings = Test-ADDomainAdminEquivalence
+        $hit = $findings | Where-Object { $_.Issue -eq 'Weak Explicit Certificate Mapping on Privileged Account (ESC14)' }
+
+        $hit | Should -Not -BeNullOrEmpty
+        $hit.AffectedObject | Should -Be 'svcadmin'
+        $hit.Severity | Should -Be 'High'
+    }
+
+    It 'does not flag ESC14 for a key-bound (SKI) mapping' {
+        function Get-ADUser {
+            param($Filter, $LDAPFilter, $Server, $Properties, $ErrorAction, $Identity)
+            if ($Identity -eq 'CN=svcadmin,CN=Users,DC=contoso,DC=com') {
+                return [PSCustomObject]@{
+                    nTSecurityDescriptor  = [PSCustomObject]@{ Access = @() }
+                    altSecurityIdentities = @('X509:<SKI>1234567890abcdef1234567890abcdef12345678')
+                }
+            }
+            return @()
+        }
+
+        $findings = Test-ADDomainAdminEquivalence
+        ($findings | Where-Object { $_.Issue -eq 'Weak Explicit Certificate Mapping on Privileged Account (ESC14)' }) | Should -BeNullOrEmpty
+    }
+
+    It 'flags a non-legitimate principal with write access to altSecurityIdentities on a privileged account (attribute-scoped ACE)' {
+        function Get-ADUser {
+            param($Filter, $LDAPFilter, $Server, $Properties, $ErrorAction, $Identity)
+            if ($Identity -eq 'CN=svcadmin,CN=Users,DC=contoso,DC=com') {
+                return [PSCustomObject]@{
+                    nTSecurityDescriptor = [PSCustomObject]@{
+                        Access = @([PSCustomObject]@{
+                            IdentityReference     = [PSCustomObject]@{ Value = 'CONTOSO\Helpdesk' }
+                            ActiveDirectoryRights = 'WriteProperty'
+                            ObjectType            = '00fbf30c-91fe-11d1-aebc-0000f80367c1'
+                            IsInherited           = $false
+                        })
+                    }
+                    altSecurityIdentities = @()
+                }
+            }
+            return @()
+        }
+
+        $findings = Test-ADDomainAdminEquivalence
+        $hit = $findings | Where-Object { $_.AffectedObject -eq 'CONTOSO\Helpdesk' }
+
+        $hit | Should -Not -BeNullOrEmpty
+        ($hit.Details.Evidence.Reason -join '; ') | Should -Match 'altSecurityIdentities on privileged user'
+    }
+
+    It 'flags write access granted via the broader Public-Information property-set GUID, not just the attribute-specific GUID' {
+        function Get-ADUser {
+            param($Filter, $LDAPFilter, $Server, $Properties, $ErrorAction, $Identity)
+            if ($Identity -eq 'CN=svcadmin,CN=Users,DC=contoso,DC=com') {
+                return [PSCustomObject]@{
+                    nTSecurityDescriptor = [PSCustomObject]@{
+                        Access = @([PSCustomObject]@{
+                            IdentityReference     = [PSCustomObject]@{ Value = 'CONTOSO\ExchangeTrusted' }
+                            ActiveDirectoryRights = 'WriteProperty'
+                            ObjectType            = 'e48d0154-bcf8-11d1-8702-00c04fb96050'
+                            IsInherited           = $false
+                        })
+                    }
+                    altSecurityIdentities = @()
+                }
+            }
+            return @()
+        }
+
+        $findings = Test-ADDomainAdminEquivalence
+        $hit = $findings | Where-Object { $_.AffectedObject -eq 'CONTOSO\ExchangeTrusted' }
+
+        $hit | Should -Not -BeNullOrEmpty
+        ($hit.Details.Evidence.Reason -join '; ') | Should -Match 'altSecurityIdentities on privileged user'
+    }
+}

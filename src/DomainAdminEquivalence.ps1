@@ -90,6 +90,13 @@ function Test-ADDomainAdminEquivalence {
 
         # Property GUIDs (normalized to lowercase for consistent comparison)
         $keyCredLinkGuid = '5b47d60f-6090-40b2-9f37-2a4de88f3063'
+        # ESC14: altSecurityIdentities' own schemaIDGUID, plus the
+        # "Public Information" property set that contains it - a
+        # WriteProperty ACE can be scoped to either GUID and both grant
+        # write access to the attribute (see the ESC14 check below for
+        # why the property-set GUID matters in practice).
+        $altSecurityIdentitiesGuid = '00fbf30c-91fe-11d1-aebc-0000f80367c1'
+        $publicInformationPropertySetGuid = 'e48d0154-bcf8-11d1-8702-00c04fb96050'
         $spnGuid = 'f3a64788-5306-11d1-a9c5-0000f80367c1'
         $rbcdGuid = '3f78c3e5-f79a-46bd-a0b8-9d18116ddc79'
         $memberAttributeGuid = 'bf9679c0-0de6-11d0-a285-00aa003049e2'
@@ -373,10 +380,10 @@ function Test-ADDomainAdminEquivalence {
             $user = $null
             try {
                 $user = if ($__adServer) {
-                    Get-ADUser -Identity $dn -Server $__adServer -Properties nTSecurityDescriptor -ErrorAction Stop
+                    Get-ADUser -Identity $dn -Server $__adServer -Properties nTSecurityDescriptor, altSecurityIdentities -ErrorAction Stop
                 }
                 else {
-                    Get-ADUser -Identity $dn -Properties nTSecurityDescriptor -ErrorAction Stop
+                    Get-ADUser -Identity $dn -Properties nTSecurityDescriptor, altSecurityIdentities -ErrorAction Stop
                 }
             }
             catch {
@@ -399,6 +406,58 @@ function Test-ADDomainAdminEquivalence {
                             AttackPath        = 'Write msDS-KeyCredentialLink -> Authenticate as user -> Full compromise'
                         }
                     }
+                    # ESC14: writable altSecurityIdentities on a privileged
+                    # account. A WriteProperty ACE can be scoped either to
+                    # this specific attribute (schemaIDGUID
+                    # 00fbf30c-91fe-11d1-aebc-0000f80367c1) or to the
+                    # broader "Public Information" property set that
+                    # contains it (attributeSecurityGUID
+                    # e48d0154-bcf8-11d1-8702-00c04fb96050) - the latter is
+                    # the more common real-world exposure, per documented
+                    # research on over-broad Exchange-granted rights to
+                    # that property set, so both GUIDs are checked.
+                    if ((Test-GuidMatch -AceObjectType $ace.ObjectType -TargetGuid $altSecurityIdentitiesGuid) -or (Test-GuidMatch -AceObjectType $ace.ObjectType -TargetGuid $publicInformationPropertySetGuid)) {
+                        Add-Evidence -Principal $principal -Reason "Write access to altSecurityIdentities on privileged user '$sam' (ESC14) - allows adding an attacker-controlled certificate or Kerberos mapping" -Context @{
+                            Target            = 'Weak Explicit Certificate Mapping (ESC14)'
+                            Account           = $sam
+                            DistinguishedName = $dn
+                            Rights            = $ace.ActiveDirectoryRights.ToString()
+                            AttackPath        = 'Write altSecurityIdentities -> Add attacker-controlled X.509/Kerberos mapping -> Authenticate as privileged user'
+                        }
+                    }
+                }
+            }
+
+            # Existing weak explicit mappings (ESC14), independent of
+            # whether the attribute is currently writable: an
+            # IssuerSubject-style mapping ("X509:<I>...<S>...", string-
+            # based) is materially weaker than a key-bound mapping
+            # ("X509:<SKI>..." or "X509:<SHA1-PUKEY>...", tied to a
+            # specific certificate/key) - if an attacker can obtain ANY
+            # certificate whose issuer and subject text happen to match,
+            # they authenticate as this account, no write access to the
+            # attribute required at all.
+            if ($user.altSecurityIdentities) {
+                $weakMappings = @($user.altSecurityIdentities | Where-Object { $_ -match '<I>' -and $_ -match '<S>' -and $_ -notmatch '<SKI>' -and $_ -notmatch '<SHA1-PUKEY>' })
+                if ($weakMappings.Count -gt 0) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Certificate Services'
+                    $finding.Issue = 'Weak Explicit Certificate Mapping on Privileged Account (ESC14)'
+                    $finding.Severity = 'High'
+                    $finding.SeverityLevel = 3
+                    $finding.AffectedObject = $sam
+                    $finding.Description = "Privileged account '$sam' has an Issuer+Subject-style (string-based) explicit certificate mapping in altSecurityIdentities, rather than a key-bound mapping: $($weakMappings -join '; ')"
+                    $finding.Impact = "An Issuer+Subject mapping authenticates based on matching text in a certificate's issuer and subject fields, not a specific key or certificate. Anyone able to obtain any certificate from a trusted CA with matching issuer/subject text - including via an unrelated AD CS misconfiguration elsewhere - can authenticate as this privileged account."
+                    $finding.Remediation = "Replace the Issuer+Subject mapping with a key-bound mapping (X509:<SKI> or X509:<SHA1-PUKEY>) tied to the specific certificate this account should authenticate with."
+                    $finding.EstimatedEffort = 'Medium - requires identifying the specific certificate this mapping should be bound to and updating altSecurityIdentities accordingly, coordinated with whoever manages the account''s smart card/certificate.'
+                    $finding.KnownRisks = 'Replacing the mapping incorrectly (wrong SKI/key hash) will break this account''s certificate-based authentication until corrected - verify the target certificate before changing.'
+                    $finding.BackupRollback = 'Easy - restore the prior altSecurityIdentities value if needed; effective immediately, no data loss.'
+                    $finding.Details = @{
+                        DistinguishedName = $dn
+                        WeakMappings      = $weakMappings -join '; '
+                        ESCType           = 'ESC14'
+                    }
+                    $findings += $finding
                 }
             }
         }

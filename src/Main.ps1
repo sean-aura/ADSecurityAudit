@@ -242,6 +242,7 @@ function Start-ADSecurityAudit {
             'CertificateServices' = { Test-ADCertificateServices }
             'ADCSExtended' = { Test-ADCSExtended }
             'ADCSChaseFallback' = { Test-ADCSChaseFallback }
+            'ADCSWeakCertificateBinding' = { Test-ADCSWeakCertificateBinding }
             'KRBTGTAccount' = { Test-KRBTGTAccount -MaxPasswordAgeDays 180 }
             'DomainTrusts' = { Test-ADDomainTrusts }
             'LAPSDeployment' = { Test-LAPSDeployment }

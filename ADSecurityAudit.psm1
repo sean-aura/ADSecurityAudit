@@ -104,6 +104,7 @@ Export-ModuleMember -Function @(
     'Test-ADCertificateServices',
     'Test-ADCSExtended',
     'Test-ADCSChaseFallback',
+    'Test-ADCSWeakCertificateBinding',
     'Test-KRBTGTAccount',
     'Test-ADDomainTrusts',
     'Test-LAPSDeployment',

@@ -238,6 +238,51 @@ function Test-ADCertificateServices {
                 }
                 $findings += $finding
             }
+
+            # ESC17: Server Authentication EKU + enrollee-supplied SAN +
+            # low-priv enrollment + no manager approval. Disclosed by the
+            # Digitrace team (Alexander Neff & Phil Knüfer) in early 2026 -
+            # new enough that even commercial AD CS scanners generally only
+            # "detect and flag" it rather than fully validate it. A near-
+            # identical shape to ESC1 above, checking for Server
+            # Authentication EKU (1.3.6.1.5.5.7.3.1) instead of Client
+            # Authentication - a template like this lets any low-privileged
+            # enrollee obtain a valid, trusted TLS certificate for ANY
+            # internal hostname (WSUS, Exchange, SCCM, etc.), which combined
+            # with DNS zone abuse enables a rogue-server-with-a-trusted-cert
+            # attack against every client that trusts that hostname. Notably,
+            # an administrator who "fixed" ESC1 by switching a template's EKU
+            # from Client to Server Authentication - without also removing
+            # CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT - has unknowingly created
+            # exactly this exposure, so this specifically catches templates
+            # that look "already remediated" for ESC1 but aren't.
+            $hasServerAuthEku = ($ekus -contains '1.3.6.1.5.5.7.3.1') -or ($ekusV1 -contains '1.3.6.1.5.5.7.3.1')
+            # CT_FLAG_PEND_ALL_REQUESTS = 0x2 (manager approval required);
+            # its absence means certificates are issued automatically.
+            $noManagerApproval = -not ($enrollmentFlag -band 0x2)
+
+            if ($hasServerAuthEku -and ($certNameFlag -band 1) -and $hasLowPrivEnrollment -and $noManagerApproval) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Certificate Services'
+                $finding.Issue = 'Certificate Template Allows Arbitrary Server Certificate (ESC17)'
+                $finding.Severity = 'Critical'
+                $finding.SeverityLevel = 4
+                $finding.AffectedObject = $templateName
+                $finding.Description = "Certificate template '$templateName' has the Server Authentication EKU, allows enrollees to specify the Subject Alternative Name, requires no manager approval, and is enrollable by low-privileged principals ($($enrollmentPrincipals -join ', '))."
+                $finding.Impact = "Any low-privileged enrollee can obtain a valid, CA-trusted TLS certificate for ANY internal hostname - including WSUS, Exchange, SCCM, or SharePoint servers - regardless of who actually owns that hostname. Combined with DNS zone manipulation (see DNS Security findings), this lets an attacker stand up a rogue server that clients trust as genuine over HTTPS, bypassing the protection HTTPS is meant to provide entirely. A template 'fixed' for ESC1 by simply changing its EKU from Client to Server Authentication, without also removing enrollee-supplied-subject or restricting enrollment, is exactly this exposure."
+                $finding.Remediation = "Remove CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT from this template, OR restrict enrollment to only the specific service accounts/administrators that legitimately need a server certificate from it, OR require manager approval so each request is reviewed before issuance."
+                $finding.EstimatedEffort = 'Medium - same considerations as ESC1: confirm which systems currently request server certificates from this template before narrowing SAN supply or enrollment rights.'
+                $finding.KnownRisks = 'Restricting enrollee-supplied SAN or enrollment rights can break legitimate automated server-certificate provisioning that currently relies on this template''s current configuration.'
+                $finding.BackupRollback = 'Moderate - AD CS templates are versioned, so a prior version''s settings can be restored and republished; certificates already issued during the vulnerable window remain valid until revoked or expired.'
+                $finding.Details = @{
+                    DistinguishedName    = $template.DistinguishedName
+                    CertificateNameFlag  = $certNameFlag
+                    EnrollmentFlag       = $enrollmentFlag
+                    EnrollmentPrincipals = $enrollmentPrincipals -join '; '
+                    ESCType              = 'ESC17'
+                }
+                $findings += $finding
+            }
         }
         
         # Check Certificate Authority permissions (ESC7)
