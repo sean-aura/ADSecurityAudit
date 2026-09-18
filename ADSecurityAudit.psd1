@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.27.0'
+    ModuleVersion = '1.27.1'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -71,6 +71,29 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.27.1 - Cleanup: Removed Orphaned ForcedFail Fixture Files Left Behind by v1.25.0
+- Cleanup only - no check logic, scoring, or test behavior changed. When offline/-Snapshot mode was removed in v1.25.0, that release's notes claimed the ForcedFail fixture ecosystem was removed too, but tests/fixtures/ForcedFail-{100,60,25}pct-Snapshot.json and tools/build-forcedfail-fixtures.py were never actually deleted - only marked "not currently runnable" in a fixtures README. tools/Test-ForcedFailFixture.ps1 and tests/ForcedFailFixture.Tests.ps1, referenced throughout that README, never existed in this repo at all. Confirmed via full-repo grep that nothing in src/ or tests/ loaded or executed any of these files before removing them.
+- Removed: tools/build-forcedfail-fixtures.py, the three tests/fixtures/ForcedFail-*pct-Snapshot.json files, tests/fixtures/README.md, and the now-empty tests/fixtures/ directory.
+- Kept: tools/Build-ADFindingNarrativeLibrary.ps1 - unrelated, still actively used and tested.
+
+v1.27.0 - Eight New Checks from ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's AD-Compromise Guidance
+- New: account lockout policy checks (Account Lockout Disabled / Account Lockout Threshold Above Recommended Maximum) in Test-ADDomainSecurity.
+- New: "Account is sensitive and cannot be delegated" check for Domain Admins/Enterprise Admins/Schema Admins members in Test-ADUserSecurity.
+- New: built-in Administrator (RID 500) check - enabled with a stale/never-set password, identified by SID so renaming the account isn't penalized.
+- New: "Domain Computers" added to the control-path graph's broad-principal classification (ControlPaths.ps1) - a dangerous ACE or Tier-0 membership held by this group is as broad a path as one held by Domain Users.
+- New: ESC6 check (CA-Wide SAN Attribute Flag Enabled) in Test-ADCSChaseFallback, reusing the same policy\EditFlags registry read already done for the chase-fallback bit.
+- New: cross-domain sIDHistory hygiene catch-all (SID History Attribute Populated) in Test-ADDomainAdminEquivalence, beyond the existing same-domain and privileged-RID checks.
+- New: LSA Protection (RunAsPPL) check, new Test-ADLsaProtection - the primary mitigation for Skeleton Key and similar LSASS-tampering techniques.
+- New: NTLM restriction check (RestrictNTLMInDomain) in Test-ADLegacyAuthSurface, distinct from the existing LmCompatibilityLevel (LM/NTLMv1 downgrade) check.
+- Of the 17 AD-compromise techniques covered by the source guidance, 16 already had solid coverage in this module; these eight close the remaining gaps in its preventive/configuration mitigations (its event-log/SIEM detection guidance is a different tool category, intentionally out of scope here).
+
+v1.26.0 - gMSA Password-Retrieval Audit, User-Declarable Tier-0 Scope, GPO Restricted Groups/Ownership
+- New: gMSA/managed-password retrieval-rights audit (Test-ADManagedServiceAccountSecurity) - flags PrincipalsAllowedToRetrieveManagedPassword grants to broad principals or, on a privileged gMSA, to any non-Tier-0 principal.
+- New: user-declarable additional Tier-0 scope via Start-ADSecurityAudit -AdditionalTier0DN, picked up automatically by every check built on Get-ADTier0Principal.
+- Extended: the constrained-delegation-target check now covers the full Tier-0 set, not just Domain Controllers.
+- New: GPO Restricted Groups audit (local group membership pushed via GPO) and a GPO ownership check resolved by SID rather than name (new Resolve-ADPrincipalNameToSid helper).
+- Fixed: "GPO Linked to Domain Controllers with Weak Permissions" now resolves the actual DC-containing OU dynamically instead of matching a hardcoded "OU=Domain Controllers" string.
+
 v1.25.0 - Removed Offline/-Snapshot Mode; Export-ADSecurityReportHTMLFromJson Is Now the Supported Re-Analysis Path
 - BREAKING: Removed offline/-Snapshot mode in its entirety. Get-ADSnapshot, Invoke-ADRuleSet, and ConvertTo-ADHashtable no longer exist; Start-ADSecurityAudit no longer accepts -FromSnapshot or -AllowLiveFallbackForUnsupportedTests; every Test-* function's [hashtable]$Snapshot parameter and offline code branch has been removed, leaving only each function's live AD query path. Export-ADSecurityReportHTML no longer accepts -RunMode, -SnapshotCollectedDate, or -OfflineSkipNotes, and the HTML report's "Offline / Snapshot-Based Report" and "Offline Mode Coverage Notes" boxes are gone.
 - Why: the JSON findings export every live run already produces, together with Export-ADSecurityReportHTMLFromJson (kept, unchanged, and now the sole supported way to regenerate/re-share the HTML report with no live AD access), already covered the real use case without the maintenance cost of a second, independent offline code path across all 27 Test-* functions - a cost documented at length across the v1.19.0-v1.19.1 "offline-parity backlog" entries below and every "Offline Mode Coverage Notes" admission that offline re-analysis could produce different findings than an equivalent live run.
