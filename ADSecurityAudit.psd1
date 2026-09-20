@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.28.0'
+    ModuleVersion = '1.28.1'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -72,6 +72,14 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.28.1 - External-Intelligence Refresh (CVEs, MITRE, Hotfix Dates)
+- Data/citation correction pass - no new checks, no schema changes.
+- Fixed: $Script:MitreTechniqueNames was missing display names for four technique ids already used in $Script:ADFindingMetadataMap (T1078, T1098.007, T1547.005, T1552.005). Added, verified against current MITRE ATT&CK (v19.2).
+- Fixed: two stale MITRE display names (T1484.001, T1557.001) updated to match MITRE ATT&CK v19's renames.
+- Fixed: T1562.002 was revoked by MITRE ATT&CK v19 in favor of T1685.001 - updated the name table and all four Issue entries that referenced the old id, in this same commit.
+- Re-verified against MSRC: ZeroLogon, MS17-010, MS14-068, PrintNightmare, and CVE-2026-41089 fix-date thresholds are all unchanged. Re-confirmed the BadSuccessor/dMSA build-26100 guard doesn't need widening (no backport to earlier OS builds found).
+- Flagged, not implemented: CVE-2026-72982 (critical, unauthenticated Netlogon RCE, disclosed Sep 2026) is a new candidate check - see files/13-dc-known-cve-2026-72982-netlogon-rce.md.
+
 v1.28.0 - Eight New AD CS Checks: ESC5, ESC9, ESC10, ESC11, ESC13, ESC14, ESC16, ESC17
 - New: ESC17 (Test-ADCertificateServices) - Server Authentication EKU + enrollee-supplied SAN + low-priv enrollment + no manager approval. Disclosed by the Digitrace team in early 2026; new enough that even commercial AD CS scanners generally only flag it rather than fully validate it.
 - New: ESC5 (Test-ADCSExtended) - weak ACLs on non-template PKI container objects (Public Key Services, AIA, Certification Authorities, Enrollment Services, KRA, OID), extending the existing ESC4 template-ACL pattern.

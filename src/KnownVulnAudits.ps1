@@ -29,7 +29,7 @@
 # check logic below.
 $Script:KnownVulnFixThresholds = @{
     # Verified against MSRC (https://msrc.microsoft.com/update-guide/vulnerability/CVE-2020-1472)
-    # on 2026-07-09. Fix date unchanged since prior review.
+    # on 2026-09-20. Fix date unchanged since prior review (last checked 2026-07-09).
     ZeroLogon = @{
         Issue       = 'DC Missing ZeroLogon Patch'
         Cve         = 'CVE-2020-1472'
@@ -38,7 +38,7 @@ $Script:KnownVulnFixThresholds = @{
         Description = 'Netlogon Remote Protocol elevation-of-privilege (ZeroLogon) allows an unauthenticated attacker on the network to reset the DC computer account password and obtain Domain Admin-equivalent access.'
     }
     # Verified against MSRC (https://learn.microsoft.com/en-us/security-updates/securitybulletins/2017/ms17-010)
-    # on 2026-07-09. Fix date unchanged since prior review.
+    # on 2026-09-20. Fix date unchanged since prior review (last checked 2026-07-09).
     MS17010 = @{
         Issue       = 'DC Vulnerable to MS17-010'
         Cve         = 'MS17-010 (CVE-2017-0143 through CVE-2017-0148)'
@@ -47,7 +47,7 @@ $Script:KnownVulnFixThresholds = @{
         Description = 'Unauthenticated SMBv1 remote code execution (EternalBlue) allows full compromise of the Domain Controller over the network with no credentials.'
     }
     # Verified against MSRC (https://msrc.microsoft.com/blog/2014/11/additional-information-about-cve-2014-6324/)
-    # on 2026-07-09. Fix date unchanged since prior review.
+    # on 2026-09-20. Fix date unchanged since prior review (last checked 2026-07-09).
     MS14068 = @{
         Issue       = 'DC Vulnerable to MS14-068'
         Cve         = 'CVE-2014-6324'
@@ -56,7 +56,7 @@ $Script:KnownVulnFixThresholds = @{
         Description = 'A forged Kerberos PAC can claim Domain Admin group membership for any authenticated low-privilege user, which the unpatched KDC accepts without validating the signature.'
     }
     # Verified against MSRC (https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-34527)
-    # on 2026-07-09. Fix date unchanged since prior review.
+    # on 2026-09-20. Fix date unchanged since prior review (last checked 2026-07-09).
     PrintNightmare = @{
         Issue       = 'PrintNightmare Exposure on DC'
         Cve         = 'CVE-2021-34527'
@@ -80,6 +80,12 @@ $Script:KnownVulnFixThresholds = @{
     # build numbers are recorded here for reference / a future refinement.
     # Active in-the-wild exploitation was reported by Belgium's CCB
     # starting May 29, 2026, per the same sources.
+    # Re-checked 2026-09-20: fix date, CVSS, and exploitation status unchanged
+    # since prior review. NOTE: a SEPARATE, unrelated Netlogon RCE
+    # (CVE-2026-72982, CVSS 9.8, disclosed on MSRC 2026-09-08) shipped in the
+    # September 2026 Patch Tuesday - do not confuse the two. Per the
+    # refresh-prompt process this is flagged as a new candidate check in a
+    # feature-request doc rather than folded into this threshold.
     Netlogon2026 = @{
         Issue       = 'DC Missing CVE-2026-41089 Patch (Netlogon RCE)'
         Cve         = 'CVE-2026-41089'
@@ -94,6 +100,11 @@ $Script:KnownVulnFixThresholds = @{
 # only meaningful on DCs running this build or later, since dMSA is a
 # Server 2025 feature - guard the check to that build so older DCs never
 # generate a false positive.
+#
+# Re-checked 2026-09-20: dMSA remains exclusive to Windows Server 2025; no
+# evidence found of Microsoft backporting the feature to Server
+# 2016/2019/2022 via cumulative update, so the build-26100+ guard below
+# does not need widening.
 #
 # As of v1.18.0 this base-build guard is paired with a per-DC UBR
 # (Update Build Revision) read - see $Script:KnownVulnBadSuccessorPatchedUBR

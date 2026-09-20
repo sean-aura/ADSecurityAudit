@@ -64,22 +64,26 @@ $Script:MitreTechniqueNames = @{
     'T1187'      = 'Forced Authentication'
     'T1210'      = 'Exploitation of Remote Services'
     'T1482'      = 'Domain Trust Discovery'
-    'T1484.001'  = 'Domain Policy Modification: Group Policy Modification'
+    'T1484.001'  = 'Domain or Tenant Policy Modification: Group Policy Modification'
     'T1485'      = 'Data Destruction'
     'T1552.001'  = 'Unsecured Credentials: Credentials In Files'
     'T1552.006'  = 'Unsecured Credentials: Group Policy Preferences'
     'T1556'      = 'Modify Authentication Process'
     'T1557'      = 'Adversary-in-the-Middle'
-    'T1557.001'  = 'Adversary-in-the-Middle: LLMNR/NBT-NS Poisoning and SMB Relay'
+    'T1557.001'  = 'Adversary-in-the-Middle: Name Resolution Poisoning and SMB Relay'
     'T1558'      = 'Steal or Forge Kerberos Tickets'
     'T1558.001'  = 'Steal or Forge Kerberos Tickets: Golden Ticket'
     'T1558.002'  = 'Steal or Forge Kerberos Tickets: Silver Ticket'
     'T1558.003'  = 'Steal or Forge Kerberos Tickets: Kerberoasting'
     'T1558.004'  = 'Steal or Forge Kerberos Tickets: AS-REP Roasting'
-    'T1562.002'  = 'Impair Defenses: Disable Windows Event Logging'
     'T1574.002'  = 'Hijack Execution Flow: DLL Side-Loading'
     'T1590.002'  = 'Gather Victim Network Information: DNS'
     'T1649'      = 'Steal or Forge Authentication Certificates'
+    'T1685.001'  = 'Disable or Modify Tools: Disable or Modify Windows Event Log'
+    'T1078'      = 'Valid Accounts'
+    'T1098.007'  = 'Account Manipulation: Additional Local or Domain Groups'
+    'T1547.005'  = 'Boot or Logon Autostart Execution: Security Support Provider'
+    'T1552.005'  = 'Unsecured Credentials: Cloud Instance Metadata API'
 }
 
 # -----------------------------------------------------------------------------
@@ -114,7 +118,7 @@ $Script:ADFindingMetadataMap = @{
     'Orphaned adminCount Attribute'                        = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_orphaned_admincount';     Weight = 4  }
     'AdminSDHolder Ghost Account'                          = @{ Mitre = 'T1098';     Anssi = 'vuln2_adminsdholder_ghost';     Weight = 20 }
     'AdminSDHolder ACL Compromise'                         = @{ Mitre = 'T1098';     Anssi = 'vuln1_adminsdholder_compromise';Weight = 40 }
-    'No Auditing on AdminSDHolder Object'                  = @{ Mitre = 'T1562.002'; Anssi = 'vuln3_no_audit_adminsdholder';  Weight = 10 }
+    'No Auditing on AdminSDHolder Object'                  = @{ Mitre = 'T1685.001'; Anssi = 'vuln3_no_audit_adminsdholder';  Weight = 10 }
 
     # --- Group Policy ---
     'Over-Permissioned GPO'                                = @{ Mitre = 'T1484.001'; Anssi = 'vuln2_gpo_overpermissioned';    Weight = 20 }
@@ -189,9 +193,9 @@ $Script:ADFindingMetadataMap = @{
     'Expired LAPS Passwords'                              = @{ Mitre = 'T1078.003'; Anssi = 'vuln3_laps_expired';            Weight = 10 }
 
     # --- Audit Policy ---
-    'Insufficient Audit Policy Configuration'             = @{ Mitre = 'T1562.002'; Anssi = 'vuln3_audit_insufficient';      Weight = 10 }
-    'Advanced Audit Policy Verification Required'         = @{ Mitre = 'T1562.002'; Anssi = 'vuln4_audit_verify';            Weight = 4  }
-    'No Auditing on Domain Root Object'                   = @{ Mitre = 'T1562.002'; Anssi = 'vuln3_no_audit_domain_root';    Weight = 10 }
+    'Insufficient Audit Policy Configuration'             = @{ Mitre = 'T1685.001'; Anssi = 'vuln3_audit_insufficient';      Weight = 10 }
+    'Advanced Audit Policy Verification Required'         = @{ Mitre = 'T1685.001'; Anssi = 'vuln4_audit_verify';            Weight = 4  }
+    'No Auditing on Domain Root Object'                   = @{ Mitre = 'T1685.001'; Anssi = 'vuln3_no_audit_domain_root';    Weight = 10 }
 
     # --- Kerberos Delegation ---
     'User Account with Protocol Transition (T2A4D)'      = @{ Mitre = 'T1558';     Anssi = 'vuln1_user_protocol_transition'; Weight = 40 }
