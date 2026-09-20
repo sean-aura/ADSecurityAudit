@@ -84,7 +84,7 @@ Get-WindowsCapability -Name Rsat.GroupPolicy.Management.Tools* -Online | Add-Win
 <summary><strong>Option A — Run in place (recommended)</strong></summary>
 
 ```powershell
-git clone https://github.com/sean-aura/ADSecurityAudit.git
+git clone https://github.com/AlchemicalChef/ADSecurityAudit.git
 cd ADSecurityAudit
 Import-Module .\ADSecurityAudit.psd1
 ```
@@ -548,4 +548,4 @@ Also informed by ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's joint guidance, *["Detectin
 
 **On borrowing ideas, not code:** this project treats every AD security assessment tool and piece of authoritative guidance — PingCastle, Purple Knight, BloodHound, government advisories like the one above — as a source of *ideas* worth independently verifying against this codebase, never as a source to copy from. Every check here is our own detection logic, written and tested against this module's own conventions. The goal isn't to match any one tool's feature list; it's to keep building the most capable free, open-source AD security assessment tool available — one that, check for check, already goes further than the commercial and community tools it's inspired by (attack-path graphing with BloodHound-compatible export, retest/trend tracking, forest consolidation, exception/remediation-state tracking, and MITRE/ANSSI-mapped scoring, on top of the breadth covered above).
 
-Thanks to Claude (Anthropic) for AI-assisted source analysis and implementation/bug-fix work across v1.2.0–v1.18.0, and to [denandz](https://github.com/denandz) for the patch that independently identified and fixed the `-Server` reliability issue.
+All work from v1.2.0 onward — including offline-mode removal, gMSA/Tier-0 improvements, the ASD-guidance-driven checks, and full AD CS ESC1–ESC17 coverage — was carried out by [sean-aura](https://github.com/sean-aura), with Claude (Anthropic) for AI-assisted source analysis and implementation/bug-fix work throughout. Thanks also to [denandz](https://github.com/denandz) for the patch that independently identified and fixed the `-Server` reliability issue.
