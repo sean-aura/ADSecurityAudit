@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.29.2'
+    ModuleVersion = '1.30.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -37,6 +37,11 @@
         'Test-ADLegacyAuthSurface',
         'Test-ADKerberosHardening',
         'Test-ADStaleObjectDepth',
+        'Test-ADDomainControllerIntegrity',
+        'Test-ADSchemaIntegrity',
+        'Test-ADKdsRootKeySecurity',
+        'Test-ADDpapiBackupKeySecurity',
+        'Test-ADAccountComputerHygiene',
         'Test-ADGpoDeployedSecrets',
         'Test-ADKnownDCVulnerabilities',
         'Test-ADExchangeEscalation',
@@ -51,6 +56,7 @@
         'Set-ADRemediationState',
         'Get-ADRemediationState',
         'Get-ADMaturityTrend',
+        'Get-ADRemediationBurndown',
         'Export-ADMaturityTrendHTML',
         'Export-ADSecurityReportHTML',
         'Export-ADSecurityReportHTMLFromJson',
@@ -72,6 +78,54 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.30.0 - PingCastle+ Delta Scan Implementation Pass (files/14-20, 23, 25-27; #21/22/28 deferred)
+- Ships eleven of the fourteen docs queued in 00-IMPLEMENTATION-ORDER.md
+  from the 2026-09 PingCastle+ delta scan and codebase health scan, in
+  the order that table recommends. #21 (GPO/endpoint hardening), #22
+  (PSGuerrilla infrastructure hygiene), and #28 (real-BloodHound-
+  collection diff) are DEFERRED to a future release: each explicitly
+  needs lab/real-collection verification before merging per its own doc,
+  and #28/#22 in particular touch BloodHound-adjacent surface area this
+  pass deliberately avoided expanding into.
+- New checks: ESC15/EKUwu (CVE-2024-49019, files/14), PIM_TRUST trust
+  attribute (files/19), SPN-holder + DCSync-rights cross-check
+  (files/23), GPO LM-hash-storage + legacy FRS SYSVOL replication
+  (files/20), rogue-DC surface + DC registration integrity (files/16,
+  also closes the previously-false 'S-DCRegistration' claim in
+  StaleObjectDepthAudits.ps1), schema/persistence-tampering: vulnerable
+  schema class, defaultSecurityDescriptor tampering, DisplaySpecifier
+  tampering, AdminSDHolder inheritance re-enabled (files/15), key-
+  material exposure: gMSA KDS root key, domain DPAPI backup key, legacy
+  LAPS SearchFlags (files/17), account/computer hygiene gaps: Guest
+  account enabled, never-joined computer, ghost-SPN delegation,
+  Distributed COM Users/Performance Log Users membership (files/18).
+- New refinement: per-OS-build (UBR) precision for both Netlogon RCE
+  checks (CVE-2026-41089/CVE-2026-72982), alongside FixDate-only
+  evaluation for OS builds with no independently-confirmed fixed UBR
+  (files/25).
+- New extension: cross-domain risk annotation (previously Domain-Trusts-
+  only) generalized into a shared helper and applied to Test-
+  ADControlPaths' Attack-Paths findings whose hop chain reaches another
+  domain in the same consolidation run; Test-ADExchangeEscalation was
+  evaluated and found not applicable, since it never names a cross-
+  domain target (files/27).
+- New offline command: Get-ADRemediationBurndown, combining
+  Get-ADRemediationState and Get-ADMaturityTrend to project a domain's
+  score/maturity trajectory if in-progress remediation completes at the
+  pace the historical trend shows (files/26).
+- KNOWN FOLLOW-UP: SchemaAudits.ps1's defaultSecurityDescriptor reference
+  table ($Script:SchemaDefaultSecurityDescriptors) ships EMPTY - populate
+  it from a verified schema source before relying on that specific
+  check; it safely no-ops until then. The never-joined-computer
+  heuristic introduced this pass has not been lab-validated against a
+  live pre-staged object. Two factual corrections were made to this
+  release during self-review before it shipped (not left as follow-ups):
+  the FRS/DFSR migration-state check was rewritten to run
+  `dfsrmig.exe /GetGlobalState` remotely rather than misreading a raw AD
+  attribute, and the DPAPI backup key check was corrected to target the
+  real BCKUPKEY_* secret objects under CN=System rather than a
+  non-existent "CN=DPAPI" container.
+
 v1.29.2 - Codebase Health Scan (Claim-vs-Code Audit, Safety Posture, Enhancement Pitches)
 - Documentation-only pass; no code changes. Full report: health-scan-2026-09-summary.md.
 - Critical-priority detection-only safety check: clean, no boundary violations found.

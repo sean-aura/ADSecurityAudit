@@ -44,10 +44,12 @@ function Get-ADForestConsolidation {
             category, so a category that's fine in one domain doesn't get
             diluted by an average with a domain where it's bad
           * a domain comparison table (finding counts by severity, worst-first)
-          * cross-domain trust-risk enrichment: for each Domain-Trusts finding
-            naming a target domain, if a report for that target domain is also
-            present in the input set, its Details are annotated with the
-            target domain's own TotalScore/MaturityLevel/MaturityLabel
+          * cross-domain risk annotation: for each Domain-Trusts finding, or
+            each Attack-Paths (Test-ADControlPaths) finding whose hop chain
+            reaches into another domain, naming a target domain, if a report
+            for that target domain is also present in the input set, its
+            Details are annotated with the target domain's own
+            TotalScore/MaturityLevel/MaturityLabel (files/27)
           * "not scanned this run" flags for any domain present in a prior
             consolidated run (-PriorConsolidationPath) but absent from this one
 
@@ -260,26 +262,70 @@ function Get-ADForestConsolidation {
     }
     $comparison = @($comparison | Sort-Object -Property TotalScore, Critical, High -Descending)
 
-    # --- Step 7: cross-domain trust-risk enrichment. Match each Domain-Trusts
-    # finding's target domain (Details.Target, falling back to AffectedObject)
-    # against the domain names present in this input set. Annotate in place
-    # when matched; leave unannotated (not an error) when the target domain's
-    # own report isn't part of this consolidation. ---
+    # --- Step 7: cross-domain risk annotation. Match a finding's target
+    # domain (extracted per-category, see Get-ADForestConsolidationTargetDomain
+    # below) against the domain names present in this input set. Annotate
+    # in place when matched; leave unannotated (not an error) when the
+    # target domain's own report isn't part of this consolidation.
+    # Originally 'Domain Trusts' findings only; generalized
+    # (files/27-cross-domain-risk-annotation-extension.md) into a shared
+    # helper also applied to Test-ADControlPaths' 'Attack Paths' findings,
+    # whose hop chain can reach into another domain in the same
+    # consolidation run. Test-ADExchangeEscalation findings were
+    # evaluated for applicability and found NOT applicable: per that
+    # module's own header, it evaluates ACEs on the domain head and
+    # AdminSDHolder strictly within a single domain's own boundary, and
+    # never names a target domain in its finding output - there is
+    # nothing for this annotation to attach to. ---
     $domainsByName = @{}
     foreach ($d in $domains) { $domainsByName[$d.DomainName] = $d }
+
+    # Extracts the cross-domain target name a given finding names, or
+    # $null if this finding/category doesn't name one. Kept as a single
+    # function so the matching/annotation logic below never needs its own
+    # per-category branch - only this extraction step does.
+    function Get-ADForestConsolidationTargetDomain {
+        param([Parameter(Mandatory)]$Finding)
+
+        if ($Finding.Category -eq 'Domain Trusts') {
+            if ($Finding.Details -and ($Finding.Details.PSObject.Properties.Name -contains 'Target') -and $Finding.Details.Target) {
+                return [string]$Finding.Details.Target
+            }
+            elseif ($Finding.AffectedObject) {
+                return [string]$Finding.AffectedObject
+            }
+            return $null
+        }
+
+        if ($Finding.Category -eq 'Attack Paths' -and $Finding.Details -and
+            ($Finding.Details.PSObject.Properties.Name -contains 'TargetDN') -and $Finding.Details.TargetDN) {
+            # TargetDN is a distinguished name (e.g.
+            # "CN=X,OU=Y,DC=child,DC=contoso,DC=com"); the domain's own DN
+            # form is exactly its DC= components joined with dots, which
+            # is also how Get-ADDomain -Server ... .DistinguishedName's
+            # own DC= components map back to a domain's DNSRoot/NetBIOS -
+            # this consolidation's $domainsByName keys off DomainName, so
+            # build the same dotted form here for the match below.
+            $dcComponents = @([regex]::Matches("$($Finding.Details.TargetDN)", 'DC=([^,]+)', 'IgnoreCase') |
+                ForEach-Object { $_.Groups[1].Value })
+            if ($dcComponents.Count -gt 0) {
+                return ($dcComponents -join '.')
+            }
+        }
+
+        # Test-ADExchangeEscalation: intentionally not handled here - see
+        # the comment above this function's block. Its findings never
+        # name a cross-domain target (single-domain ACE reads only), so
+        # there is nothing this helper could extract.
+        return $null
+    }
 
     $trustEnrichment = @()
     foreach ($d in $domains) {
         foreach ($finding in $d.Findings) {
-            if ($finding.Category -ne 'Domain Trusts') { continue }
+            if ($finding.Category -notin @('Domain Trusts', 'Attack Paths')) { continue }
 
-            $target = $null
-            if ($finding.Details -and ($finding.Details.PSObject.Properties.Name -contains 'Target') -and $finding.Details.Target) {
-                $target = [string]$finding.Details.Target
-            }
-            elseif ($finding.AffectedObject) {
-                $target = [string]$finding.AffectedObject
-            }
+            $target = Get-ADForestConsolidationTargetDomain -Finding $finding
             if ([string]::IsNullOrEmpty($target)) { continue }
 
             # Case-insensitive match, tolerant of FQDN vs short-name mismatches

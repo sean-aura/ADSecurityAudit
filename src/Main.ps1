@@ -257,6 +257,11 @@ function Start-ADSecurityAudit {
             'LegacyAuthSurface' = { Test-ADLegacyAuthSurface }
             'KerberosHardening' = { Test-ADKerberosHardening }
             'StaleObjectDepth' = { Test-ADStaleObjectDepth }
+            'DomainControllerIntegrity' = { Test-ADDomainControllerIntegrity }
+            'SchemaIntegrity' = { Test-ADSchemaIntegrity }
+            'KdsRootKeySecurity' = { Test-ADKdsRootKeySecurity }
+            'DpapiBackupKeySecurity' = { Test-ADDpapiBackupKeySecurity }
+            'AccountComputerHygiene' = { Test-ADAccountComputerHygiene }
             'GpoDeployedSecrets' = { Test-ADGpoDeployedSecrets }
             'KnownDCVulnerabilities' = { Test-ADKnownDCVulnerabilities }
             'ExchangeEscalation' = { Test-ADExchangeEscalation }

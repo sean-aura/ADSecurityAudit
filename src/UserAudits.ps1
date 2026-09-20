@@ -476,6 +476,46 @@ function Test-ADUserSecurity {
             Write-Verbose "Test-ADUserSecurity: failed to evaluate the built-in Administrator account (RID 500): $_"
         }
 
+        # Built-in Guest account (well-known RID 501)
+        # (files/18-account-computer-hygiene-gaps.md). Identified by SID
+        # (domain SID + "-501"), same pattern as the Administrator (RID
+        # 500) check above, since renaming this account is also a
+        # legitimate, common hardening practice this check must not
+        # penalize.
+        try {
+            $domainSidValueGuest = (Get-ADDomain -Server $__adServer).DomainSID.Value
+            $builtInGuestSid = "$domainSidValueGuest-501"
+            $builtInGuest = if ($__adServer) {
+                Get-ADUser -Identity $builtInGuestSid -Properties Enabled, SamAccountName, DistinguishedName -Server $__adServer -ErrorAction Stop
+            }
+            else {
+                Get-ADUser -Identity $builtInGuestSid -Properties Enabled, SamAccountName, DistinguishedName -ErrorAction Stop
+            }
+
+            if ($builtInGuest -and $builtInGuest.Enabled) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'User Account'
+                $finding.Issue = 'Built-in Guest Account Enabled'
+                $finding.Severity = 'Low'
+                $finding.SeverityLevel = 1
+                $finding.AffectedObject = $builtInGuest.SamAccountName
+                $finding.Description = "The built-in Guest account (RID 501, currently named '$($builtInGuest.SamAccountName)') has ACCOUNTDISABLE unset in userAccountControl (i.e. it is enabled)."
+                $finding.Impact = "The Guest account is intended to be disabled by default and typically has no legitimate business purpose enabled in a managed domain; an enabled Guest account is an easy, low-friction entry point (often with no password or a widely-known one) for unauthenticated or minimally-authenticated access."
+                $finding.Remediation = "Disable the built-in Guest account unless there is a specific, documented business need for it: Disable-ADAccount -Identity '$($builtInGuest.SamAccountName)'."
+                $finding.EstimatedEffort = 'Low - a single account disable; confirm no legacy application specifically authenticates as Guest first.'
+                $finding.KnownRisks = 'Disabling Guest is safe in virtually all modern environments; confirm no legacy kiosk/anonymous-access workflow depends on it before disabling.'
+                $finding.BackupRollback = 'Easy - re-enable the account if needed; no data loss either way.'
+                $finding.Details = @{
+                    DistinguishedName = $builtInGuest.DistinguishedName
+                    SID               = $builtInGuestSid
+                }
+                $findings += $finding
+            }
+        }
+        catch {
+            Write-Verbose "Test-ADUserSecurity: failed to evaluate the built-in Guest account (RID 501): $_"
+        }
+
         Write-Progress -Activity "Scanning User Accounts" -Completed
         Write-Verbose "User account audit complete. Found $($findings.Count) issues."
         return $findings

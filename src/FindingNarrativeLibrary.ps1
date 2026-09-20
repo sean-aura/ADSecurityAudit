@@ -123,6 +123,114 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - restore the msDS-OIDToGroupLink value on the OID object if needed; effective immediately.'
         OperationalNotes = ''
     }
+    'SPN-Holding Account Also Has DCSync Rights' = @{
+        EstimatedEffort  = 'Low - the same single-ACE removal already scoped in the standalone Unauthorized DCSync Permissions finding for this account, or a routine SPN removal/service-account migration, whichever side is decided on.'
+        KnownRisks       = 'Removing DCSync rights or an SPN from an account that turns out to be a legitimate directory-sync or service account will break that tool/service until re-provisioned correctly (e.g. via a dedicated gMSA without DCSync rights) - confirm the account''s actual purpose before changing either side.'
+        BackupRollback   = 'Moderate - export the current ACL and/or SPN value before changing either side so it can be restored if a legitimate dependency surfaces.'
+        OperationalNotes = ''
+    }
+    'Trust Configured for Privileged Identity Management (PIM_TRUST)' = @{
+        EstimatedEffort  = 'Low - a single trust-attribute bit toggle, but confirm with the trust''s owning teams before clearing it, since PIM trusts are typically deliberate cross-forest identity-management configurations.'
+        KnownRisks       = 'Clearing PIM_TRUST restores standard SID filtering across the trust, which will break any legitimate Privileged Identity Management workflow that currently depends on the relaxed filtering - confirm the trust''s purpose with its owning teams before changing it.'
+        BackupRollback   = 'Easy - the attribute can be re-set if a legitimate dependency surfaces; effective immediately, no data loss.'
+        OperationalNotes = ''
+    }
+    'GPO Permits LM Hash Storage' = @{
+        EstimatedEffort  = 'Low - a single GPO setting applied domain-wide; existing LM hashes clear naturally as passwords are next changed.'
+        KnownRisks       = 'No legitimate modern workflow depends on LM hashes being stored; the only practical consideration is that existing LM hashes persist until each account''s next password change, not immediately.'
+        BackupRollback   = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
+        OperationalNotes = ''
+    }
+    'Legacy FRS-Based SYSVOL Replication In Use' = @{
+        EstimatedEffort  = 'High - a domain-wide replication-mechanism migration affecting every DC''s SYSVOL share; Microsoft''s own procedure requires progressing through and verifying each state (Prepared/Redirected/Eliminated) before advancing, and should be scheduled and tested rather than rushed.'
+        KnownRisks       = 'A migration attempted without verifying full replication health at each intermediate state can leave some DCs serving a stale or incomplete SYSVOL, which can affect Group Policy application and logon scripts domain-wide - follow Microsoft''s documented state-by-state verification before advancing.'
+        BackupRollback   = 'Difficult - FRS-to-DFSR migration state advances are one-directional by design (Microsoft does not support reverting from Eliminated back to FRS); back up SYSVOL content before starting and verify each intermediate state thoroughly rather than planning to roll back.'
+        OperationalNotes = ''
+    }
+    'AdminSDHolder Inheritance Re-Enabled' = @{
+        EstimatedEffort  = 'Low - toggling inheritance protection back on for a single object, but review the full resulting ACL afterward for anything unexpected that inheritance may have introduced.'
+        KnownRisks       = 'Re-protecting from inheritance removes any inherited ACEs currently in effect on AdminSDHolder; confirm none of them were an intentional (if unusual) delegation before re-protecting, though this is not expected to be the case for this specific object.'
+        BackupRollback   = 'Moderate - export the full current ACL (including inherited ACEs) before changing the protection flag, so anything unexpectedly lost can be reviewed and, if genuinely needed, re-added explicitly.'
+        OperationalNotes = ''
+    }
+    'Vulnerable Schema Class Allows Arbitrary Object Creation' = @{
+        EstimatedEffort  = 'Medium - schema changes require Schema Admins and are forest-wide, so validate the change in a lab before applying, and confirm no legitimate application depends on the current (vulnerable) configuration.'
+        KnownRisks       = 'Schema modifications are forest-wide and cannot be easily reverted (schema attributes/classes can be deactivated but not fully deleted) - test any corrective change thoroughly in a lab first.'
+        BackupRollback   = 'Difficult - schema changes are effectively permanent (classes/attributes can be deactivated, not removed); a system state backup of a schema-master DC before changing anything is the only real rollback path.'
+        OperationalNotes = ''
+    }
+    'Schema defaultSecurityDescriptor Modified' = @{
+        EstimatedEffort  = 'Medium - schema changes require Schema Admins and are forest-wide; validate the corrected SDDL in a lab before applying to production.'
+        KnownRisks       = 'Restoring the default defaultSecurityDescriptor does not retroactively fix already-created objects that inherited the modified ACL at creation time - those objects need to be separately identified and remediated.'
+        BackupRollback   = 'Difficult - schema attribute value changes are not easily reverted once objects have been created under the modified default; back up the current value and plan for a separate remediation pass on already-affected objects.'
+        OperationalNotes = ''
+    }
+    'AD Display Specifier Tampered' = @{
+        EstimatedEffort  = 'Low - removing a single attribute value per affected DisplaySpecifier object, but confirm the referenced tool isn''t a legitimate (if unusually placed) admin console extension before removing.'
+        KnownRisks       = 'Removing a legitimate admin console extension (if one happens to be configured this way) will break that specific right-click context-menu action for administrators - confirm before removing.'
+        BackupRollback   = 'Easy - record the current adminContextMenu value before removing it; effective immediately, no data loss.'
+        OperationalNotes = ''
+    }
+    'Non-Default Access to gMSA KDS Root Key' = @{
+        EstimatedEffort  = 'Low - a targeted ACE removal on one forest-level container, but confirm the principal isn''t a legitimate delegated PKI/identity-management tool before removing.'
+        KnownRisks       = 'No legitimate gMSA host or consumer needs direct access to the KDS root key object itself (they retrieve their own gMSA''s password via msDS-ManagedPassword, not this key) - removing an unexpected grant has no legitimate compatibility impact unless it is an undocumented, currently-in-use PKI/identity tool, so confirm first.'
+        BackupRollback   = 'Moderate - export the current ACL before removing the specific ACE(s) so they can be restored if a legitimate dependency surfaces.'
+        OperationalNotes = ''
+    }
+    'Non-Default Access to Domain DPAPI Backup Key' = @{
+        EstimatedEffort  = 'Low - a targeted ACE removal on one or a small handful of domain-level objects, but confirm the principal isn''t a legitimate, currently-used backup/recovery tool before removing.'
+        KnownRisks       = 'No legitimate day-to-day workflow needs direct access to the domain DPAPI backup key objects themselves; removing an unexpected grant has no legitimate compatibility impact unless it turns out to be an undocumented, currently-in-use backup/recovery tool, so confirm first.'
+        BackupRollback   = 'Moderate - export the current ACL before removing the specific ACE(s) so they can be restored if a legitimate dependency surfaces.'
+        OperationalNotes = ''
+    }
+    'Legacy LAPS SearchFlags Exposes Password' = @{
+        EstimatedEffort  = 'Medium - a schema attribute change (Schema Admins, schema-master DC) that also changes the effective access-control model for this attribute; validate in a lab first and confirm intended readers still have explicit CONTROL_ACCESS granted before applying to production.'
+        KnownRisks       = 'Setting the confidential bit changes ms-Mcs-AdmPwd from a normal-read attribute to one requiring explicit CONTROL_ACCESS - any tooling or delegated group that currently reads it via ordinary read access will need that access re-granted as CONTROL_ACCESS afterward.'
+        BackupRollback   = 'Difficult - schema attribute changes are effectively permanent (schema changes are not typically reverted); test thoroughly in a lab and confirm the full set of legitimate readers before applying.'
+        OperationalNotes = ''
+    }
+    'Built-in Guest Account Enabled' = @{
+        EstimatedEffort  = 'Low - a single account disable; confirm no legacy application specifically authenticates as Guest first.'
+        KnownRisks       = 'Disabling Guest is safe in virtually all modern environments; confirm no legacy kiosk/anonymous-access workflow depends on it before disabling.'
+        BackupRollback   = 'Easy - re-enable the account if needed; no data loss either way.'
+        OperationalNotes = ''
+    }
+    'Computer Account Never Joined with No Password Set' = @{
+        EstimatedEffort  = 'Low - removing or completing the join for each stale pre-staged object, but confirm with the provisioning team before removing in case the join is simply delayed rather than abandoned.'
+        KnownRisks       = 'Removing an object that is actually mid-provisioning (rather than genuinely abandoned) will require re-staging it - confirm current provisioning status with the responsible team first.'
+        BackupRollback   = 'Easy - a removed pre-staged object with no real join history can simply be re-created if needed; no real data loss.'
+        OperationalNotes = ''
+    }
+    'Constrained Delegation Configured to Decommissioned SPN' = @{
+        EstimatedEffort  = 'Low - removing one or more stale SPN entries from a single account''s delegation configuration.'
+        KnownRisks       = 'Low - the target host doesn''t currently exist, so removing the stale delegation entry has no legitimate functional impact today; confirm the host is genuinely decommissioned (not simply temporarily offline) before removing.'
+        BackupRollback   = 'Easy - re-add the SPN to msDS-AllowedToDelegateTo if the host turns out to still be in use under a different naming scenario; no data loss either way.'
+        OperationalNotes = ''
+    }
+    'Broad Membership in Distributed COM Users or Performance Log Users' = @{
+        EstimatedEffort  = 'Low - reviewing and removing membership from a typically-small, rarely-populated group.'
+        KnownRisks       = 'Removing a member who genuinely needs remote DCOM activation or remote performance-counter collection rights will break that specific workflow until re-added - confirm with the member/owning team first.'
+        BackupRollback   = 'Easy - re-add any member whose need is confirmed; effective on next Kerberos ticket refresh, no data loss.'
+        OperationalNotes = ''
+    }
+    'Domain Controller Registration Inconsistent' = @{
+        EstimatedEffort  = 'Medium - typically a single-object correction per affected DC, but requires confirming the DC''s intended current state (active, mid-promotion, or decommissioned) before deciding whether to correct or clean up metadata.'
+        KnownRisks       = 'Correcting userAccountControl or Configuration-partition registration on a DC that is still mid-promotion/demotion, rather than genuinely stuck, could interfere with that in-progress operation - confirm the DC''s actual current state first.'
+        BackupRollback   = 'Moderate - record the current attribute values before correcting them; effective on next AD replication cycle.'
+        OperationalNotes = ''
+    }
+    'Rogue NTDS Settings Object Detected' = @{
+        EstimatedEffort  = 'High - this requires an incident-response-style investigation (replication metadata, event log correlation, timeline reconstruction) before any cleanup action, not a routine configuration fix.'
+        KnownRisks       = 'Deleting the object directly (rather than via documented DC metadata cleanup) can leave inconsistent replication metadata across the forest; treat this as a potential security incident requiring investigation before remediation, not a routine hygiene item.'
+        BackupRollback   = 'N/A - this is a detection/investigation finding; remediation should follow Microsoft''s documented metadata-cleanup procedure once the object is confirmed non-legitimate.'
+        OperationalNotes = ''
+    }
+    'Certificate Template Vulnerable to Schema V1 EKU Injection (ESC15)' = @{
+        EstimatedEffort  = 'Medium - duplicating a template as Schema V2+ and re-pointing enrollment is a routine AD CS operation, but requires confirming which systems currently enroll against the V1 original before retiring it.'
+        KnownRisks       = 'Retiring a Schema V1 template can break legacy clients or workflows (e.g. very old Windows Server versions, or agents predating Schema V2 support) that specifically enroll against a V1 template - confirm no legitimate dependency before retiring rather than duplicating.'
+        BackupRollback   = 'Easy - the original Schema V1 template is unaffected by publishing a new V2+ duplicate alongside it; only retiring/unpublishing the V1 original needs to be reversible (re-publish it) if an unexpected dependency surfaces.'
+        OperationalNotes = ''
+    }
     'Certificate Template Allows High-Risk Enrollment Without Manager Approval' = @{
         EstimatedEffort  = 'Low - toggling the "CA certificate manager approval" flag on one template.'
         KnownRisks       = 'Enabling manager approval adds a manual approval step that will delay or block any automated enrollment workflow (autoenrollment, ACME-style automated issuance) that currently assumes instant issuance.'

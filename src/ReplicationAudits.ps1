@@ -138,6 +138,11 @@ function Test-ADReplicationSecurity {
             catch {
                 Write-Verbose "Could not resolve principal: $identityReference - $_"
             }
+
+            # Stashed for the SPN/DCSync cross-check below
+            # (files/23-dcsync-spn-crosscheck.md) so that check doesn't
+            # need to re-resolve the same identity a second time.
+            $entry.ResolvedPrincipal = $principal
             
             $finding = [ADSecurityFinding]::new()
             $finding.Category = 'Replication Security'
@@ -157,6 +162,64 @@ function Test-ADReplicationSecurity {
                 ActiveDirectoryRights = ($entry.ActiveDirectoryRights -join ', ')
                 Rights = ($entry.Rights -join ', ')
                 ObjectType = ($entry.ObjectTypes -join ', ')
+            }
+            $findings += $finding
+        }
+
+        # -------------------------------------------------------------------
+        # SPN-holder + DCSync-rights cross-check
+        # (files/23-dcsync-spn-crosscheck.md)
+        # -------------------------------------------------------------------
+        # Per the September 2026 revision of the joint ASD/CISA/NSA/CCCS/
+        # NCSC-NZ/NCSC-UK "Detecting and mitigating Active Directory
+        # compromises" guidance: verify no SPN-holding (Kerberoastable)
+        # account also holds DCSync rights, to cut the
+        # Kerberoasting-to-DCSync attack chain. Scoped explicitly to direct
+        # ACE holders only (the same scope the DCSync-rights detection
+        # above already uses) - a DCSync-capable GROUP whose membership
+        # happens to include an SPN-holding account is a known, explicitly
+        # out-of-scope limitation of this specific cross-check (noted in
+        # Details below rather than silently under-covered).
+        foreach ($identityReference in $__dcSyncByIdentity.Keys) {
+            $entry = $__dcSyncByIdentity[$identityReference]
+            $resolvedPrincipal = $entry.ResolvedPrincipal
+            if (-not $resolvedPrincipal -or $resolvedPrincipal.objectClass -ne 'user') {
+                # Only user objects can meaningfully hold an SPN for this
+                # check; a DCSync-capable group is out of scope here.
+                continue
+            }
+
+            $spnValues = @()
+            try {
+                $spnPrincipal = Get-ADUser -Identity $resolvedPrincipal.DistinguishedName -Properties ServicePrincipalName -Server $__adServer -ErrorAction Stop
+                $spnValues = @($spnPrincipal.ServicePrincipalName | Where-Object { $_ })
+            }
+            catch {
+                Write-Verbose "Test-ADReplicationSecurity: could not read ServicePrincipalName for '$identityReference' (SPN/DCSync cross-check): $_"
+                continue
+            }
+
+            if ($spnValues.Count -eq 0) { continue }
+
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Replication Security'
+            $finding.Issue = 'SPN-Holding Account Also Has DCSync Rights'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = $identityReference
+            $finding.Description = "Account '$identityReference' both holds a Service Principal Name (Kerberoastable: $($spnValues -join ', ')) and has DCSync-capable replication rights on the domain ($($entry.Rights -join ', '))."
+            $finding.Impact = "This account can be Kerberoasted offline to recover its password hash, then that recovered credential used directly to perform a DCSync attack and retrieve password hashes for any account in the domain, including KRBTGT - compounding two independently-known risks into a single, more severe attack chain. This specific chain is explicitly called out as a mitigation item in the September 2026 revision of the joint ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK 'Detecting and mitigating Active Directory compromises' guidance."
+            $finding.Remediation = "Remove one side of the chain: either remove the DCSync-capable replication rights from this account if it doesn't need them, or remove/rotate the SPN off this account if the associated service doesn't need Kerberos service authentication, or migrate the service to a gMSA and confirm the resulting service account does not also hold DCSync rights."
+            $finding.EstimatedEffort = 'Low - the same single-ACE removal already scoped in the standalone Unauthorized DCSync Permissions finding for this account, or a routine SPN removal/service-account migration, whichever side is decided on.'
+            $finding.KnownRisks = 'Removing DCSync rights or an SPN from an account that turns out to be a legitimate directory-sync or service account will break that tool/service until re-provisioned correctly (e.g. via a dedicated gMSA without DCSync rights) - confirm the account''s actual purpose before changing either side.'
+            $finding.BackupRollback = 'Moderate - export the current ACL and/or SPN value before changing either side so it can be restored if a legitimate dependency surfaces.'
+            $finding.Details = @{
+                Identity              = $identityReference
+                DistinguishedName     = $resolvedPrincipal.DistinguishedName
+                ServicePrincipalNames = ($spnValues -join '; ')
+                DCSyncRights          = ($entry.Rights -join ', ')
+                ActiveDirectoryRights = ($entry.ActiveDirectoryRights -join ', ')
+                KnownLimitation       = 'Scoped to direct ACE holders only, matching the existing DCSync-rights detection above; a DCSync-capable group whose membership includes an SPN-holding account is not expanded/covered by this specific cross-check.'
             }
             $findings += $finding
         }

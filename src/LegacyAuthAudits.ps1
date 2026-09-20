@@ -44,6 +44,10 @@ $Script:LegacyAuthRegistryTargets = @{
         Key       = 'HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
         ValueName = 'RestrictNTLMInDomain'
     }
+    NoLmHash = @{
+        Key       = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa'
+        ValueName = 'NoLMHash'
+    }
 }
 
 # Resolves the GPOs linked to a given AD container, ordered so that the
@@ -548,6 +552,64 @@ function Test-ADLegacyAuthSurface {
     }
     catch {
         Write-Warning "Test-ADLegacyAuthSurface: error evaluating RestrictNTLMInDomain: $_"
+    }
+
+    # -------------------------------------------------------------------
+    # Check 7: GPO Permits LM Hash Storage (NoLMHash)
+    # (files/20-legacy-protocol-replication-hygiene.md)
+    # -------------------------------------------------------------------
+    # Distinct from Check 3 (LmCompatibilityLevel) above: that setting
+    # governs which authentication PROTOCOL is accepted, whereas NoLMHash
+    # governs whether the weak LM hash FORMAT is generated and stored at
+    # all at each password change, independent of which protocol later
+    # uses it.
+    try {
+        $target = $Script:LegacyAuthRegistryTargets.NoLmHash
+        $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
+
+        $permitsLmHash = $true
+        $source        = $null
+        $detail        = @{}
+
+        if ($policy) {
+            # NoLMHash = 1 means "do not store LM hash" (compliant);
+            # 0 or any other value means LM hashes continue to be stored.
+            $permitsLmHash = ([int]$policy.Value -eq 0)
+            $source        = "GPO: $($policy.Source)"
+            $detail        = @{ EnforcedValue = [int]$policy.Value; Source = $source }
+        }
+        else {
+            # Fail-open, matching the LLMNR check above: if no GPO could be
+            # confirmed to enforce NoLMHash, treat LM hash storage as
+            # permitted rather than assuming a safe default.
+            $perDc = Get-ADLiveRegistryValuePerDc -DomainControllers $domainControllers -Key $target.Key -ValueName $target.ValueName
+            $permitsLmHash = $true
+            $source        = 'No enforcing GPO found linked at the domain root or Domain Controllers OU'
+            $detail        = @{ Source = $source; PerDomainControllerState = @($perDc) }
+        }
+
+        if ($permitsLmHash) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Legacy Auth & Name Poisoning'
+            $finding.Issue = 'GPO Permits LM Hash Storage'
+            $finding.Severity = 'High'
+            $finding.SeverityLevel = 3
+            $finding.AffectedObject = if ($policy) { $dcOuDn } else { $domain.DNSRoot }
+            $finding.Description = "'Network security: Do not store LAN Manager hash value on next password change' (`NoLMHash`) is not enforced ($source), so LM hashes continue to be generated and stored at each password change."
+            $finding.Impact = "LM hashes use a weak, easily-cracked format (split into two 7-character halves, case-insensitive) that is trivially recoverable via rainbow tables or brute force once obtained (e.g. via DCSync or ntds.dit extraction), independent of which authentication protocol is later permitted."
+            $finding.Remediation = "Enable 'Network security: Do not store LAN Manager hash value on next password change' via GPO (sets `NoLMHash` = 1). Existing LM hashes are only cleared at the next password change, so pair with a password-rotation follow-up for accounts that don't change password frequently (e.g. service accounts)."
+            $finding.EstimatedEffort = 'Low - a single GPO setting applied domain-wide; existing LM hashes clear naturally as passwords are next changed.'
+            $finding.KnownRisks = 'No legitimate modern workflow depends on LM hashes being stored; the only practical consideration is that existing LM hashes persist until each account''s next password change, not immediately.'
+            $finding.BackupRollback = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
+            $finding.Details = $detail
+            $findings += $finding
+        }
+        else {
+            Write-Verbose "Test-ADLegacyAuthSurface: NoLMHash is enforced (LM hash storage disabled)."
+        }
+    }
+    catch {
+        Write-Warning "Test-ADLegacyAuthSurface: error evaluating NoLMHash: $_"
     }
 
     Write-Verbose "Legacy Auth & Name-Poisoning Surface audit complete. Found $($findings.Count) issue(s)."

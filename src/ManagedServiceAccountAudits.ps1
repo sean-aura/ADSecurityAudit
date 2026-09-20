@@ -200,4 +200,98 @@ function Test-ADManagedServiceAccountSecurity {
     }
 }
 
+function Test-ADKdsRootKeySecurity {
+    <#
+    .SYNOPSIS
+        Audits ACL access to the gMSA KDS root key container.
+    .DESCRIPTION
+        Reads the ACL on the forest's KDS root key container
+        (CN=Master Root Keys,CN=Group Key Distribution Service,
+        CN=Services,CN=Configuration,<forest root>) and flags any
+        non-default principal with read access to msKds-RootKeyData -
+        the key material every gMSA's password across the entire forest
+        is derived from. A level up from the existing per-gMSA
+        password-retrieval check above: compromise of THIS object
+        derives every gMSA's password forest-wide, not just one
+        account's. See files/17-key-material-exposure.md.
+
+        Detection only - reads ACL metadata, never the key material
+        itself.
+    .OUTPUTS
+        [ADSecurityFinding[]]
+    #>
+    [CmdletBinding()]
+    param()
+
+    Write-Verbose "Starting gMSA KDS root key ACL audit..."
+    $findings = @()
+    $__adServer = Get-ADSecurityAuditTargetServerValue
+
+    $defaultKdsPrincipals = @(
+        'NT AUTHORITY\SYSTEM'
+        'BUILTIN\Administrators'
+        'Domain Admins'
+        'Enterprise Admins'
+    )
+
+    try {
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
+        $kdsContainerDn = "CN=Master Root Keys,CN=Group Key Distribution Service,CN=Services,$configContext"
+
+        $kdsAces = @()
+        try {
+            $kdsAces = @((Get-ADObject -Identity $kdsContainerDn -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor.Access)
+        }
+        catch {
+            Write-Verbose "Test-ADKdsRootKeySecurity: KDS root key container not found or not accessible ('$kdsContainerDn') - gMSA may not be in use in this forest: $_"
+            return $findings
+        }
+
+        $nonDefaultAces = @()
+        foreach ($ace in $kdsAces) {
+            if ($ace.IsInherited) { continue }
+            $principal = $ace.IdentityReference.Value
+            $isDefault = $false
+            foreach ($default in $defaultKdsPrincipals) {
+                if ($principal -match [regex]::Escape($default)) { $isDefault = $true; break }
+            }
+            if ($isDefault) { continue }
+
+            if ($ace.ActiveDirectoryRights -match 'GenericAll|GenericRead|ReadProperty|ExtendedRight') {
+                $nonDefaultAces += "$principal ($($ace.ActiveDirectoryRights))"
+            }
+        }
+        $nonDefaultAces = @($nonDefaultAces | Select-Object -Unique)
+
+        if ($nonDefaultAces.Count -gt 0) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Managed Service Accounts'
+            $finding.Issue = 'Non-Default Access to gMSA KDS Root Key'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = $kdsContainerDn
+            $finding.Description = "Non-default principal(s) have read/generic access to the gMSA KDS root key container: $($nonDefaultAces -join '; ')."
+            $finding.Impact = "Read access to msKds-RootKeyData on the KDS root key object lets a principal derive every gMSA's password across the ENTIRE FOREST, not just one account's - a single point of forest-wide gMSA compromise, one level up the chain from the existing per-gMSA password-retrieval check."
+            $finding.Remediation = "Remove the non-default ACE(s) listed above from the KDS root key container, restoring access to only the built-in defaults (SYSTEM, Domain/Enterprise Admins)."
+            $finding.EstimatedEffort = 'Low - a targeted ACE removal on one forest-level container, but confirm the principal isn''t a legitimate delegated PKI/identity-management tool before removing.'
+            $finding.KnownRisks = 'No legitimate gMSA host or consumer needs direct access to the KDS root key object itself (they retrieve their own gMSA''s password via msDS-ManagedPassword, not this key) - removing an unexpected grant has no legitimate compatibility impact unless it is an undocumented, currently-in-use PKI/identity tool, so confirm first.'
+            $finding.BackupRollback = 'Moderate - export the current ACL before removing the specific ACE(s) so they can be restored if a legitimate dependency surfaces.'
+            $finding.Details = @{
+                DistinguishedName = $kdsContainerDn
+                NonDefaultAces    = @($nonDefaultAces)
+            }
+            $findings += $finding
+        }
+        else {
+            Write-Verbose "Test-ADKdsRootKeySecurity: no non-default access found on the KDS root key container."
+        }
+    }
+    catch {
+        Write-Warning "Test-ADKdsRootKeySecurity: error during KDS root key ACL audit: $_"
+    }
+
+    Write-Verbose "gMSA KDS root key ACL audit complete. Found $($findings.Count) issue(s)."
+    return $findings
+}
+
 #endregion

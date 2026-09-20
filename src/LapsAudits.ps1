@@ -61,6 +61,53 @@ function Test-LAPSDeployment {
         
         # If LAPS is installed, check computer coverage
         if ($lapsInstalled) {
+            # --- Legacy LAPS SearchFlags check
+            # (files/17-key-material-exposure.md) ---
+            # ms-Mcs-AdmPwd's schema searchFlags controls whether the
+            # attribute is exposed beyond the intended restricted ACL
+            # (the confidential bit). Only applicable when the legacy
+            # schema attribute is actually present - Windows LAPS's newer
+            # msLAPS-Password uses a different confidentiality mechanism
+            # and is out of scope for this specific check. Single schema
+            # read, not per-computer.
+            try {
+                $lapsAttributeSchema = Get-ADObject -Identity $schemaPath -Properties searchFlags -Server $__adServer -ErrorAction Stop
+                if ($lapsAttributeSchema -and $null -ne $lapsAttributeSchema.searchFlags) {
+                    $searchFlagsValue = [int]$lapsAttributeSchema.searchFlags
+                    # fCONFIDENTIAL = 0x00000080. Microsoft's documented,
+                    # correctly-locked-down default for ms-Mcs-AdmPwd sets
+                    # this bit so the value is not readable via a normal
+                    # attribute read even by a principal with generic read
+                    # access - only via an explicit ACE granting
+                    # CONTROL_ACCESS. A deployment where this bit is
+                    # cleared exposes the password more broadly than the
+                    # deployment's own per-computer ACLs would suggest.
+                    $isConfidential = [bool]($searchFlagsValue -band 0x80)
+                    if (-not $isConfidential) {
+                        $finding = [ADSecurityFinding]::new()
+                        $finding.Category = 'LAPS Deployment'
+                        $finding.Issue = 'Legacy LAPS SearchFlags Exposes Password'
+                        $finding.Severity = 'High'
+                        $finding.SeverityLevel = 3
+                        $finding.AffectedObject = 'ms-Mcs-AdmPwd (schema attribute)'
+                        $finding.Description = "The ms-Mcs-AdmPwd schema attribute's searchFlags value ($searchFlagsValue) does not have the confidential (fCONFIDENTIAL, 0x80) bit set."
+                        $finding.Impact = "Without the confidential bit set on this attribute's schema definition, ms-Mcs-AdmPwd can be read by any principal with generic read access to a computer object, rather than being restricted to principals holding an explicit CONTROL_ACCESS right - exposing legacy LAPS passwords more broadly than the deployment's actual per-computer ACLs would suggest."
+                        $finding.Remediation = "Set the fCONFIDENTIAL bit (0x80) on ms-Mcs-AdmPwd's schema searchFlags value via ADSI Edit or PowerShell against the schema-master DC, following Microsoft's documented LAPS schema hardening guidance, then confirm read access is still correctly scoped afterward."
+                        $finding.EstimatedEffort = 'Medium - a schema attribute change (Schema Admins, schema-master DC) that also changes the effective access-control model for this attribute; validate in a lab first and confirm intended readers still have explicit CONTROL_ACCESS granted before applying to production.'
+                        $finding.KnownRisks = 'Setting the confidential bit changes ms-Mcs-AdmPwd from a normal-read attribute to one requiring explicit CONTROL_ACCESS - any tooling or delegated group that currently reads it via ordinary read access will need that access re-granted as CONTROL_ACCESS afterward.'
+                        $finding.BackupRollback = 'Difficult - schema attribute changes are effectively permanent (schema changes are not typically reverted); test thoroughly in a lab and confirm the full set of legitimate readers before applying.'
+                        $finding.Details = @{
+                            DistinguishedName = $lapsAttributeSchema.DistinguishedName
+                            SearchFlags       = $searchFlagsValue
+                        }
+                        $findings += $finding
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Test-LAPSDeployment: could not read ms-Mcs-AdmPwd schema searchFlags (legacy LAPS SearchFlags check) - likely Windows-LAPS-only deployment, or schema not accessible: $_"
+            }
+
             # Check for both legacy LAPS and Windows LAPS attributes
             $computers = Get-ADComputer -Filter * -Properties 'ms-Mcs-AdmPwdExpirationTime', 'msLAPS-PasswordExpirationTime', OperatingSystem -ResultPageSize 500 -Server $__adServer -ErrorAction Stop
             

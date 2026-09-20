@@ -156,6 +156,34 @@ function Test-AdminSDHolder {
             }
         }
         
+        # Check for AdminSDHolder ACL inheritance being re-enabled
+        # (files/15-schema-persistence-tampering.md). SDProp expects
+        # inheritance disabled (SE_DACL_PROTECTED set) on AdminSDHolder so
+        # protected-object ACLs stay authoritative; inheritance being
+        # enabled here should never happen in a healthy environment and is
+        # a known AD persistence/tampering indicator. Reuses the ACL
+        # already read above for the existing ACE/deny-ACE checks - no new
+        # query.
+        if ($acl -and -not $acl.AreAccessRulesProtected) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'AdminSDHolder'
+            $finding.Issue = 'AdminSDHolder Inheritance Re-Enabled'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = 'AdminSDHolder'
+            $finding.Description = "AdminSDHolder's ACL (CN=AdminSDHolder,CN=System,$($domain.DistinguishedName)) has inheritance ENABLED (SE_DACL_PROTECTED is not set)."
+            $finding.Impact = "AdminSDHolder's ACL is meant to be protected from inheritance so SDProp's periodic (60-minute) propagation to every protected (Tier-0) object stays authoritative and predictable. Inheritance being re-enabled is not a normal administrative state and can indicate deliberate tampering to introduce unexpected inherited permissions onto AdminSDHolder itself, which SDProp would then propagate domain-wide to every protected account and group."
+            $finding.Remediation = "Re-protect AdminSDHolder's ACL from inheritance (disable inheritance / set SE_DACL_PROTECTED) via ADSI Edit, dsacls, or PowerShell (`Set-Acl` with `SetAccessRuleProtection(`$true, `$true)` to preserve current explicit ACEs while blocking further inheritance), then review the full ACL for any unexpected inherited ACEs that were introduced while inheritance was enabled."
+            $finding.EstimatedEffort = 'Low - toggling inheritance protection back on for a single object, but review the full resulting ACL afterward for anything unexpected that inheritance may have introduced.'
+            $finding.KnownRisks = 'Re-protecting from inheritance removes any inherited ACEs currently in effect on AdminSDHolder; confirm none of them were an intentional (if unusual) delegation before re-protecting, though this is not expected to be the case for this specific object.'
+            $finding.BackupRollback = 'Moderate - export the full current ACL (including inherited ACEs) before changing the protection flag, so anything unexpectedly lost can be reviewed and, if genuinely needed, re-added explicitly.'
+            $finding.Details = @{
+                DistinguishedName        = $adminSDHolderDN
+                AreAccessRulesProtected  = $acl.AreAccessRulesProtected
+            }
+            $findings += $finding
+        }
+
         # Check for accounts with adminCount=1 that shouldn't have it
         Write-Verbose "Checking for orphaned adminCount attributes..."
         $protectedUsers = if ($__adServer) {

@@ -62,6 +62,7 @@ $Script:MitreTechniqueNames = @{
     'T1135'      = 'Network Share Discovery'
     'T1136.002'  = 'Create Account: Domain Account'
     'T1187'      = 'Forced Authentication'
+    'T1207'      = 'Rogue Domain Controller'
     'T1210'      = 'Exploitation of Remote Services'
     'T1482'      = 'Domain Trust Discovery'
     'T1484.001'  = 'Domain or Tenant Policy Modification: Group Policy Modification'
@@ -99,6 +100,7 @@ $Script:ADFindingMetadataMap = @{
     'Reversible Password Encryption'                        = @{ Mitre = 'T1003';     Anssi = 'vuln1_reversible_password';     Weight = 40 }
     'Password Never Expires'                                = @{ Mitre = 'T1078.002'; Anssi = 'vuln3_password_never_expires';  Weight = 10 }
     'Unconstrained Delegation Enabled'                      = @{ Mitre = 'T1558';     Anssi = 'vuln1_unconstrained_delegation';Weight = 40 }
+    'Computer Account with Unconstrained Delegation'        = @{ Mitre = 'T1558';     Anssi = 'vuln1_unconstrained_delegation_computer'; Weight = 40 }
     'Inactive Enabled Account'                              = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_inactive_account';        Weight = 4  }
     'Old Password'                                          = @{ Mitre = 'T1110';     Anssi = 'vuln4_old_password';            Weight = 4  }
     'Privileged Account with SPN (Kerberoasting Risk)'     = @{ Mitre = 'T1558.003'; Anssi = 'vuln1_priv_spn_kerberoast';     Weight = 40 }
@@ -106,6 +108,7 @@ $Script:ADFindingMetadataMap = @{
     'Privileged Account Not in Protected Users Group'      = @{ Mitre = 'T1003';     Anssi = 'vuln3_protected_users';         Weight = 10 }
     'Privileged Account Not Configured as Sensitive and Cannot Be Delegated' = @{ Mitre = 'T1558'; Anssi = 'vuln2_priv_account_delegatable'; Weight = 20 }
     'Built-in Administrator Account Enabled and Not Recently Rotated' = @{ Mitre = 'T1110'; Anssi = 'vuln2_builtin_admin_stale_password'; Weight = 20 }
+    'Built-in Guest Account Enabled'                       = @{ Mitre = 'T1078';     Anssi = 'vuln3_guest_account_enabled';  Weight = 10 }
 
     # --- Privileged Groups ---
     'Excessive Privileged Group Membership'                = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_privileged_members';      Weight = 20 }
@@ -118,6 +121,7 @@ $Script:ADFindingMetadataMap = @{
     'Orphaned adminCount Attribute'                        = @{ Mitre = 'T1078.002'; Anssi = 'vuln4_orphaned_admincount';     Weight = 4  }
     'AdminSDHolder Ghost Account'                          = @{ Mitre = 'T1098';     Anssi = 'vuln2_adminsdholder_ghost';     Weight = 20 }
     'AdminSDHolder ACL Compromise'                         = @{ Mitre = 'T1098';     Anssi = 'vuln1_adminsdholder_compromise';Weight = 40 }
+    'AdminSDHolder Inheritance Re-Enabled'                 = @{ Mitre = 'T1098';     Anssi = 'vuln1_adminsdholder_inheritance'; Weight = 40 }
     'No Auditing on AdminSDHolder Object'                  = @{ Mitre = 'T1685.001'; Anssi = 'vuln3_no_audit_adminsdholder';  Weight = 10 }
 
     # --- Group Policy ---
@@ -128,6 +132,7 @@ $Script:ADFindingMetadataMap = @{
 
     # --- Replication Security ---
     'Unauthorized DCSync Permissions'                      = @{ Mitre = 'T1003.006'; Anssi = 'vuln1_dcsync';                  Weight = 40 }
+    'SPN-Holding Account Also Has DCSync Rights'           = @{ Mitre = 'T1003.006'; Anssi = 'vuln1_spn_dcsync_chain';        Weight = 40 }
     'Membership in Privileged Operations Group'            = @{ Mitre = 'T1078.002'; Anssi = 'vuln3_privileged_ops_group';    Weight = 10 }
 
     # --- Domain Security ---
@@ -179,6 +184,7 @@ $Script:ADFindingMetadataMap = @{
     'Weak Certificate Binding Compensation Enabled (ESC10)' = @{ Mitre = 'T1649';    Anssi = 'vuln2_adcs_esc10';               Weight = 20 }
     'CA RPC Enrollment Encryption Not Enforced (ESC11)'    = @{ Mitre = 'T1649';     Anssi = 'vuln1_adcs_esc11';               Weight = 40 }
     'Certificate Template Issuance Policy Linked to Privileged Group (ESC13)' = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_esc13'; Weight = 40 }
+    'Certificate Template Vulnerable to Schema V1 EKU Injection (ESC15)' = @{ Mitre = 'T1649'; Anssi = 'vuln1_adcs_esc15'; Weight = 40 }
     'Weak Explicit Certificate Mapping on Privileged Account (ESC14)' = @{ Mitre = 'T1649'; Anssi = 'vuln2_adcs_esc14';        Weight = 20 }
     'CA-Wide Security Extension Disabled (ESC16)'          = @{ Mitre = 'T1649';     Anssi = 'vuln1_adcs_esc16';               Weight = 40 }
 
@@ -209,12 +215,16 @@ $Script:ADFindingMetadataMap = @{
     'Dangerous Rights on Critical OU'                    = @{ Mitre = 'T1098';     Anssi = 'vuln1_dangerous_ou_rights';      Weight = 40 }
     'Non-Standard Permissions on Schema Naming Context'         = @{ Mitre = 'T1098'; Anssi = 'vuln1_schema_nc_acl'; Weight = 40 }
     'Non-Standard Permissions on Configuration Naming Context'  = @{ Mitre = 'T1098'; Anssi = 'vuln1_config_nc_acl'; Weight = 40 }
+    'Vulnerable Schema Class Allows Arbitrary Object Creation'   = @{ Mitre = 'T1098'; Anssi = 'vuln1_schema_class_vulnerable'; Weight = 40 }
+    'Schema defaultSecurityDescriptor Modified'                  = @{ Mitre = 'T1098'; Anssi = 'vuln1_schema_default_sd';       Weight = 40 }
+    'AD Display Specifier Tampered'                              = @{ Mitre = 'T1098'; Anssi = 'vuln2_display_specifier_tampered'; Weight = 20 }
 
     # --- Legacy Attack Vector / Admin Equivalence ---
     'Shadow Credentials Detected'                        = @{ Mitre = 'T1556';     Anssi = 'vuln1_shadow_credentials';       Weight = 40 }
     'SID History Injection (Same Domain)'                = @{ Mitre = 'T1134.005'; Anssi = 'vuln1_sid_history_injection';     Weight = 40 }
     'Privileged SID in History'                          = @{ Mitre = 'T1134.005'; Anssi = 'vuln1_privileged_sid_history';    Weight = 40 }
     'SID History Attribute Populated'                    = @{ Mitre = 'T1134.005'; Anssi = 'vuln5_sid_history_populated';     Weight = 1  }
+    'Cross-Domain Privileged Group Membership'           = @{ Mitre = '';          Anssi = 'vuln5_cross_domain_group_membership'; Weight = 1  }
     'Legacy Logon Script Defined'                        = @{ Mitre = 'T1037';     Anssi = 'vuln4_legacy_logon_script';      Weight = 4  }
     'Domain Admin Equivalent Access Detected'            = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_da_equivalent_access';      Weight = 20 }
 
@@ -248,6 +258,7 @@ $Script:ADFindingMetadataMap = @{
     'SMBv1 Enabled / Not Disabled by Policy'              = @{ Mitre = 'T1210';     Anssi = 'vuln1_smbv1_enabled';          Weight = 40 }
     'SMB Signing Not Required'                            = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_smb_signing_not_required'; Weight = 40 }
     'LM/NTLMv1 Authentication Permitted'                  = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_lm_ntlmv1_permitted';     Weight = 40 }
+    'GPO Permits LM Hash Storage'                         = @{ Mitre = 'T1557.001'; Anssi = 'vuln1_lm_hash_storage';        Weight = 40 }
     'LLMNR Not Disabled by Policy'                        = @{ Mitre = 'T1557.001'; Anssi = 'vuln3_llmnr_not_disabled';     Weight = 10 }
     'WSUS Delivered over HTTP'                            = @{ Mitre = 'T1210';     Anssi = 'vuln1_wsus_http';              Weight = 40 }
     'NTLM Authentication Not Restricted in Domain'         = @{ Mitre = 'T1557.001'; Anssi = 'vuln3_ntlm_not_restricted';     Weight = 10 }
@@ -256,13 +267,20 @@ $Script:ADFindingMetadataMap = @{
     'RC4 Kerberos Encryption Still Permitted'             = @{ Mitre = 'T1558.003'; Anssi = 'vuln2_rc4_kerberos_permitted'; Weight = 20 }
     'Kerberos Armoring (FAST) Not Enabled'                = @{ Mitre = 'T1558';     Anssi = 'vuln2_kerberos_armoring_not_enabled'; Weight = 20 }
     'Cross-Trust TGT Delegation Enabled'                  = @{ Mitre = 'T1558';     Anssi = 'vuln1_cross_trust_tgt_delegation'; Weight = 40 }
+    'Trust Configured for Privileged Identity Management (PIM_TRUST)' = @{ Mitre = 'T1558'; Anssi = 'vuln1_pim_trust';       Weight = 40 }
 
     # --- Stale-Object & Hygiene Depth (PASSWD_NOTREQD, primaryGroupID, duplicate SPNs, DC registration) ---
     'Accounts with PASSWD_NOTREQD Set'                    = @{ Mitre = 'T1110';     Anssi = 'vuln2_passwd_notreqd';         Weight = 20 }
     'Non-Default primaryGroupID (Membership Hiding)'      = @{ Mitre = 'T1098';     Anssi = 'vuln2_primary_group_id';       Weight = 20 }
+    'Computer Account Never Joined with No Password Set'  = @{ Mitre = 'T1078.002'; Anssi = 'vuln2_never_joined_computer';  Weight = 20 }
+    'Constrained Delegation Configured to Decommissioned SPN' = @{ Mitre = 'T1187'; Anssi = 'vuln2_ghost_spn_delegation';    Weight = 20 }
+    'Broad Membership in Distributed COM Users or Performance Log Users' = @{ Mitre = 'T1098'; Anssi = 'vuln2_underaudited_group_membership'; Weight = 20 }
     'Duplicate Service Principal Names'                   = @{ Mitre = 'T1098';     Anssi = 'vuln3_duplicate_spn';          Weight = 10 }
     'DC Subnet/Site Registration Gap'                     = @{ Mitre = 'T1590.002'; Anssi = 'vuln4_dc_subnet_missing';      Weight = 4  }
+    'Legacy FRS-Based SYSVOL Replication In Use'          = @{ Mitre = 'T1210';     Anssi = 'vuln2_legacy_frs_sysvol';      Weight = 20 }
     'Insufficient Domain Controller Count'                = @{ Mitre = 'T1485';     Anssi = 'vuln3_insufficient_dc_count';  Weight = 10 }
+    'Domain Controller Registration Inconsistent'         = @{ Mitre = 'T1207';     Anssi = 'vuln1_dc_registration_inconsistent'; Weight = 40 }
+    'Rogue NTDS Settings Object Detected'                 = @{ Mitre = 'T1207';     Anssi = 'vuln1_rogue_ntds_object';      Weight = 40 }
 
     # --- GPO-Deployed Secrets & Insecure Settings (GPP cpassword, script credentials) ---
     'GPP cpassword Found in SYSVOL'                       = @{ Mitre = 'T1552.006'; Anssi = 'vuln1_gpp_cpassword';          Weight = 40 }
@@ -296,6 +314,9 @@ $Script:ADFindingMetadataMap = @{
     # --- Managed Service Accounts (gMSA password-retrieval rights) ---
     'gMSA Password Retrievable by Broad Principal'         = @{ Mitre = 'T1552.005'; Anssi = 'vuln1_gmsa_broad_retrieval';    Weight = 40 }
     'Privileged gMSA Password Retrieval Not Tightly Scoped' = @{ Mitre = 'T1552.005'; Anssi = 'vuln2_gmsa_tier0_retrieval';   Weight = 20 }
+    'Non-Default Access to gMSA KDS Root Key'              = @{ Mitre = 'T1552.005'; Anssi = 'vuln1_gmsa_kds_root_key';      Weight = 40 }
+    'Non-Default Access to Domain DPAPI Backup Key'        = @{ Mitre = 'T1552.001'; Anssi = 'vuln1_dpapi_backup_key';       Weight = 40 }
+    'Legacy LAPS SearchFlags Exposes Password'             = @{ Mitre = 'T1552.001'; Anssi = 'vuln2_laps_searchflags';       Weight = 20 }
 
     # --- Group Policy (Restricted Groups / GPO ownership additions) ---
     'GPO Deploys Restricted Groups Membership'             = @{ Mitre = 'T1098.007'; Anssi = 'vuln1_gpo_restricted_groups';   Weight = 40 }
