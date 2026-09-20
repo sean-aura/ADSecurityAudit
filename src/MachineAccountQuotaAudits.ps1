@@ -9,12 +9,6 @@
 # (e.g. CVE-2021-42278/42287, "noPac") that escalate a low-privilege user to
 # Domain Admin equivalence.
 #
-# Snapshot-aware per the v1.3.0 collection contract (docs/features/
-# 02-domain-snapshot.md): reads $Snapshot.MachineAccountQuota when supplied,
-# falling back to a live Get-ADObject read of the domain root's
-# ms-DS-MachineAccountQuota attribute (Get-ADDomain does not expose this
-# attribute directly).
-#
 # DETECTION ONLY: this is a single read-only LDAP attribute read. Nothing
 # here creates, joins, or modifies any computer account.
 
@@ -28,10 +22,6 @@ function Test-ADMachineAccountQuota {
         lowered-but-still-non-zero value (Medium risk - still self-service).
         A quota of 0 (hardened: computer joins must be explicitly delegated)
         produces no finding.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied and
-        it contains a 'MachineAccountQuota' key, that value is used instead
-        of a live AD query.
     .PARAMETER Server
         Optional override for which domain/DC to query, as a domain FQDN
         (e.g. 'domainb.corp.com') or a specific DC FQDN/hostname. When
@@ -42,8 +32,6 @@ function Test-ADMachineAccountQuota {
         target domain, which is exactly the "checks Domain A instead of
         Domain B" symptom this default exists to avoid. Pass this
         explicitly only to target a domain OTHER than your own account's.
-        Ignored when -Snapshot is supplied (no live AD access is performed
-        in that mode).
 
         PDC-ONLY CHECK, NOTED ACCORDINGLY: ms-DS-MachineAccountQuota is a
         single domain-wide attribute on the domain root object, identical
@@ -65,9 +53,6 @@ function Test-ADMachineAccountQuota {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [hashtable]$Snapshot,
-
-        [Parameter()]
         [string]$Server
     )
 
@@ -78,72 +63,52 @@ function Test-ADMachineAccountQuota {
         $quota = $null
         $domainDN = $null
 
-        if ($Snapshot -and $Snapshot.ContainsKey('MachineAccountQuota') -and $null -ne $Snapshot.MachineAccountQuota) {
-            Write-Verbose "Test-ADMachineAccountQuota: using snapshot data."
-            $quota = $Snapshot.MachineAccountQuota
-            if ($Snapshot.ContainsKey('Domain')) {
-                $domainDN = $Snapshot.Domain.DistinguishedName
-            }
-        }
-        elseif ($Snapshot) {
-            # Fixed in v1.19.1: a -Snapshot was supplied but MachineAccountQuota
-            # was missing/null (e.g. a malformed or very old snapshot file, or
-            # a collection-time failure recorded as $null). This used to fall
-            # through to a live Get-ADDomain/Get-ADObject call - not
-            # acceptable under -Snapshot. $quota simply stays $null, and the
-            # existing "could not determine quota; skipping" path below
-            # handles it with no live call.
-            Write-Verbose "Test-ADMachineAccountQuota: -Snapshot supplied but MachineAccountQuota is missing/null; skipping (no live AD access performed)."
+        # Fixed: previously called Get-ADDomain/Get-ADObject with no
+        # -Server, which performs a "serverless" bind that resolves
+        # against the invoking account's own logon domain rather than
+        # necessarily the intended target domain - in a multi-domain
+        # forest this is what causes the quota check to silently read
+        # the wrong domain. -Server, if supplied, is used explicitly;
+        # if not, defaults to the current user's own domain
+        # ($env:USERDNSDOMAIN) rather than the ambiguous default.
+        #
+        # CONFIRMED REGRESSION, FIXED: when called from
+        # Start-ADSecurityAudit, $Server here is not the operator's
+        # raw input - it's $effectiveServer, the value
+        # Resolve-ADSecurityAuditTargetServer already resolved moments
+        # earlier (e.g. a domain's PDC Emulator FQDN, from a plain
+        # no-argument run). Re-running full resolution against an
+        # already-resolved DC FQDN makes Get-ADDomainController
+        # -Identity succeed and misclassifies it as "the operator
+        # explicitly named this DC", corrupting the shared explicit-DC
+        # scope flag other checks in the same run rely on (see
+        # Resolve-ADSecurityAuditTargetServer's own idempotency guard).
+        # When an override is already active for this session, reuse
+        # it directly instead of re-resolving; only resolve fresh when
+        # this is genuinely the first call (e.g. this function invoked
+        # standalone, outside Start-ADSecurityAudit).
+        if (Get-ADSecurityAuditActiveServerOverride) {
+            $effectiveServer = Get-ADSecurityAuditActiveServerOverride
         }
         else {
-            # Fixed: previously called Get-ADDomain/Get-ADObject with no
-            # -Server, which performs a "serverless" bind that resolves
-            # against the invoking account's own logon domain rather than
-            # necessarily the intended target domain - in a multi-domain
-            # forest this is what causes the quota check to silently read
-            # the wrong domain. -Server, if supplied, is used explicitly;
-            # if not, defaults to the current user's own domain
-            # ($env:USERDNSDOMAIN) rather than the ambiguous default.
-            #
-            # CONFIRMED REGRESSION, FIXED: when called from
-            # Start-ADSecurityAudit, $Server here is not the operator's
-            # raw input - it's $effectiveServer, the value
-            # Resolve-ADSecurityAuditTargetServer already resolved moments
-            # earlier (e.g. a domain's PDC Emulator FQDN, from a plain
-            # no-argument run). Re-running full resolution against an
-            # already-resolved DC FQDN makes Get-ADDomainController
-            # -Identity succeed and misclassifies it as "the operator
-            # explicitly named this DC", corrupting the shared explicit-DC
-            # scope flag other checks in the same run rely on (see
-            # Resolve-ADSecurityAuditTargetServer's own idempotency guard).
-            # When an override is already active for this session, reuse
-            # it directly instead of re-resolving; only resolve fresh when
-            # this is genuinely the first call (e.g. this function invoked
-            # standalone, outside Start-ADSecurityAudit).
-            if (Get-ADSecurityAuditActiveServerOverride) {
-                $effectiveServer = Get-ADSecurityAuditActiveServerOverride
-            }
-            else {
-                $effectiveServer = Resolve-ADSecurityAuditTargetServer -Server $Server
-            }
-
-            $domainParams = @{ ErrorAction = 'Stop' }
-            if ($effectiveServer) { $domainParams['Server'] = $effectiveServer }
-            $domain = Get-ADDomain @domainParams
-            $domainDN = $domain.DistinguishedName
-
-            $objectParams = @{ Identity = $domainDN; Properties = 'ms-DS-MachineAccountQuota'; ErrorAction = 'Stop' }
-            if ($effectiveServer) { $objectParams['Server'] = $effectiveServer }
-            $domainObject = Get-ADObject @objectParams
-            $quota = $domainObject.'ms-DS-MachineAccountQuota'
+            $effectiveServer = Resolve-ADSecurityAuditTargetServer -Server $Server
         }
+
+        $domainParams = @{ ErrorAction = 'Stop' }
+        if ($effectiveServer) { $domainParams['Server'] = $effectiveServer }
+        $domain = Get-ADDomain @domainParams
+        $domainDN = $domain.DistinguishedName
+
+        $objectParams = @{ Identity = $domainDN; Properties = 'ms-DS-MachineAccountQuota'; ErrorAction = 'Stop' }
+        if ($effectiveServer) { $objectParams['Server'] = $effectiveServer }
+        $domainObject = Get-ADObject @objectParams
+        $quota = $domainObject.'ms-DS-MachineAccountQuota'
 
         if ($null -eq $quota) {
             Write-Verbose "Test-ADMachineAccountQuota: could not determine ms-DS-MachineAccountQuota; skipping."
             return $findings
         }
 
-        # May arrive as [string] after a JSON round-trip (-ToJson / -FromSnapshot).
         $quotaValue = [int]$quota
 
         if ($quotaValue -eq 10) {

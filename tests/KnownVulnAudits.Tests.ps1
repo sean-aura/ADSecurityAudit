@@ -2,8 +2,8 @@
 <#
     Unit tests for Test-ADKnownDCVulnerabilities (features 16 and 17).
 
-    Test-ADKnownDCVulnerabilities is live-only (no -Snapshot equivalent for
-    per-DC OS build/hotfix/UBR/service state), so every test here shadows
+    Test-ADKnownDCVulnerabilities is live-only (per-DC OS build/hotfix/UBR/
+    service state), so every test here shadows
     Get-ADDomainController, Get-CimInstance, Get-HotFix, Get-Service, and
     Get-ADKnownVulnUBR with local functions - no real AD module,
     connectivity, or remote registry access is required.
@@ -15,13 +15,6 @@ BeforeAll {
     $root = Split-Path -Parent $PSScriptRoot
     . (Join-Path $root 'src/Common.ps1')
     . (Join-Path $root 'src/KnownVulnAudits.ps1')
-}
-
-Describe 'Test-ADKnownDCVulnerabilities (-Snapshot contract)' {
-    It 'returns no findings and performs no live access when -Snapshot is supplied' {
-        $findings = Test-ADKnownDCVulnerabilities -Snapshot @{ Domain = 'placeholder' }
-        $findings.Count | Should -Be 0
-    }
 }
 
 Describe 'Test-ADKnownDCVulnerabilities / CVE-2026-41089 (Netlogon RCE)' {

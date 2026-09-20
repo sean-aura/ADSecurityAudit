@@ -71,8 +71,7 @@ function Get-ADForestConsolidation {
         in MissingDomains as "not scanned this run" rather than silently
         dropped from history.
     .PARAMETER ToJson
-        Optional. Also persist the consolidated result to this path
-        (mirrors Get-ADSnapshot's -ToJson convention).
+        Optional. Also persist the consolidated result to this path.
     .OUTPUTS
         PSCustomObject: GeneratedDate, DomainCount, ForestScore,
         ForestMaturityLevel, ForestMaturityLabel, WorstDomain, Domains,

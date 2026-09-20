@@ -28,15 +28,10 @@
 # state on the CA host itself. Nothing here requests, forges, or relays a
 # certificate, and no coercion/PoC traffic is sent to any host.
 #
-# Snapshot contract: certificate template/CA enumeration and the
-# attribute-only checks (approval-gate check, and weak-signature/ROCA
-# evaluation of the CA's own published certificate) are snapshot-aware via
-# Snapshot.ADCS (from Get-ADSnapshot, unchanged schema). ESC4 (per-template
-# ACL), ESC8 (live network probe of the CA host), and the NTAuth/AIA/Root
-# store sweep are live AD/network reads with no snapshot representation, so
-# - consistent with the anonymous-bind probe in Test-ADDomainHardeningFlags
-# and the per-DC probes in Test-ADCoercionAndRelayExposure - they are
-# skipped entirely when this function is invoked with -Snapshot.
+# Detection scope: certificate template/CA enumeration, ESC4 (per-template
+# ACL), the approval-gate/CA-certificate weak-crypto checks, and the
+# NTAuth/AIA/Root store sweep are all live AD reads. ESC8 is a live network
+# probe of the CA host itself. Nothing here is snapshot-based.
 
 # Small set of primes (with a fast brute-force order computation, valid
 # since each prime here is tiny) used for a probabilistic ROCA fingerprint
@@ -284,26 +279,11 @@ function Test-ADCSExtended {
         certificate bytes, plus (ESC8 only) remote service/web-configuration
         state on the CA host. Never requests, forges, or relays a
         certificate, and sends no coercion/PoC traffic.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        certificate template/CA enumeration, ESC4 (per-template ACL), the
-        approval-gate/CA-certificate weak-crypto checks, and the NTAuth/AIA/
-        Root store sweep are all read from Snapshot.ADCS - no live AD access
-        is performed for any of them (ESC4 and the NTAuth/AIA/Root sweep
-        gained snapshot support in v1.19.1; a snapshot collected with an
-        older module version won't have the NTAuth/AIA/Root fields, in
-        which case that one sweep is skipped with a note rather than
-        erroring). ESC8 (a live HTTP probe against the CA host itself) has
-        no possible snapshot representation and is always skipped entirely
-        under -Snapshot, consistent with Test-ADCoercionAndRelayExposure.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Starting AD CS extended security audit (ESC4/ESC8/ROCA/weak crypto)..."
     $findings = @()
@@ -329,56 +309,42 @@ function Test-ADCSExtended {
     $adcsInstalled = $false
     $configContext = $null
 
-    if ($Snapshot) {
-        if ($Snapshot.ContainsKey('ADCS') -and $Snapshot.ADCS.Installed) {
-            Write-Verbose "Test-ADCSExtended: using snapshot AD CS inventory."
-            $adcsInstalled = $true
-            $certTemplates = @($Snapshot.ADCS.CertificateTemplates)
-            $certAuthorities = @($Snapshot.ADCS.CertificateAuthorities)
-        }
-        else {
-            Write-Verbose "Test-ADCSExtended: snapshot indicates AD CS is not installed; no findings."
-            return $findings
-        }
-    }
-    else {
+    try {
+        $__adServer = Get-ADSecurityAuditTargetServerValue
+        $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
+        $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
+
+        # -SearchScope OneLevel, not the default Subtree: a Subtree
+        # search over "CN=Certificate Templates,..."/"CN=Enrollment
+        # Services,..." returns the CONTAINER OBJECT ITSELF alongside
+        # its real children (pKICertificateTemplate/pKIEnrollmentService
+        # objects, which are never nested further than one level under
+        # these containers). Neither loop below filtered by objectClass,
+        # so that container object was silently iterated as if it were
+        # a real template/CA - its own Name IS literally "Certificate
+        # Templates"/"Enrollment Services", it has no dNSHostName or
+        # cACertificate, and every check against it either produced
+        # confusing noise (e.g. "CA 'Enrollment Services' has no
+        # dNSHostName; skipping ESC8 probe" - about the container, not
+        # any real, misconfigured CA) or was silently skipped. OneLevel
+        # returns only the real child objects, never the base container.
+        $certTemplates = @(Invoke-ADQueryWithRetry -OperationName 'Get certificate templates (ADCS extended audit)' -Query {
+            Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
+        })
+        $adcsInstalled = $true
+
         try {
-            $__adServer = Get-ADSecurityAuditTargetServerValue
-            $configContext = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
-            $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
-
-            # -SearchScope OneLevel, not the default Subtree: a Subtree
-            # search over "CN=Certificate Templates,..."/"CN=Enrollment
-            # Services,..." returns the CONTAINER OBJECT ITSELF alongside
-            # its real children (pKICertificateTemplate/pKIEnrollmentService
-            # objects, which are never nested further than one level under
-            # these containers). Neither loop below filtered by objectClass,
-            # so that container object was silently iterated as if it were
-            # a real template/CA - its own Name IS literally "Certificate
-            # Templates"/"Enrollment Services", it has no dNSHostName or
-            # cACertificate, and every check against it either produced
-            # confusing noise (e.g. "CA 'Enrollment Services' has no
-            # dNSHostName; skipping ESC8 probe" - about the container, not
-            # any real, misconfigured CA) or was silently skipped. OneLevel
-            # returns only the real child objects, never the base container.
-            $certTemplates = @(Invoke-ADQueryWithRetry -OperationName 'Get certificate templates (ADCS extended audit)' -Query {
-                Get-ADObject -SearchBase "CN=Certificate Templates,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
+            $certAuthorities = @(Invoke-ADQueryWithRetry -OperationName 'Get enrollment services (ADCS extended audit)' -Query {
+                Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
             })
-            $adcsInstalled = $true
-
-            try {
-                $certAuthorities = @(Invoke-ADQueryWithRetry -OperationName 'Get enrollment services (ADCS extended audit)' -Query {
-                    Get-ADObject -SearchBase "CN=Enrollment Services,$pkiContainer" -SearchScope OneLevel -Filter * -Properties * -Server $__adServer -ErrorAction Stop
-                })
-            }
-            catch {
-                Write-Verbose "Test-ADCSExtended: could not enumerate Certificate Authorities: $_"
-            }
         }
         catch {
-            Write-Verbose "Test-ADCSExtended: AD Certificate Services not found or accessible. Skipping AD CS extended audit."
-            return $findings
+            Write-Verbose "Test-ADCSExtended: could not enumerate Certificate Authorities: $_"
         }
+    }
+    catch {
+        Write-Verbose "Test-ADCSExtended: AD Certificate Services not found or accessible. Skipping AD CS extended audit."
+        return $findings
     }
 
     if (-not $certTemplates -or $certTemplates.Count -eq 0) {
@@ -388,37 +354,27 @@ function Test-ADCSExtended {
     # -------------------------------------------------------------------
     # ESC4: dangerous template ACLs
     # -------------------------------------------------------------------
-    # Fixed in v1.19.1: this was documented as "live only - not captured in
-    # snapshot" and skipped entirely under -Snapshot, but Get-ADSnapshot has
-    # collected a flattened per-template Access ACL since v1.19.0 (added for
-    # Test-ADCertificateServices' ESC7 check) - the same data this check
-    # needs was already sitting in the snapshot, just never wired up here.
-    # Offline path below reads $template.Access (already-flattened ACEs,
-    # IdentityReference as a plain string) instead of a live Get-Acl call;
-    # detection logic is otherwise identical to the live path.
     foreach ($template in $certTemplates) {
         $templateName = if ($template.displayName) { $template.displayName } else { $template.Name }
 
-        $templateAces = if ($Snapshot) { @($template.Access) } else {
-            try {
-                # Get-ADObject -Properties nTSecurityDescriptor, not
-                # Get-Acl -Path "AD:..." - the latter has no -Server
-                # parameter and reads via the AD: PSDrive's ambient
-                # default domain/DC, bypassing this module's -Server
-                # override entirely. nTSecurityDescriptor returns the
-                # same ActiveDirectorySecurity object (.Access, etc.) via
-                # a real, -Server-aware Get-AD* cmdlet.
-                @((Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor.Access)
-            }
-            catch {
-                Write-Verbose "Test-ADCSExtended: could not get ACL for template '$templateName': $_"
-                @()
-            }
+        $templateAces = try {
+            # Get-ADObject -Properties nTSecurityDescriptor, not
+            # Get-Acl -Path "AD:..." - the latter has no -Server
+            # parameter and reads via the AD: PSDrive's ambient
+            # default domain/DC, bypassing this module's -Server
+            # override entirely. nTSecurityDescriptor returns the
+            # same ActiveDirectorySecurity object (.Access, etc.) via
+            # a real, -Server-aware Get-AD* cmdlet.
+            @((Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor.Access)
+        }
+        catch {
+            Write-Verbose "Test-ADCSExtended: could not get ACL for template '$templateName': $_"
+            @()
         }
 
         $dangerousAces = @()
         foreach ($ace in $templateAces) {
-            $principal = if ($Snapshot) { $ace.IdentityReference } else { $ace.IdentityReference.Value }
+            $principal = $ace.IdentityReference.Value
             $isLowPriv = $false
             foreach ($lowPriv in $lowPrivilegedPrincipals) {
                 if ($principal -match [regex]::Escape($lowPriv)) { $isLowPriv = $true; break }
@@ -471,6 +427,253 @@ function Test-ADCSExtended {
     }
 
     # -------------------------------------------------------------------
+    # ESC5: dangerous ACLs on non-template PKI container objects
+    # -------------------------------------------------------------------
+    # Same shape as ESC4 above (Write/WriteDacl/WriteOwner/GenericAll/
+    # GenericWrite held by a low-privileged principal), applied to the PKI
+    # container objects themselves rather than individual templates. A
+    # write on "Enrollment Services" lets an attacker publish a rogue CA
+    # or reconfigure an existing pKIEnrollmentService object's flags
+    # (chaining into ESC6/ESC11-style abuse without ever touching the CA
+    # server itself); a write on "OID" lets an attacker create/modify an
+    # Issuance Policy OID object (a precondition for ESC13, below); a
+    # write on the "Public Key Services" container itself is broader
+    # still. NTAuthCertificates and AIA are checked for weak signature/
+    # ROCA content by Test-ADCSWeakCertificate already, so this adds ACL
+    # coverage rather than duplicating that.
+    $pkiAclTargets = @(
+        [PSCustomObject]@{ Name = 'Public Key Services'; DN = $pkiContainer }
+        [PSCustomObject]@{ Name = 'AIA'; DN = "CN=AIA,$pkiContainer" }
+        [PSCustomObject]@{ Name = 'Certification Authorities'; DN = "CN=Certification Authorities,$pkiContainer" }
+        [PSCustomObject]@{ Name = 'Enrollment Services'; DN = "CN=Enrollment Services,$pkiContainer" }
+        [PSCustomObject]@{ Name = 'KRA'; DN = "CN=KRA,$pkiContainer" }
+        [PSCustomObject]@{ Name = 'OID'; DN = "CN=OID,$pkiContainer" }
+    )
+
+    foreach ($pkiTarget in $pkiAclTargets) {
+        $pkiAces = try {
+            @((Get-ADObject -Identity $pkiTarget.DN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor.Access)
+        }
+        catch {
+            # A missing object here (e.g. no KRA ever configured) is
+            # normal, not an error worth surfacing - only unexpected
+            # failures are worth a Verbose note.
+            Write-Verbose "Test-ADCSExtended: could not get ACL for PKI container '$($pkiTarget.Name)' ('$($pkiTarget.DN)'): $_"
+            @()
+        }
+
+        $dangerousPkiAces = @()
+        foreach ($ace in $pkiAces) {
+            $principal = $ace.IdentityReference.Value
+            $isLowPriv = $false
+            foreach ($lowPriv in $lowPrivilegedPrincipals) {
+                if ($principal -match [regex]::Escape($lowPriv)) { $isLowPriv = $true; break }
+            }
+            if (-not $isLowPriv) { continue }
+
+            $isTrusted = $false
+            foreach ($trusted in $trustedAclPrincipals) {
+                if ($principal -match [regex]::Escape($trusted)) { $isTrusted = $true; break }
+            }
+            if ($isTrusted) { continue }
+
+            foreach ($right in $Script:DangerousStandardRights) {
+                if ($ace.ActiveDirectoryRights -match $right) {
+                    $dangerousPkiAces += "$principal ($($ace.ActiveDirectoryRights))"
+                    break
+                }
+            }
+        }
+        $dangerousPkiAces = @($dangerousPkiAces | Select-Object -Unique)
+
+        if ($dangerousPkiAces.Count -gt 0) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Certificate Services'
+            $finding.Issue = 'Weak ACL on PKI Container Object (ESC5)'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = $pkiTarget.Name
+            $dangerousPkiAceBullets = ($dangerousPkiAces | ForEach-Object { "- $_" }) -join "`n"
+            $finding.Description = "The '$($pkiTarget.Name)' PKI container grants Write/WriteDacl/WriteOwner/GenericAll/GenericWrite rights to low-privileged principal(s):`n$dangerousPkiAceBullets"
+            $finding.Impact = "A principal with write access to this container can reconfigure PKI infrastructure at a level broader than any single template - publishing a rogue CA (via Enrollment Services), creating a malicious Issuance Policy OID (via OID), or otherwise altering how the entire PKI trusts and issues certificates, without needing access to the CA server itself."
+            $finding.Remediation = "Remove Write/WriteDacl/WriteOwner/GenericAll/GenericWrite permissions on this container from any principal other than PKI/Domain administrators."
+            $finding.EstimatedEffort = 'Medium - a container-level ACE removal; confirm the trustee isn''t a legitimate PKI-management tool or delegated administrator before removing.'
+            $finding.KnownRisks = 'Procedural - confirm the trustee isn''t an active PKI-management automation account or delegated admin before removing; no realistic legitimate technical break otherwise.'
+            $finding.BackupRollback = 'Moderate - export the container''s ACL (dsacls or PSPKI) before changing it so the exact ACE can be restored if needed.'
+            $finding.Details = @{
+                DistinguishedName = $pkiTarget.DN
+                DangerousAces     = $dangerousPkiAces -join '; '
+                ESCType           = 'ESC5'
+            }
+            $findings += $finding
+        }
+    }
+
+    # -------------------------------------------------------------------
+    # ESC9: template configured with CT_FLAG_NO_SECURITY_EXTENSION
+    # -------------------------------------------------------------------
+    # CT_FLAG_NO_SECURITY_EXTENSION = 0x00080000 on msPKI-Enrollment-Flag:
+    # the CA omits the szOID_NTDS_CA_SECURITY_EXT (SID-binding) extension
+    # from every certificate this template issues. On its own this is a
+    # weakening, not an immediate compromise - the real exploit path needs
+    # a second condition (a weak/compatibility certificate-mapping mode on
+    # the Domain Controllers, checked separately below as ESC10) plus a
+    # low-privileged enrollee who can also write to a victim account's
+    # mapping attribute (e.g. userPrincipalName). Flagged whenever the
+    # template both has this flag AND allows low-privileged enrollment,
+    # since that's the half of the precondition this template alone
+    # controls - severity stays High rather than Critical because full
+    # exploitability also depends on ESC10's DC-side state.
+    foreach ($template in $certTemplates) {
+        $templateName = if ($template.displayName) { $template.displayName } else { $template.Name }
+        $enrollmentFlag9 = $template.'msPKI-Enrollment-Flag'
+
+        if (-not ($enrollmentFlag9 -band 0x80000)) { continue }
+
+        $templateAcl9 = try {
+            (Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor
+        }
+        catch {
+            Write-Verbose "Test-ADCSExtended: could not get ACL for template '$templateName' (ESC9 check): $_"
+            $null
+        }
+
+        $hasLowPrivEnrollment9 = $false
+        $enrollmentPrincipals9 = @()
+        if ($templateAcl9) {
+            foreach ($ace in $templateAcl9.Access) {
+                if ($ace.ActiveDirectoryRights -match 'ExtendedRight|GenericAll') {
+                    $principalName = $ace.IdentityReference.Value
+                    foreach ($lowPriv in $lowPrivilegedPrincipals) {
+                        if ($principalName -match [regex]::Escape($lowPriv)) {
+                            $hasLowPrivEnrollment9 = $true
+                            $enrollmentPrincipals9 += $principalName
+                        }
+                    }
+                }
+            }
+        }
+        $enrollmentPrincipals9 = @($enrollmentPrincipals9 | Select-Object -Unique)
+
+        if ($hasLowPrivEnrollment9) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Certificate Services'
+            $finding.Issue = 'Certificate Template Missing Security Extension (ESC9)'
+            $finding.Severity = 'High'
+            $finding.SeverityLevel = 3
+            $finding.AffectedObject = $templateName
+            $finding.Description = "Certificate template '$templateName' has CT_FLAG_NO_SECURITY_EXTENSION set (omits the SID-binding extension from issued certificates) and allows enrollment by low-privileged principal(s): $($enrollmentPrincipals9 -join ', ')."
+            $finding.Impact = "Certificates from this template carry no SID binding to the enrollee's AD object. If a Domain Controller is also not enforcing strong certificate mapping (see the separate ESC10/'Weak Certificate Binding Compensation' finding), a low-privileged enrollee who can also modify a victim account's userPrincipalName (or equivalent mapping attribute) can enroll for a certificate that authenticates as that victim - including a privileged account."
+            $finding.Remediation = "Clear CT_FLAG_NO_SECURITY_EXTENSION on this template unless there's a specific, understood reason it's needed. If it must remain set, ensure every Domain Controller enforces strong certificate mapping (StrongCertificateBindingEnforcement) with no CertificateBackdatingCompensation opt-out active, and restrict this template's enrollment rights."
+            $finding.EstimatedEffort = 'Low - a single template flag; confirm no legitimate enrollment workflow depends on the omitted extension first (rare).'
+            $finding.KnownRisks = 'Minimal - clearing this flag only adds information to newly-issued certificates; it does not change any existing legitimate authentication behavior.'
+            $finding.BackupRollback = 'Easy - AD CS templates are versioned, so the prior flag value can be restored and republished if needed.'
+            $finding.Details = @{
+                DistinguishedName    = $template.DistinguishedName
+                EnrollmentFlag       = $enrollmentFlag9
+                EnrollmentPrincipals = $enrollmentPrincipals9 -join '; '
+                ESCType              = 'ESC9'
+            }
+            $findings += $finding
+        }
+    }
+
+    # -------------------------------------------------------------------
+    # ESC13: template's Issuance Policy OID linked to a privileged group
+    # -------------------------------------------------------------------
+    # msDS-OIDToGroupLink on an Issuance Policy OID object automatically
+    # grants membership in the linked group to anyone authenticating with
+    # a certificate carrying that policy OID - a feature meant for AD FS
+    # claims-based scenarios, but exploitable when combined with a
+    # template that both references the OID and allows low-privileged
+    # enrollment with a client-authentication-capable EKU. One AD query
+    # to build the OID -> group-link lookup, reused across every template.
+    $oidToGroupLink = @{}
+    try {
+        $oidObjects = @(Invoke-ADQueryWithRetry -OperationName 'Get Issuance Policy OID objects (ESC13 check)' -Query {
+            Get-ADObject -SearchBase "CN=OID,$pkiContainer" -SearchScope OneLevel -Filter "objectClass -eq 'msPKI-Enterprise-Oid'" -Properties msPKI-Cert-Template-OID, msDS-OIDToGroupLink -Server $__adServer -ErrorAction Stop
+        })
+        foreach ($oidObj in $oidObjects) {
+            if ($oidObj.'msDS-OIDToGroupLink' -and $oidObj.'msPKI-Cert-Template-OID') {
+                $oidToGroupLink[$oidObj.'msPKI-Cert-Template-OID'] = $oidObj.'msDS-OIDToGroupLink'
+            }
+        }
+    }
+    catch {
+        Write-Verbose "Test-ADCSExtended: could not enumerate Issuance Policy OID objects for ESC13 check: $_"
+    }
+
+    $clientAuthEkus = @('1.3.6.1.5.5.7.3.2', '1.3.6.1.4.1.311.20.2.2', '1.3.6.1.5.2.3.4', '2.5.29.37.0')
+
+    if ($oidToGroupLink.Count -gt 0) {
+        foreach ($template in $certTemplates) {
+            $templateName13 = if ($template.displayName) { $template.displayName } else { $template.Name }
+            $issuancePolicies = @($template.'msPKI-Certificate-Policy')
+            if ($issuancePolicies.Count -eq 0) { continue }
+
+            $linkedGroups = @()
+            foreach ($policyOid in $issuancePolicies) {
+                if ($oidToGroupLink.ContainsKey($policyOid)) {
+                    $linkedGroups += $oidToGroupLink[$policyOid]
+                }
+            }
+            if ($linkedGroups.Count -eq 0) { continue }
+
+            $ekus13 = @($template.'msPKI-Certificate-Application-Policy') + @($template.'pKIExtendedKeyUsage')
+            $hasClientAuthEku = [bool]($clientAuthEkus | Where-Object { $ekus13 -contains $_ })
+            if (-not $hasClientAuthEku) { continue }
+
+            $templateAcl13 = try {
+                (Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor
+            }
+            catch {
+                Write-Verbose "Test-ADCSExtended: could not get ACL for template '$templateName13' (ESC13 check): $_"
+                $null
+            }
+
+            $hasLowPrivEnrollment13 = $false
+            $enrollmentPrincipals13 = @()
+            if ($templateAcl13) {
+                foreach ($ace in $templateAcl13.Access) {
+                    if ($ace.ActiveDirectoryRights -match 'ExtendedRight|GenericAll') {
+                        $principalName = $ace.IdentityReference.Value
+                        foreach ($lowPriv in $lowPrivilegedPrincipals) {
+                            if ($principalName -match [regex]::Escape($lowPriv)) {
+                                $hasLowPrivEnrollment13 = $true
+                                $enrollmentPrincipals13 += $principalName
+                            }
+                        }
+                    }
+                }
+            }
+            $enrollmentPrincipals13 = @($enrollmentPrincipals13 | Select-Object -Unique)
+
+            if ($hasLowPrivEnrollment13) {
+                $linkedGroups = @($linkedGroups | Select-Object -Unique)
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Certificate Services'
+                $finding.Issue = 'Certificate Template Issuance Policy Linked to Privileged Group (ESC13)'
+                $finding.Severity = 'Critical'
+                $finding.SeverityLevel = 4
+                $finding.AffectedObject = $templateName13
+                $finding.Description = "Certificate template '$templateName13' carries an Issuance Policy OID linked (via msDS-OIDToGroupLink) to group(s): $($linkedGroups -join ', '). The template also has a client-authentication-capable EKU and allows enrollment by low-privileged principal(s): $($enrollmentPrincipals13 -join ', ')."
+                $finding.Impact = "Anyone who enrolls for and authenticates with a certificate from this template is automatically treated as a member of the linked group for the duration of that authentication - a group-membership grant that never shows up in any group-membership audit, since it comes from the certificate's policy OID rather than an actual group the account belongs to."
+                $finding.Remediation = "Remove the Issuance Policy OID's group link (msDS-OIDToGroupLink) unless this is a deliberate, understood AD FS claims-based scenario, or restrict this template's enrollment to only principals that should legitimately gain the linked group's membership."
+                $finding.EstimatedEffort = 'Medium - confirm whether the OID-to-group link is an intentional AD FS claims scenario before removing it, since removing it changes real, currently-working claims-based access for legitimate users too.'
+                $finding.KnownRisks = 'Removing the group link breaks any legitimate AD FS claims-based access that currently depends on it - confirm the link is unintentional/unused before removing.'
+                $finding.BackupRollback = 'Easy - restore the msDS-OIDToGroupLink value on the OID object if needed; effective immediately.'
+                $finding.Details = @{
+                    DistinguishedName    = $template.DistinguishedName
+                    LinkedGroups         = $linkedGroups -join '; '
+                    EnrollmentPrincipals = $enrollmentPrincipals13 -join '; '
+                    ESCType              = 'ESC13'
+                }
+                $findings += $finding
+            }
+        }
+    }
+
+    # -------------------------------------------------------------------
     # High-risk-without-approval check (snapshot-aware; attribute-only)
     # Deliberately distinct from ESC1 (SAN + low-priv enrollment) and ESC2
     # (no EKU / Any-Purpose): this flags the absence of the manager
@@ -514,84 +717,77 @@ function Test-ADCSExtended {
     # -------------------------------------------------------------------
     # ESC8: CA web enrollment over HTTP without EPA (live only)
     # -------------------------------------------------------------------
-    if ($Snapshot) {
-        Write-Verbose "Test-ADCSExtended: -Snapshot supplied; skipping live ESC8 web-enrollment probe (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'ADCSExtended' -Check 'ESC8: CA web enrollment over HTTP without EPA' `
-            -Reason 'This is a live HTTP probe against the CA host itself, not an AD attribute - there is no snapshot representation possible. Run this check live (without -Snapshot) if you need this coverage.'
-    }
-    else {
-        foreach ($ca in $certAuthorities) {
-            $caName = $ca.Name
-            $caHost = $ca.dNSHostName
-            if (-not $caHost) {
-                Write-Verbose "Test-ADCSExtended: CA '$caName' has no dNSHostName; skipping ESC8 probe."
-                continue
-            }
+    foreach ($ca in $certAuthorities) {
+        $caName = $ca.Name
+        $caHost = $ca.dNSHostName
+        if (-not $caHost) {
+            Write-Verbose "Test-ADCSExtended: CA '$caName' has no dNSHostName; skipping ESC8 probe."
+            continue
+        }
 
-            try {
-                $webEnrollState = Invoke-ADQueryWithRetry -OperationName "Probe CA web enrollment on $caHost" -Query {
-                    Invoke-Command -ComputerName $caHost -ErrorAction Stop -ScriptBlock {
-                        $result = [PSCustomObject]@{
-                            CertSrvVDirPresent = $false
-                            EpaRequired        = $null
-                            Error              = $null
-                        }
-                        try {
-                            Import-Module WebAdministration -ErrorAction Stop
-                            $vdir = Get-WebApplication -Site 'Default Web Site' -Name 'CertSrv' -ErrorAction SilentlyContinue
-                            if ($vdir) {
-                                $result.CertSrvVDirPresent = $true
-                                try {
-                                    $epa = Get-WebConfigurationProperty -PSPath 'IIS:\Sites\Default Web Site\CertSrv' `
-                                        -Filter 'system.webServer/security/authentication/windowsAuthentication' `
-                                        -Name 'extendedProtection.tokenChecking' -ErrorAction Stop
-                                    $result.EpaRequired = ($epa.Value -eq 'Require')
-                                }
-                                catch {
-                                    $result.EpaRequired = $null
-                                }
+        try {
+            $webEnrollState = Invoke-ADQueryWithRetry -OperationName "Probe CA web enrollment on $caHost" -Query {
+                Invoke-Command -ComputerName $caHost -ErrorAction Stop -ScriptBlock {
+                    $result = [PSCustomObject]@{
+                        CertSrvVDirPresent = $false
+                        EpaRequired        = $null
+                        Error              = $null
+                    }
+                    try {
+                        Import-Module WebAdministration -ErrorAction Stop
+                        $vdir = Get-WebApplication -Site 'Default Web Site' -Name 'CertSrv' -ErrorAction SilentlyContinue
+                        if ($vdir) {
+                            $result.CertSrvVDirPresent = $true
+                            try {
+                                $epa = Get-WebConfigurationProperty -PSPath 'IIS:\Sites\Default Web Site\CertSrv' `
+                                    -Filter 'system.webServer/security/authentication/windowsAuthentication' `
+                                    -Name 'extendedProtection.tokenChecking' -ErrorAction Stop
+                                $result.EpaRequired = ($epa.Value -eq 'Require')
+                            }
+                            catch {
+                                $result.EpaRequired = $null
                             }
                         }
-                        catch {
-                            $result.Error = "$_"
-                        }
-                        return $result
                     }
+                    catch {
+                        $result.Error = "$_"
+                    }
+                    return $result
                 }
             }
-            catch {
-                Write-Verbose "Test-ADCSExtended: could not probe CA host '$caHost' for web enrollment state: $_"
-                $webEnrollState = $null
-            }
+        }
+        catch {
+            Write-Verbose "Test-ADCSExtended: could not probe CA host '$caHost' for web enrollment state: $_"
+            $webEnrollState = $null
+        }
 
-            if ($webEnrollState -and $webEnrollState.CertSrvVDirPresent) {
-                $epaMissing = ($webEnrollState.EpaRequired -ne $true)
-                if ($epaMissing) {
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'Certificate Services'
-                    $finding.Issue = 'CA Web Enrollment over HTTP (ESC8)'
-                    $finding.Severity = 'Critical'
-                    $finding.SeverityLevel = 4
-                    $finding.AffectedObject = $caName
-                    $finding.Description = "Certificate Authority '$caName' ($caHost) has the CertSrv web enrollment endpoint installed without Extended Protection for Authentication (EPA) enforced."
-                    $finding.Impact = "An attacker who coerces a privileged host (e.g. a Domain Controller) to authenticate to them can relay that NTLM authentication to the CA's HTTP enrollment endpoint and obtain a certificate as that host/account, leading to domain compromise."
-                    $finding.Remediation = "Disable HTTP(S) web enrollment if unused, or require Extended Protection for Authentication ('Require') on the CertSrv virtual directory and enforce HTTPS with channel binding."
-                    $finding.EstimatedEffort = 'Medium - requires enabling HTTPS web enrollment (certificate + IIS binding) and usually coordination with whoever manages the CA''s IIS instance; confirm no client submits enrollment requests over plain HTTP first.'
-                    $finding.KnownRisks = 'Enforcing HTTPS-only web enrollment can break legacy clients or scripts that submit requests over plain HTTP until they''re updated to the HTTPS endpoint.'
-                    $finding.BackupRollback = 'Moderate - revert the IIS binding/auth settings and re-enable the HTTP endpoint if needed; requires an IIS restart but no data loss.'
-                    $finding.OperationalNotes = 'HTTPS alone doesn''t fully close ESC8''s NTLM relay risk without Extended Protection for Authentication (EPA) also enabled - consider enabling EPA on the enrollment endpoint at the same time.'
-                    $finding.Details = @{
-                        DistinguishedName = $ca.DistinguishedName
-                        CAHost            = $caHost
-                        EpaRequired       = $webEnrollState.EpaRequired
-                        ESCType           = 'ESC8'
-                    }
-                    $findings += $finding
+        if ($webEnrollState -and $webEnrollState.CertSrvVDirPresent) {
+            $epaMissing = ($webEnrollState.EpaRequired -ne $true)
+            if ($epaMissing) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Certificate Services'
+                $finding.Issue = 'CA Web Enrollment over HTTP (ESC8)'
+                $finding.Severity = 'Critical'
+                $finding.SeverityLevel = 4
+                $finding.AffectedObject = $caName
+                $finding.Description = "Certificate Authority '$caName' ($caHost) has the CertSrv web enrollment endpoint installed without Extended Protection for Authentication (EPA) enforced."
+                $finding.Impact = "An attacker who coerces a privileged host (e.g. a Domain Controller) to authenticate to them can relay that NTLM authentication to the CA's HTTP enrollment endpoint and obtain a certificate as that host/account, leading to domain compromise."
+                $finding.Remediation = "Disable HTTP(S) web enrollment if unused, or require Extended Protection for Authentication ('Require') on the CertSrv virtual directory and enforce HTTPS with channel binding."
+                $finding.EstimatedEffort = 'Medium - requires enabling HTTPS web enrollment (certificate + IIS binding) and usually coordination with whoever manages the CA''s IIS instance; confirm no client submits enrollment requests over plain HTTP first.'
+                $finding.KnownRisks = 'Enforcing HTTPS-only web enrollment can break legacy clients or scripts that submit requests over plain HTTP until they''re updated to the HTTPS endpoint.'
+                $finding.BackupRollback = 'Moderate - revert the IIS binding/auth settings and re-enable the HTTP endpoint if needed; requires an IIS restart but no data loss.'
+                $finding.OperationalNotes = 'HTTPS alone doesn''t fully close ESC8''s NTLM relay risk without Extended Protection for Authentication (EPA) also enabled - consider enabling EPA on the enrollment endpoint at the same time.'
+                $finding.Details = @{
+                    DistinguishedName = $ca.DistinguishedName
+                    CAHost            = $caHost
+                    EpaRequired       = $webEnrollState.EpaRequired
+                    ESCType           = 'ESC8'
                 }
+                $findings += $finding
             }
-            elseif ($webEnrollState -and $webEnrollState.Error) {
-                Write-Verbose "Test-ADCSExtended: web enrollment probe on '$caHost' reported: $($webEnrollState.Error)"
-            }
+        }
+        elseif ($webEnrollState -and $webEnrollState.Error) {
+            Write-Verbose "Test-ADCSExtended: web enrollment probe on '$caHost' reported: $($webEnrollState.Error)"
         }
     }
 
@@ -612,52 +808,24 @@ function Test-ADCSExtended {
     # -------------------------------------------------------------------
     # NTAuth / AIA / Root store sweep
     # -------------------------------------------------------------------
-    # Fixed in v1.19.1: this was documented as "live only - not captured in
-    # snapshot" and skipped entirely under -Snapshot, but Get-ADSnapshot now
-    # collects these same cACertificate blobs (same data shape/risk profile
-    # as the CA objects' cACertificate, already in the snapshot since
-    # v1.19.0) - so this can run fully offline too.
-    if ($Snapshot) {
-        if ($Snapshot.ADCS.ContainsKey('NTAuthCertificates')) {
-            foreach ($blob in @($Snapshot.ADCS.NTAuthCertificates)) {
-                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "NTAuth`:$($blob.Source)"
-                if ($result) { [void]$weakCertResults.Add($result) }
-            }
-            foreach ($blob in @($Snapshot.ADCS.AIACertificates)) {
-                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "AIA`:$($blob.Source)"
-                if ($result) { [void]$weakCertResults.Add($result) }
-            }
-            foreach ($blob in @($Snapshot.ADCS.RootCACertificates)) {
-                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "Root`:$($blob.Source)"
-                if ($result) { [void]$weakCertResults.Add($result) }
-            }
+    try {
+        $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
+        $storeTargets = @{
+            'NTAuth' = "CN=NTAuthCertificates,$pkiContainer"
+            'AIA'    = "CN=AIA,$pkiContainer"
+            'Root'   = "CN=Certification Authorities,$pkiContainer"
         }
-        else {
-            Write-Verbose "Test-ADCSExtended: snapshot predates v1.19.1's NTAuth/AIA/Root collection; skipping that sweep for this older snapshot."
-            Add-ADOfflineSkipNote -Test 'ADCSExtended' -Check 'NTAuth/AIA/Root store weak-signature sweep' `
-                -Reason 'This snapshot was collected with a version older than v1.19.1 and does not contain NTAuth/AIA/Root certificate data. Re-collect the snapshot with the current module version for this coverage.'
+
+        foreach ($storeName in $storeTargets.Keys) {
+            $blobs = Get-ADCSCertificateBlob -ContainerDN $storeTargets[$storeName] -Server $__adServer
+            foreach ($blob in $blobs) {
+                $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "$storeName`:$($blob.Source)"
+                if ($result) { [void]$weakCertResults.Add($result) }
+            }
         }
     }
-    else {
-        try {
-            $pkiContainer = "CN=Public Key Services,CN=Services,$configContext"
-            $storeTargets = @{
-                'NTAuth' = "CN=NTAuthCertificates,$pkiContainer"
-                'AIA'    = "CN=AIA,$pkiContainer"
-                'Root'   = "CN=Certification Authorities,$pkiContainer"
-            }
-
-            foreach ($storeName in $storeTargets.Keys) {
-                $blobs = Get-ADCSCertificateBlob -ContainerDN $storeTargets[$storeName] -Server $__adServer
-                foreach ($blob in $blobs) {
-                    $result = Test-ADCSWeakCertificate -Bytes $blob.Bytes -Source "$storeName`:$($blob.Source)"
-                    if ($result) { [void]$weakCertResults.Add($result) }
-                }
-            }
-        }
-        catch {
-            Write-Verbose "Test-ADCSExtended: could not sweep NTAuth/AIA/Root store: $_"
-        }
+    catch {
+        Write-Verbose "Test-ADCSExtended: could not sweep NTAuth/AIA/Root store: $_"
     }
 
     foreach ($weak in $weakCertResults) {
@@ -750,24 +918,30 @@ function Test-ADCSChaseFallback {
         here, as defense-in-depth - the flag can be re-enabled later via
         policy, imaging, or an admin action independent of patch state.
 
-        Detection only: reads one registry value per discovered CA. No
+        Also reads two related per-CA registry values from the SAME
+        remote-registry connection, at essentially no extra cost:
+          - ESC6 (EDITF_ATTRIBUTESUBJECTALTNAME2, same policy\EditFlags
+            value as the chase-fallback bit above).
+          - ESC11 (IF_ENFORCEENCRYPTICERTREQUEST absent from
+            InterfaceFlags): the RPC enrollment interface accepting
+            unencrypted requests, enabling NTLM relay to the CA.
+          - ESC16 (szOID_NTDS_CA_SECURITY_EXT present in
+            policy\DisableExtensionList): CA-wide disabling of the
+            SID-binding security extension, the CA-wide equivalent of the
+            per-template ESC9 check in Test-ADCSExtended.
+        The function name/CVE-focused Synopsis predates these additions;
+        left as-is since renaming an already-exported function is a
+        breaking change, same reasoning ESC6 already established here.
+
+        Detection only: reads registry values per discovered CA. No
         certificate requests, no PoC/exploitation traffic, no coercion.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). This check has
-        no snapshot representation - policy\EditFlags is a registry value
-        on the CA host itself, not an AD attribute - so it is always
-        skipped under -Snapshot, consistent with this module's other
-        live-only CA-host probe (ESC8 in Test-ADCSExtended).
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
-    Write-Verbose "Starting AD CS chase-fallback exposure audit (CVE-2026-54121 / Certighost)..."
+    Write-Verbose "Starting AD CS chase-fallback exposure audit (CVE-2026-54121 / Certighost / ESC6 / ESC11 / ESC16)..."
     $findings = @()
 
     # Bit value confirmed against independent public technical write-ups of
@@ -776,24 +950,25 @@ function Test-ADCSChaseFallback {
     # here to reuse.
     $editfEnableChaseClientDc = 0x00100000
 
+    # EDITF_ATTRIBUTESUBJECTALTNAME2 (0x00040000) - a CA-wide policy flag
+    # that lets ANY certificate template on the CA accept a caller-supplied
+    # Subject Alternative Name (SAN) in the certificate request, regardless
+    # of the individual template's own "Enrollee Supplies Subject" setting.
+    # This is the well-known ESC6 misconfiguration: with this flag set, a
+    # low-privileged requester can obtain a certificate asserting the
+    # identity of any other user or computer object - including Tier-0
+    # accounts - via a template that would otherwise be safe, since the
+    # flag operates at the CA level, above and independent of per-template
+    # ACLs/settings. Read from the SAME already-fetched policy\EditFlags
+    # registry value as the chase-fallback check above - one remote read,
+    # two independent bit checks - explicitly named as a top AD CS
+    # mitigation in ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's "Detecting and
+    # mitigating Active Directory compromises" (Sept 2026): "Ensure that
+    # the CA is not configured with the EDITF_ATTRIBUTESUBJECTALTNAME2 flag."
+    $editfAttributeSubjectAltName2 = 0x00040000
+
     $certAuthorities = @()
     $adcsInstalled = $false
-
-    if ($Snapshot) {
-        if ($Snapshot.ContainsKey('ADCS') -and $Snapshot.ADCS.Installed) {
-            $adcsInstalled = $true
-            $certAuthorities = @($Snapshot.ADCS.CertificateAuthorities)
-        }
-        else {
-            Write-Verbose "Test-ADCSChaseFallback: snapshot indicates AD CS is not installed; no findings."
-            return $findings
-        }
-
-        Write-Verbose "Test-ADCSChaseFallback: -Snapshot supplied; skipping live registry probe (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'ADCSChaseFallback' -Check 'EDITF_ENABLECHASECLIENTDC / Certighost (CVE-2026-54121) exposure' `
-            -Reason 'This is a live registry probe against the CA host itself (policy\EditFlags), not an AD attribute - there is no snapshot representation possible. Run this check live (without -Snapshot) if you need this coverage.'
-        return $findings
-    }
 
     try {
         $__adServer = Get-ADSecurityAuditTargetServerValue
@@ -830,6 +1005,10 @@ function Test-ADCSChaseFallback {
                     $result = [PSCustomObject]@{
                         EditFlagsRead = $false
                         EditFlags     = $null
+                        InterfaceFlagsRead = $false
+                        InterfaceFlags     = $null
+                        DisableExtensionListRead = $false
+                        DisableExtensionList     = $null
                         Error         = $null
                     }
                     try {
@@ -861,9 +1040,43 @@ function Test-ADCSChaseFallback {
                                 $prop = Get-ItemProperty -Path $policyPath -Name 'EditFlags' -ErrorAction Stop
                                 $result.EditFlagsRead = $true
                                 $result.EditFlags = [int]$prop.EditFlags
+
+                                # ESC16: same PolicyModules key as EditFlags -
+                                # DisableExtensionList is a REG_MULTI_SZ list
+                                # of OIDs the CA omits from every certificate
+                                # it issues, regardless of template. Read
+                                # opportunistically; its absence just means
+                                # no extensions are CA-wide disabled (the
+                                # normal, safe state), not an error.
+                                try {
+                                    $extProp = Get-ItemProperty -Path $policyPath -Name 'DisableExtensionList' -ErrorAction Stop
+                                    $result.DisableExtensionListRead = $true
+                                    $result.DisableExtensionList = @($extProp.DisableExtensionList)
+                                }
+                                catch {
+                                    $result.DisableExtensionListRead = $true
+                                    $result.DisableExtensionList = @()
+                                }
                             }
                             else {
                                 $result.Error = "Policy module registry key not found under CA '$matchedRegCaName'."
+                            }
+
+                            # ESC11: a SEPARATE registry value from EditFlags/
+                            # DisableExtensionList - directly under the CA's
+                            # own configuration key, not under PolicyModules.
+                            try {
+                                $ifPath = "HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\$matchedRegCaName"
+                                $ifProp = Get-ItemProperty -Path $ifPath -Name 'InterfaceFlags' -ErrorAction Stop
+                                $result.InterfaceFlagsRead = $true
+                                $result.InterfaceFlags = [int]$ifProp.InterfaceFlags
+                            }
+                            catch {
+                                # Leave InterfaceFlagsRead = $false - distinct
+                                # from "read and the bit was absent", same
+                                # reasoning as the EditFlags/DisableExtension
+                                # reads: an inability to read the value should
+                                # never be silently treated as "vulnerable".
                             }
                         }
                         else {
@@ -915,9 +1128,192 @@ function Test-ADCSChaseFallback {
             }
             $findings += $finding
         }
+
+        $sanFlagEnabled = (($editFlagsResult.EditFlags -band $editfAttributeSubjectAltName2) -ne 0)
+
+        if ($sanFlagEnabled) {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Certificate Services'
+            $finding.Issue = 'CA-Wide SAN Attribute Flag Enabled (ESC6)'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = "$caName ($caHost)"
+            $finding.Description = "Certificate Authority '$caName' ($caHost) has the EDITF_ATTRIBUTESUBJECTALTNAME2 policy flag set on its policy\EditFlags registry value. This allows a Subject Alternative Name (SAN) to be supplied in a certificate request for ANY certificate template on this CA, regardless of that template's own 'Enrollee Supplies Subject' setting."
+            $finding.Impact = "This is the well-known ESC6 misconfiguration: because the flag operates CA-wide rather than per-template, a low-privileged requester can supply an arbitrary SAN - including the identity of a Tier-0 account - when enrolling against ANY template on this CA that permits client authentication, even templates whose own configuration would otherwise be considered safe. The resulting certificate can then be used to authenticate as the impersonated identity."
+            $finding.Remediation = "Clear the EDITF_ATTRIBUTESUBJECTALTNAME2 flag: certutil -config `"$caName`" -setreg policy\EditFlags -EDITF_ATTRIBUTESUBJECTALTNAME2, then restart Certificate Services (Restart-Service CertSvc -Force). Confirm no legitimate enrollment workflow relies on CA-wide SAN supply before disabling - if SAN supply is genuinely needed for a specific template, configure it on that template individually instead ('Enrollee Supplies Subject') rather than CA-wide."
+            $finding.EstimatedEffort = 'Medium - a single registry flag, but requires first identifying which templates/workflows (if any) currently rely on CA-wide SAN supply so their enrollment isn''t broken.'
+            $finding.KnownRisks = 'Clearing this flag breaks enrollment for any legitimate workflow that currently depends on supplying a SAN CA-wide (rather than via an individual template''s own Enrollee Supplies Subject setting) - identify and migrate those workflows to per-template configuration first.'
+            $finding.BackupRollback = 'Easy - the change is a single registry value; re-enable via certutil and restart CertSvc to restore the prior behavior immediately if something breaks, with no data loss.'
+            $finding.Details = @{
+                DistinguishedName = $ca.DistinguishedName
+                CAHost            = $caHost
+                EditFlags         = ('0x{0:X}' -f $editFlagsResult.EditFlags)
+                EditFlagBit       = 'EDITF_ATTRIBUTESUBJECTALTNAME2 (0x00040000)'
+            }
+            $findings += $finding
+        }
+
+        # ESC11: RPC enrollment interface not requiring encryption
+        if ($editFlagsResult.InterfaceFlagsRead) {
+            $interfaceFlags = $editFlagsResult.InterfaceFlags
+            $encryptEnforced = (($interfaceFlags -band 0x200) -ne 0)
+
+            if (-not $encryptEnforced) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Certificate Services'
+                $finding.Issue = 'CA RPC Enrollment Encryption Not Enforced (ESC11)'
+                $finding.Severity = 'Critical'
+                $finding.SeverityLevel = 4
+                $finding.AffectedObject = "$caName ($caHost)"
+                $finding.Description = "Certificate Authority '$caName' ($caHost) does not have the IF_ENFORCEENCRYPTICERTREQUEST flag set on its InterfaceFlags registry value - the ICPR RPC certificate-enrollment interface accepts requests without requiring packet-level encryption."
+                $finding.Impact = "Without IF_ENFORCEENCRYPTICERTREQUEST, the CA's RPC enrollment interface accepts connections below RPC_C_AUTHN_LEVEL_PKT_PRIVACY, making it vulnerable to NTLM relay: an attacker who coerces authentication from a privileged machine (e.g. a Domain Controller, via PetitPotam/PrinterBug-style coercion) can relay that authentication over unencrypted RPC to this CA and request a certificate asserting the coerced machine's identity - a direct path to Domain Controller impersonation."
+                $finding.Remediation = "Enable the flag: certutil -config `"$caName`" -setreg CA\InterfaceFlags +IF_ENFORCEENCRYPTICERTREQUEST, then restart Certificate Services (Restart-Service CertSvc -Force)."
+                $finding.EstimatedEffort = 'Low - a single registry flag; the on-by-default setting is occasionally disabled for legacy client compatibility (e.g. Windows XP), so confirm no such client still enrolls against this CA before enabling.'
+                $finding.KnownRisks = 'Enabling packet-privacy enforcement will break enrollment for any client that cannot negotiate RPC_C_AUTHN_LEVEL_PKT_PRIVACY - in practice, only very old (pre-Vista-era) clients, which should not be enrolling in a modern environment regardless.'
+                $finding.BackupRollback = 'Easy - the change is a single registry value; revert with certutil -setreg CA\InterfaceFlags -IF_ENFORCEENCRYPTICERTREQUEST and restart CertSvc if something breaks.'
+                $finding.Details = @{
+                    DistinguishedName = $ca.DistinguishedName
+                    CAHost            = $caHost
+                    InterfaceFlags    = ('0x{0:X}' -f $interfaceFlags)
+                    RequiredBit       = 'IF_ENFORCEENCRYPTICERTREQUEST (0x00000200)'
+                    ESCType           = 'ESC11'
+                }
+                $findings += $finding
+            }
+        }
+        else {
+            Write-Verbose "Test-ADCSChaseFallback: could not read InterfaceFlags on '$caHost' for ESC11 check; skipping that check for this CA."
+        }
+
+        # ESC16: CA-wide disabling of the SID-binding security extension
+        if ($editFlagsResult.DisableExtensionListRead -and $editFlagsResult.DisableExtensionList -contains '1.3.6.1.4.1.311.25.2') {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Certificate Services'
+            $finding.Issue = 'CA-Wide Security Extension Disabled (ESC16)'
+            $finding.Severity = 'Critical'
+            $finding.SeverityLevel = 4
+            $finding.AffectedObject = "$caName ($caHost)"
+            $finding.Description = "Certificate Authority '$caName' ($caHost) has the SID-binding security extension (szOID_NTDS_CA_SECURITY_EXT, OID 1.3.6.1.4.1.311.25.2) added to its policy\DisableExtensionList - every certificate this CA issues, from every template, omits the SID-binding extension."
+            $finding.Impact = "This is functionally identical to ESC9 (Certificate Template Missing Security Extension), but applies CA-wide rather than to one template - every template published by this CA behaves as though CT_FLAG_NO_SECURITY_EXTENSION were set on it individually. Whether this is currently exploitable depends on Domain Controller certificate-mapping enforcement (see the separate ESC10/'Weak Certificate Binding Compensation' finding): under full enforcement on every DC, the KDC rejects a certificate lacking this extension outright, but any DC not yet at full enforcement - or with a CertificateBackdatingCompensation opt-out active - remains exploitable via this CA."
+            $finding.Remediation = "Remove the extension from the disabled list: certutil -config `"$caName`" -setreg policy\DisableExtensionList -1.3.6.1.4.1.311.25.2, then restart Certificate Services (Restart-Service CertSvc -Force)."
+            $finding.EstimatedEffort = 'Low - a single registry list entry; this setting has no known legitimate ongoing use in a modern (KB5014754+) environment.'
+            $finding.KnownRisks = 'Minimal - re-enabling the extension only adds information to newly-issued certificates; it does not change any existing legitimate authentication behavior.'
+            $finding.BackupRollback = 'Easy - the change is a single registry value; re-add the OID to DisableExtensionList and restart CertSvc to restore the prior behavior if needed, with no data loss.'
+            $finding.Details = @{
+                DistinguishedName    = $ca.DistinguishedName
+                CAHost               = $caHost
+                DisableExtensionList = ($editFlagsResult.DisableExtensionList -join '; ')
+                DisabledExtension    = 'szOID_NTDS_CA_SECURITY_EXT (1.3.6.1.4.1.311.25.2)'
+                ESCType              = 'ESC16'
+            }
+            $findings += $finding
+        }
     }
 
     Write-Verbose "AD CS chase-fallback exposure audit complete. Found $($findings.Count) issues."
+    return $findings
+}
+
+#endregion
+
+#region ESC10: Weak Certificate Binding Compensation (DC-side)
+
+function Test-ADCSWeakCertificateBinding {
+    <#
+    .SYNOPSIS
+        Detects Domain Controllers with an active opt-out from strong
+        certificate-mapping enforcement (ESC10).
+    .DESCRIPTION
+        Historically, ESC10 was framed around the KDC's
+        StrongCertificateBindingEnforcement registry value (0 = disabled,
+        1 = compatibility, 2 = full enforcement). As of the September 9,
+        2025 security update, Microsoft made full enforcement PERMANENT
+        and UNCONDITIONAL on every patched Domain Controller - the
+        StrongCertificateBindingEnforcement value is no longer honored at
+        all once that update is installed, so reading it on a modern,
+        patched DC would not accurately reflect the DC's real enforcement
+        state and could produce a misleading "still vulnerable" finding
+        when the setting is in fact moot.
+
+        The registry lever that still genuinely matters today is
+        CertificateBackdatingCompensation (also under
+        HKLM\SYSTEM\CurrentControlSet\Services\Kdc): a documented,
+        still-honored opt-out that re-permits weak-mapped authentication
+        for certificates issued before a configured cutoff (specified in
+        days). A DC with this value set to a large or unbounded number of
+        days re-opens the same weak-mapping exposure ESC9/ESC16 rely on,
+        even on a fully patched DC.
+
+        Each DC is evaluated independently and degrades gracefully if it
+        cannot be reached.
+    .OUTPUTS
+        [ADSecurityFinding[]]
+    #>
+    [CmdletBinding()]
+    param()
+
+    Write-Verbose "Starting weak certificate-binding compensation audit (ESC10)..."
+    $findings = @()
+
+    $domainControllers = @()
+    try {
+        $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (ESC10 audit)' -Query {
+            Get-ADSecurityAuditDomainController -Server (Get-ADSecurityAuditTargetServerValue)
+        })
+    }
+    catch {
+        Write-Warning "Test-ADCSWeakCertificateBinding: failed to enumerate Domain Controllers: $_"
+    }
+
+    if (-not $domainControllers -or $domainControllers.Count -eq 0) {
+        Write-Verbose "Test-ADCSWeakCertificateBinding: no Domain Controllers to evaluate; no findings."
+        return $findings
+    }
+
+    $backdatingDCs = @()
+
+    foreach ($dc in $domainControllers) {
+        $dcName = if ($dc.HostName) { $dc.HostName } elseif ($dc.Name) { $dc.Name } else { "$dc" }
+
+        try {
+            $backdatingResult = Invoke-ADQueryWithRetry -OperationName "Read CertificateBackdatingCompensation on $dcName" -Query {
+                Invoke-Command -ComputerName $dcName -ErrorAction Stop -ScriptBlock {
+                    (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Kdc' -Name 'CertificateBackdatingCompensation' -ErrorAction SilentlyContinue).CertificateBackdatingCompensation
+                }
+            }
+
+            if ($null -ne $backdatingResult -and [int]$backdatingResult -gt 0) {
+                $backdatingDCs += [PSCustomObject]@{ DomainController = $dcName; Days = [int]$backdatingResult }
+            }
+        }
+        catch {
+            Write-Verbose "Test-ADCSWeakCertificateBinding: could not read CertificateBackdatingCompensation on '$dcName': $_"
+        }
+    }
+
+    if ($backdatingDCs.Count -gt 0) {
+        $dcBullets = ($backdatingDCs | ForEach-Object { "- $($_.DomainController): $($_.Days) day(s)" }) -join "`n"
+
+        $finding = [ADSecurityFinding]::new()
+        $finding.Category = 'Certificate Services'
+        $finding.Issue = 'Weak Certificate Binding Compensation Enabled (ESC10)'
+        $finding.Severity = 'High'
+        $finding.SeverityLevel = 3
+        $finding.AffectedObject = ($backdatingDCs.DomainController -join ', ')
+        $finding.Description = "CertificateBackdatingCompensation is set to a non-zero value on $($backdatingDCs.Count) Domain Controller(s), re-permitting weak certificate-mapping authentication for certificates issued before the configured cutoff:`n$dcBullets"
+        $finding.Impact = "Even on a fully patched DC where full strong-mapping enforcement is otherwise permanent, this setting re-opens the weak-mapping window it exists to compensate for. Any certificate issued within the configured day count that lacks a strong SID binding (see ESC9/ESC16) can still authenticate via weak mapping, undermining the enforcement KB5014754 and the September 2025 update were meant to guarantee."
+        $finding.Remediation = "Re-issue any legitimately outstanding weak-mapped certificates with strong SID bindings, then remove or zero out CertificateBackdatingCompensation on every affected DC: Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Kdc' -Name 'CertificateBackdatingCompensation'."
+        $finding.EstimatedEffort = 'Medium - requires first confirming every certificate relying on the compensation window has been re-issued with strong mapping before removing the opt-out, or authentication for those certificates will break.'
+        $finding.KnownRisks = 'Removing this value before all weak-mapped certificates it was covering have been re-issued will break authentication for whatever legitimately still depends on the compensation window - confirm coverage first.'
+        $finding.BackupRollback = 'Easy - restore the prior CertificateBackdatingCompensation value if needed; effective immediately, no data loss.'
+        $finding.Details = @{
+            AffectedDomainControllers = @($backdatingDCs)
+            ESCType                   = 'ESC10'
+        }
+        $findings += $finding
+    }
+
+    Write-Verbose "Weak certificate-binding compensation audit complete. Found $($findings.Count) issue(s)."
     return $findings
 }
 

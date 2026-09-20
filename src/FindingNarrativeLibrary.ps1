@@ -27,18 +27,6 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - reset adminCount and inheritance back if needed; effective immediately, no data loss.'
         OperationalNotes = ''
     }
-    'No Auditing on AdminSDHolder Object' = @{
-        EstimatedEffort  = 'Low - adding a SACL entry to one object.'
-        KnownRisks       = 'No access-control impact; increases Security event log volume for changes to this specific object.'
-        BackupRollback   = 'Easy - remove the SACL entry; effective immediately, no data loss.'
-        OperationalNotes = ''
-    }
-    'No Auditing on Domain Root Object' = @{
-        EstimatedEffort  = 'Low - adding a SACL entry to one object.'
-        KnownRisks       = 'No access-control impact; increases Security event log volume for changes to this specific object.'
-        BackupRollback   = 'Easy - remove the SACL entry; effective immediately, no data loss.'
-        OperationalNotes = ''
-    }
     'Insufficient Audit Policy Configuration' = @{
         EstimatedEffort  = 'Medium - a domain-wide GPO change validated across every DC.'
         KnownRisks       = 'Purely additive logging; essentially no access-control risk, but increases Security event log volume and may need log-size/SIEM capacity planning.'
@@ -49,6 +37,18 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - a GPO change that must be validated on every DC, and confirmed not to be overridden by the legacy (non-advanced) Audit Policy category, a well-documented conflict between the two models.'
         KnownRisks       = 'Purely additive logging with essentially no access-control impact; the main practical effect is increased Security event log volume, which may require increasing log size/retention or SIEM ingestion capacity.'
         BackupRollback   = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
+        OperationalNotes = ''
+    }
+    'No Auditing on AdminSDHolder Object' = @{
+        EstimatedEffort  = 'Low - adding a SACL entry to one object.'
+        KnownRisks       = 'No access-control impact; increases Security event log volume for changes to this specific object.'
+        BackupRollback   = 'Easy - remove the SACL entry; effective immediately, no data loss.'
+        OperationalNotes = ''
+    }
+    'No Auditing on Domain Root Object' = @{
+        EstimatedEffort  = 'Low - adding a SACL entry to one object.'
+        KnownRisks       = 'No access-control impact; increases Security event log volume for changes to this specific object.'
+        BackupRollback   = 'Easy - remove the SACL entry; effective immediately, no data loss.'
         OperationalNotes = ''
     }
     'Certificate Template Allows Subject Alternative Name (ESC1)' = @{
@@ -81,6 +81,12 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - revert the required-signature count to 0 on the template; effective immediately for new requests.'
         OperationalNotes = ''
     }
+    'Certificate Template Allows Arbitrary Server Certificate (ESC17)' = @{
+        EstimatedEffort  = 'Medium - same considerations as ESC1: confirm which systems currently request server certificates from this template before narrowing SAN supply or enrollment rights.'
+        KnownRisks       = 'Restricting enrollee-supplied SAN or enrollment rights can break legitimate automated server-certificate provisioning that currently relies on this template''s current configuration.'
+        BackupRollback   = 'Moderate - AD CS templates are versioned, so a prior version''s settings can be restored and republished; certificates already issued during the vulnerable window remain valid until revoked or expired.'
+        OperationalNotes = ''
+    }
     'Overly Permissive CA Permissions (ESC7)' = @{
         EstimatedEffort  = 'Medium - removing Manage CA / Manage Certificates rights from an unexpected principal on the CA object''s own ACL; confirm with the PKI team it isn''t a legitimate delegated administrator.'
         KnownRisks       = 'Procedural - confirm the principal isn''t an active, legitimate delegated CA administrator before removing their rights.'
@@ -97,6 +103,24 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - a single-template ACE removal, but confirm the trustee isn''t a legitimate certificate-lifecycle-management tool or service account before removing.'
         KnownRisks       = 'Procedural - confirm the trustee isn''t an active cert-management automation account before removing; no realistic legitimate technical break otherwise.'
         BackupRollback   = 'Moderate - export the template''s ACL (certutil -v -template or PSPKI) before changing it so the exact ACE can be restored if needed.'
+        OperationalNotes = ''
+    }
+    'Weak ACL on PKI Container Object (ESC5)' = @{
+        EstimatedEffort  = 'Medium - a container-level ACE removal; confirm the trustee isn''t a legitimate PKI-management tool or delegated administrator before removing.'
+        KnownRisks       = 'Procedural - confirm the trustee isn''t an active PKI-management automation account or delegated admin before removing; no realistic legitimate technical break otherwise.'
+        BackupRollback   = 'Moderate - export the container''s ACL (dsacls or PSPKI) before changing it so the exact ACE can be restored if needed.'
+        OperationalNotes = ''
+    }
+    'Certificate Template Missing Security Extension (ESC9)' = @{
+        EstimatedEffort  = 'Low - a single template flag; confirm no legitimate enrollment workflow depends on the omitted extension first (rare).'
+        KnownRisks       = 'Minimal - clearing this flag only adds information to newly-issued certificates; it does not change any existing legitimate authentication behavior.'
+        BackupRollback   = 'Easy - AD CS templates are versioned, so the prior flag value can be restored and republished if needed.'
+        OperationalNotes = ''
+    }
+    'Certificate Template Issuance Policy Linked to Privileged Group (ESC13)' = @{
+        EstimatedEffort  = 'Medium - confirm whether the OID-to-group link is an intentional AD FS claims scenario before removing it, since removing it changes real, currently-working claims-based access for legitimate users too.'
+        KnownRisks       = 'Removing the group link breaks any legitimate AD FS claims-based access that currently depends on it - confirm the link is unintentional/unused before removing.'
+        BackupRollback   = 'Easy - restore the msDS-OIDToGroupLink value on the OID object if needed; effective immediately.'
         OperationalNotes = ''
     }
     'Certificate Template Allows High-Risk Enrollment Without Manager Approval' = @{
@@ -128,6 +152,30 @@ $Script:ADFindingNarrativeLibrary = @{
         KnownRisks       = 'Clearing the flag (or the patch''s added validation) can break certificate enrollment for legitimate cross-domain or cross-forest clients that rely on the CA''s chase behavior to resolve a client-DC hint the CA cannot otherwise reach directly.'
         BackupRollback   = 'Easy - the change is a single registry value; if a legitimate enrollment workflow breaks, re-enable EDITF_ENABLECHASECLIENTDC via certutil and restart CertSvc to restore the prior behavior immediately, with no data loss.'
         OperationalNotes = 'Re-enabling the flag as a rollback restores the CVE-2026-54121 exposure, so treat it as strictly temporary and monitor Certificate Services event ID 4886 (a cert request carrying a client-DC hint that doesn''t match a known DC) while investigating any dependency.'
+    }
+    'CA-Wide SAN Attribute Flag Enabled (ESC6)' = @{
+        EstimatedEffort  = 'Medium - a single registry flag, but requires first identifying which templates/workflows (if any) currently rely on CA-wide SAN supply so their enrollment isn''t broken.'
+        KnownRisks       = 'Clearing this flag breaks enrollment for any legitimate workflow that currently depends on supplying a SAN CA-wide (rather than via an individual template''s own Enrollee Supplies Subject setting) - identify and migrate those workflows to per-template configuration first.'
+        BackupRollback   = 'Easy - the change is a single registry value; re-enable via certutil and restart CertSvc to restore the prior behavior immediately if something breaks, with no data loss.'
+        OperationalNotes = ''
+    }
+    'CA RPC Enrollment Encryption Not Enforced (ESC11)' = @{
+        EstimatedEffort  = 'Low - a single registry flag; the on-by-default setting is occasionally disabled for legacy client compatibility (e.g. Windows XP), so confirm no such client still enrolls against this CA before enabling.'
+        KnownRisks       = 'Enabling packet-privacy enforcement will break enrollment for any client that cannot negotiate RPC_C_AUTHN_LEVEL_PKT_PRIVACY - in practice, only very old (pre-Vista-era) clients, which should not be enrolling in a modern environment regardless.'
+        BackupRollback   = 'Easy - the change is a single registry value; revert with certutil -setreg CA\InterfaceFlags -IF_ENFORCEENCRYPTICERTREQUEST and restart CertSvc if something breaks.'
+        OperationalNotes = ''
+    }
+    'CA-Wide Security Extension Disabled (ESC16)' = @{
+        EstimatedEffort  = 'Low - a single registry list entry; this setting has no known legitimate ongoing use in a modern (KB5014754+) environment.'
+        KnownRisks       = 'Minimal - re-enabling the extension only adds information to newly-issued certificates; it does not change any existing legitimate authentication behavior.'
+        BackupRollback   = 'Easy - the change is a single registry value; re-add the OID to DisableExtensionList and restart CertSvc to restore the prior behavior if needed, with no data loss.'
+        OperationalNotes = ''
+    }
+    'Weak Certificate Binding Compensation Enabled (ESC10)' = @{
+        EstimatedEffort  = 'Medium - requires first confirming every certificate relying on the compensation window has been re-issued with strong mapping before removing the opt-out, or authentication for those certificates will break.'
+        KnownRisks       = 'Removing this value before all weak-mapped certificates it was covering have been re-issued will break authentication for whatever legitimately still depends on the compensation window - confirm coverage first.'
+        BackupRollback   = 'Easy - restore the prior CertificateBackdatingCompensation value if needed; effective immediately, no data loss.'
+        OperationalNotes = ''
     }
     'Print Spooler Running on Domain Controller' = @{
         EstimatedEffort  = 'Low - stop and disable a single service on each DC (or via GPO).'
@@ -237,6 +285,12 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Moderate - export the current msDS-KeyCredentialLink value before clearing so a legitimate key can be restored if the removal turns out to affect a real passwordless sign-in.'
         OperationalNotes = ''
     }
+    'Weak Explicit Certificate Mapping on Privileged Account (ESC14)' = @{
+        EstimatedEffort  = 'Medium - requires identifying the specific certificate this mapping should be bound to and updating altSecurityIdentities accordingly, coordinated with whoever manages the account''s smart card/certificate.'
+        KnownRisks       = 'Replacing the mapping incorrectly (wrong SKI/key hash) will break this account''s certificate-based authentication until corrected - verify the target certificate before changing.'
+        BackupRollback   = 'Easy - restore the prior altSecurityIdentities value if needed; effective immediately, no data loss.'
+        OperationalNotes = ''
+    }
     'SID History Injection (Same Domain)' = @{
         EstimatedEffort  = 'High - this is an active-compromise indicator, not a configuration fix; it requires incident-response engagement, forensic investigation, and likely a KRBTGT password reset (twice) if a Golden Ticket is suspected, not a single change.'
         KnownRisks       = 'Resetting the account or clearing sIDHistory while an attacker may still have persistence elsewhere (forged tickets, other backdoors) can tip them off without fully evicting them, so this needs IR judgment, not just a config change.'
@@ -247,6 +301,12 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - clearing sIDHistory is simple technically, but confirming the account isn''t an active cross-domain migration in progress requires checking with whoever ran the migration.'
         KnownRisks       = 'If a domain migration is still underway, clearing sIDHistory before every migrated resource''s ACL has been updated to the new SID can break the migrated user''s access to resources that still only trust the old SID.'
         BackupRollback   = 'Hard/Limited - sIDHistory can''t be restored to its prior value without re-injecting it via the same migration tooling (e.g. ADMT) that originally populated it; treat clearing it as a one-way cleanup once confirmed unauthorized.'
+        OperationalNotes = ''
+    }
+    'SID History Attribute Populated' = @{
+        EstimatedEffort  = 'Low - clearing sIDHistory is a single-attribute change once a completed migration is confirmed.'
+        KnownRisks       = 'Clearing sIDHistory before every migrated resource''s ACL has been updated to the new SID breaks the account''s access to resources that still only trust the old SID - confirm migration completion first.'
+        BackupRollback   = 'Hard/Limited - sIDHistory can''t be restored without re-injecting it via the same migration tooling (e.g. ADMT) that originally populated it.'
         OperationalNotes = ''
     }
     'Legacy Logon Script Defined' = @{
@@ -307,6 +367,18 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - disabling the setting alone doesn''t clear already-stored reversibly-encrypted password copies for existing accounts, so plan a follow-up forced password change for previously affected accounts.'
         KnownRisks       = 'The existing stored reversible-encryption copy persists for each account until its next password change, so disabling the GPO setting alone doesn''t retroactively protect current passwords, a documented Microsoft behavior.'
         BackupRollback   = 'Easy - revert the GPO setting; no data loss, though re-enabling doesn''t restore already-cleared reversible copies.'
+        OperationalNotes = ''
+    }
+    'Account Lockout Disabled' = @{
+        EstimatedEffort  = 'Medium - a Default Domain Policy GPO change; confirm any legitimate break-glass/service accounts that must never lock out are covered by a separate Fine-Grained Password Policy first, since this change applies domain-wide.'
+        KnownRisks       = 'Enabling lockout can itself become a denial-of-service vector if an attacker deliberately fails logons for a target account to lock it out - a documented trade-off, not a reason to leave lockout disabled entirely.'
+        BackupRollback   = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
+        OperationalNotes = ''
+    }
+    'Account Lockout Threshold Above Recommended Maximum' = @{
+        EstimatedEffort  = 'Low - a single Default Domain Policy GPO value change.'
+        KnownRisks       = 'Lowering the threshold increases the chance a legitimate user locks themselves out after a few genuine mistyped passwords, which may increase helpdesk password-reset/unlock volume.'
+        BackupRollback   = 'Easy - revert the GPO setting; effective at next Group Policy refresh, no data loss.'
         OperationalNotes = ''
     }
     'Outdated Domain Functional Level' = @{
@@ -405,6 +477,12 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - restore the GPO permission via GPMC; effective immediately, though the change still needs to replicate to all DCs.'
         OperationalNotes = ''
     }
+    'Non-Standard GPO Owner' = @{
+        EstimatedEffort  = 'Low - a single ownership change on one GPO object; confirm the current owner isn''t an intentional, actively-used delegated GPO-management account first.'
+        KnownRisks       = 'Procedural - confirm the current owner isn''t a legitimate delegated GPO administrator for this specific GPO before changing ownership.'
+        BackupRollback   = 'Easy - ownership can be changed back to the prior value at any time by an administrator; effective immediately, no data loss.'
+        OperationalNotes = ''
+    }
     'Unlinked GPO' = @{
         EstimatedEffort  = 'Low - this is a hygiene finding; typical remediation is to delete the unused GPO or formally document/retain it.'
         KnownRisks       = 'Deleting an unlinked GPO is safe in the sense that it isn''t currently applied anywhere, but if it''s only temporarily unlinked (e.g. staged for a future rollout), deleting it loses that work - confirm with whoever created it first.'
@@ -441,6 +519,18 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - revert the User Rights Assignment setting in the GPO; effective at next Group Policy refresh, no data loss.'
         OperationalNotes = ''
     }
+    'GPO Deploys Restricted Groups Membership' = @{
+        EstimatedEffort  = 'Medium - editing the Restricted Groups membership list in one GPO; confirm with the owning team which members are actually still needed before removing any.'
+        KnownRisks       = 'Removing a member that legitimately needs local admin/RDP/backup rights on the affected computers will revoke that access at the next Group Policy refresh - confirm current legitimate use before narrowing.'
+        BackupRollback   = 'Easy - restore the prior Restricted Groups membership list in the GPO; effective at next Group Policy refresh, no data loss.'
+        OperationalNotes = ''
+    }
+    'Cross-Domain Privileged Group Membership' = @{
+        EstimatedEffort  = 'Medium - removing a foreign-domain principal from a local privileged group; confirm with the other domain''s admins it isn''t an intentional, documented cross-domain admin delegation before removing.'
+        KnownRisks       = 'Procedural - confirm with the other domain''s admins that the membership isn''t an intentional cross-domain delegation before removing, since doing so revokes that principal''s privileged access entirely.'
+        BackupRollback   = 'Easy - re-add the principal to the group if needed; effective on next Kerberos ticket refresh, no data loss.'
+        OperationalNotes = ''
+    }
     'Excessive Privileged Group Membership' = @{
         EstimatedEffort  = 'Medium - requires reviewing each member for actual ongoing need rather than a single mechanical change, and coordinating with each member or their manager.'
         KnownRisks       = 'Removing a member who still has a legitimate ongoing need for privileged access will break their ability to perform that work until re-added, so this needs a per-member justification review, not a blanket removal.'
@@ -457,12 +547,6 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Low - removing one already-disabled account from one group.'
         KnownRisks       = 'Essentially none - the account is already disabled and cannot authenticate, so removing its group membership has no functional impact; confirm it isn''t an intentionally disabled-but-provisioned break-glass account first.'
         BackupRollback   = 'Easy - re-add if needed; effective immediately, no functional impact either way since the account is disabled.'
-        OperationalNotes = ''
-    }
-    'Cross-Domain Privileged Group Membership' = @{
-        EstimatedEffort  = 'Medium - removing a foreign-domain principal from a local privileged group; confirm with the other domain''s admins it isn''t an intentional, documented cross-domain admin delegation before removing.'
-        KnownRisks       = 'Procedural - confirm with the other domain''s admins that the membership isn''t an intentional cross-domain delegation before removing, since doing so revokes that principal''s privileged access entirely.'
-        BackupRollback   = 'Easy - re-add the principal to the group if needed; effective on next Kerberos ticket refresh, no data loss.'
         OperationalNotes = ''
     }
     'RC4 Kerberos Encryption Still Permitted' = @{
@@ -555,6 +639,18 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Moderate - revert the WSUS client GPO to the HTTP URL and the IIS binding to HTTP; requires a Group Policy refresh across clients to fully take effect.'
         OperationalNotes = ''
     }
+    'NTLM Authentication Not Restricted in Domain' = @{
+        EstimatedEffort  = 'High - fully restricting NTLM requires first auditing which applications/services still depend on it (often significant in legacy environments), then migrating or explicitly exempting each one, before enforcement can be raised to a deny level without breaking authentication.'
+        KnownRisks       = 'Moving straight to a deny level without an audit period first will break authentication for any application, service, or legacy client that still relies on NTLM and has no Kerberos alternative configured - a real and common operational risk in mixed environments.'
+        BackupRollback   = 'Easy - revert the GPO setting to 0 (Allow all); effective at next Group Policy refresh, no data loss.'
+        OperationalNotes = ''
+    }
+    'LSA Protection (RunAsPPL) Not Enabled on Domain Controller' = @{
+        EstimatedEffort  = 'Medium - a single registry value per DC, but requires a restart to take effect and should be preceded by auditing which LSA plugins/drivers are currently loaded (via audit mode) so none are unexpectedly blocked once enforced.'
+        KnownRisks       = 'A currently-loaded LSA plugin or driver that does not meet Microsoft''s signing requirements will fail to load once LSA Protection is enabled, which can break third-party smart-card, authentication-extension, or security-vendor software that hooks LSA - audit first with LSA Protection in audit-only mode if available.'
+        BackupRollback   = 'Easy - revert the registry value to 0 (or delete it) and restart the DC; no data loss.'
+        OperationalNotes = ''
+    }
     'Default Machine Account Quota Not Restricted' = @{
         EstimatedEffort  = 'Low - a single domain-wide attribute (ms-DS-MachineAccountQuota).'
         KnownRisks       = 'Lowering or zeroing this quota only prevents self-service computer joins by regular users; legitimate machine joins performed by an account with delegated Create Computer Objects rights are unaffected.'
@@ -567,23 +663,35 @@ $Script:ADFindingNarrativeLibrary = @{
         BackupRollback   = 'Easy - revert the ms-DS-MachineAccountQuota attribute to its prior value; effective immediately, no data loss.'
         OperationalNotes = ''
     }
-    'Enterprise Key Admins Over-Privileged (Misconfiguration Bug)' = @{
-        EstimatedEffort  = 'Medium - re-scoping the ACE may need to be applied wherever the broader-than-intended grant was introduced (often domain- or forest-wide from a schema-update-era bug), not just one object.'
-        KnownRisks       = 'Key Admins/Enterprise Key Admins is intended to have no members by default, so re-scoping this ACE has no legitimate compatibility risk for typical environments; it only matters if the group unexpectedly has real members.'
-        BackupRollback   = 'Moderate - export the current ACL before re-scoping so it can be restored if needed; changes follow normal AD replication.'
+    'gMSA Password Retrievable by Broad Principal' = @{
+        EstimatedEffort  = 'Low - a single-attribute change on the gMSA object; confirm the actual hosting server(s) first so they remain in the narrowed list.'
+        KnownRisks       = 'If the narrowed list omits a server that legitimately hosts this service, that server will fail to retrieve the password at its next rotation/lookup and the service will stop authenticating - confirm every real host before narrowing.'
+        BackupRollback   = 'Easy - restore the prior PrincipalsAllowedToRetrieveManagedPassword value; takes effect immediately, no data loss.'
         OperationalNotes = ''
+    }
+    'Privileged gMSA Password Retrieval Not Tightly Scoped' = @{
+        EstimatedEffort  = 'Low - a single-attribute change; requires confirming with the service owner which hosts are actually legitimate.'
+        KnownRisks       = 'Removing a host that legitimately runs this service breaks its ability to authenticate as the gMSA at next password lookup - confirm current hosting before narrowing.'
+        BackupRollback   = 'Easy - restore the prior PrincipalsAllowedToRetrieveManagedPassword value; takes effect immediately, no data loss.'
+        OperationalNotes = ''
+    }
+    'Enterprise Key Admins Over-Privileged (Misconfiguration Bug)' = @{
+        EstimatedEffort  = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+        KnownRisks       = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+        BackupRollback   = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+        OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
     }
     'Enterprise Key Admins Permissions Not Scoped to msDS-KeyCredentialLink' = @{
-        EstimatedEffort  = 'Medium - restricting the existing GenericWrite-style ACE to just the msDS-KeyCredentialLink attribute via an object-specific ACE.'
-        KnownRisks       = 'No legitimate compatibility risk for typical environments, since the group is intended to have no members; only affects any unexpected actual members.'
-        BackupRollback   = 'Moderate - export the current ACL before re-scoping so it can be restored if needed.'
-        OperationalNotes = ''
+        EstimatedEffort  = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+        KnownRisks       = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+        BackupRollback   = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+        OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
     }
     'Dangerous Rights on Critical OU' = @{
-        EstimatedEffort  = 'Medium - a single-object ACE removal, but the OU''s inheritance means the change affects every object beneath it; confirm the trustee isn''t a legitimate delegated-admin or provisioning account for that OU first.'
-        KnownRisks       = 'Procedural - confirm the trustee isn''t a legitimate delegated administrator or provisioning automation for the OU before removing; no realistic legitimate technical break otherwise.'
-        BackupRollback   = 'Moderate - export the OU''s ACL (dsacls or Get-Acl) before changing it so the exact ACE can be restored if a legitimate delegation breaks.'
-        OperationalNotes = ''
+        EstimatedEffort  = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'
+        KnownRisks       = 'Removing the ACE could break a directory-integrated product that legitimately extends the Configuration container (commonly Exchange setup/recipient-update accounts, or certain backup/DR tools) if the trustee is a genuine service account rather than a misconfiguration.'
+        BackupRollback   = 'Moderate - export the object''s current nTSecurityDescriptor (e.g. via dsacls or Get-Acl on the AD: PowerShell drive) before making the change so the exact ACE can be re-added if needed, and allow for AD replication convergence across all DCs before the removal is fully in effect forest-wide.'
+        OperationalNotes = 'Since this ACE sits above the Public Key Services container this tool''s own AD CS checks already review separately, cross-check the trustee against any known certificate-services or Exchange install accounts before removing it, to avoid duplicating remediation effort on the wrong object.'
     }
     'Unauthorized DCSync Permissions' = @{
         EstimatedEffort  = 'Low - removing two specific extended-right ACEs (Replicating Directory Changes / Replicating Directory Changes All) from one object, a well-scoped ACE change.'
@@ -703,6 +811,18 @@ $Script:ADFindingNarrativeLibrary = @{
         EstimatedEffort  = 'Medium - Protected Users enforces several non-configurable protections (no NTLM, no DES/RC4, no delegation, no long-lived TGT renewal) that can break dependent legitimate functionality, so Microsoft''s own guidance is to pilot it on a test group first.'
         KnownRisks       = 'Protected Users membership blocks NTLM authentication and Kerberos delegation for that account outright; any legitimate use of the account that relies on NTLM or delegation will break the moment it''s added.'
         BackupRollback   = 'Easy - remove the account from Protected Users; effective on next logon/ticket renewal, no data loss.'
+        OperationalNotes = ''
+    }
+    'Privileged Account Not Configured as Sensitive and Cannot Be Delegated' = @{
+        EstimatedEffort  = 'Low - a single account flag; takes effect at next ticket request, no other configuration required.'
+        KnownRisks       = 'If this account genuinely needs to be delegated for a legitimate, currently-working scenario, enabling this flag will break that delegation - confirm the account has no legitimate delegation dependency first.'
+        BackupRollback   = 'Easy - clear the flag again if needed; effective at next ticket request, no data loss.'
+        OperationalNotes = ''
+    }
+    'Built-in Administrator Account Enabled and Not Recently Rotated' = @{
+        EstimatedEffort  = 'Low - a password reset (and optionally disabling the account) on a single well-known object; confirm no automation or legacy process depends on this specific account first.'
+        KnownRisks       = 'Disabling this account entirely is safe in virtually all modern environments, but confirm no legacy script or process authenticates as it directly before doing so, since it has no other owner to consult.'
+        BackupRollback   = 'Easy - re-enable the account or reset the password again if needed; no data loss either way.'
         OperationalNotes = ''
     }
 }

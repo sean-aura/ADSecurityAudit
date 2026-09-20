@@ -10,15 +10,6 @@
 # P-DsHeuristicsAdminSDExMask, A-PreWin2000Anonymous,
 # A-PreWin2000AuthenticatedUsers, A-RootDseAnonBinding, A-NullSession.
 #
-# Snapshot-aware for the dSHeuristics and Pre-Windows 2000 checks (see
-# Get-ADSnapshot's DsHeuristics / PreWin2000Members keys). The anonymous
-# RootDSE bind probe and the null-session pipe/share check are both live
-# operations with no point-in-time snapshot representation, so - consistent
-# with the -FromSnapshot contract of performing NO live AD/network access -
-# both are only attempted when this function is called WITHOUT -Snapshot
-# (i.e. from the live audit path, not from Invoke-ADRuleSet /
-# Start-ADSecurityAudit -FromSnapshot).
-#
 # The null-session check (RestrictNullSessAccess / NullSessionPipes /
 # NullSessionShares) follows the same GPO-linked-policy-then-live-per-DC-
 # registry-fallback pattern LegacyAuthAudits.ps1 already uses for
@@ -63,29 +54,19 @@ function Test-ADDomainHardeningFlags {
              which is forest-wide regardless of -Server) rather than a
              single discovered/overridden DC. Success on any DC is the
              finding; a refusal (exception) on a given DC is that DC's
-             secure state. This live probe is skipped when -Snapshot is
-             supplied, since offline re-analysis must perform no live
-             AD/network access.
+             secure state.
           4. Null-session pipe/share access - `RestrictNullSessAccess`
              (Security Options: "Network access: Restrict anonymous access
              to Named Pipes and Shares") read as disabled (0), checking
              GPOs linked to the Domain Controllers OU then the domain root,
              falling back to a direct per-DC registry read if no linked GPO
              defines it. Registry-value read only - no live SMB/null-session
-             connection is attempted. Skipped when -Snapshot is supplied.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        DsHeuristics and PreWin2000Members are read from it instead of
-        live AD queries, and the anonymous-bind network probe and the
-        null-session pipe/share check (both live-only) are skipped.
+             connection is attempted.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
     param(
-        [Parameter()]
-        [hashtable]$Snapshot,
-
         # Defense-in-depth for multi-domain forests: when this function is
         # called standalone (not via Start-ADSecurityAudit -Server, which
         # already installs a session-wide override before this ever runs),
@@ -120,20 +101,13 @@ function Test-ADDomainHardeningFlags {
         $dsHeuristics = $null
         $dsServiceDN = $null
 
-        if ($Snapshot -and $Snapshot.ContainsKey('DsHeuristics')) {
-            Write-Verbose "Test-ADDomainHardeningFlags: using snapshot data for dSHeuristics."
-            $dsHeuristics = $Snapshot.DsHeuristics
-            $dsServiceDN = if ($Snapshot.ContainsKey('DsHeuristicsDN')) { $Snapshot.DsHeuristicsDN } else { 'CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration' }
+        $configNC = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
+        $dsServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configNC"
+        $dsServiceObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject dSHeuristics' -Query {
+            Get-ADObject -Identity $dsServiceDN -Properties dSHeuristics -Server $__adServer -ErrorAction Stop
         }
-        else {
-            $configNC = Get-ADRootDSEValue -Property configurationNamingContext -Server $__adServer
-            $dsServiceDN = "CN=Directory Service,CN=Windows NT,CN=Services,$configNC"
-            $dsServiceObject = Invoke-ADQueryWithRetry -OperationName 'Get-ADObject dSHeuristics' -Query {
-                Get-ADObject -Identity $dsServiceDN -Properties dSHeuristics -Server $__adServer -ErrorAction Stop
-            }
-            if ($dsServiceObject) {
-                $dsHeuristics = $dsServiceObject.dSHeuristics
-            }
+        if ($dsServiceObject) {
+            $dsHeuristics = $dsServiceObject.dSHeuristics
         }
 
         if ($null -ne $dsHeuristics -and $dsHeuristics -ne '') {
@@ -214,40 +188,25 @@ function Test-ADDomainHardeningFlags {
         $broadPrincipals = [System.Collections.ArrayList]::new()
         $groupDN = $null
 
-        if ($Snapshot -and $Snapshot.ContainsKey('PreWin2000Members')) {
-            Write-Verbose "Test-ADDomainHardeningFlags: using snapshot data for Pre-Windows 2000 Compatible Access."
-            $groupDN = if ($Snapshot.ContainsKey('PreWin2000GroupDN')) { $Snapshot.PreWin2000GroupDN } else { 'Pre-Windows 2000 Compatible Access' }
+        $group = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup Pre-Windows 2000 Compatible Access' -Query {
+            Get-ADGroup -Filter "Name -eq 'Pre-Windows 2000 Compatible Access'" -Server $__adServer -ErrorAction Stop
+        }
 
-            foreach ($memberDN in @($Snapshot.PreWin2000Members)) {
-                if (-not $memberDN) { continue }
-                foreach ($sid in $Script:PreWin2000DangerousSids.Keys) {
-                    if ($memberDN -match "CN=$sid,") {
-                        [void]$broadPrincipals.Add($Script:PreWin2000DangerousSids[$sid])
-                    }
+        if ($group) {
+            $groupDN = $group.DistinguishedName
+            $members = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroupMember Pre-Windows 2000 Compatible Access' -Query {
+                Get-ADGroupMember -Identity $group -Server $__adServer -ErrorAction Stop
+            }
+
+            foreach ($member in @($members)) {
+                $sidValue = if ($member.SID) { $member.SID.Value } else { $null }
+                if ($sidValue -and $Script:PreWin2000DangerousSids.ContainsKey($sidValue)) {
+                    [void]$broadPrincipals.Add($Script:PreWin2000DangerousSids[$sidValue])
                 }
             }
         }
         else {
-            $group = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup Pre-Windows 2000 Compatible Access' -Query {
-                Get-ADGroup -Filter "Name -eq 'Pre-Windows 2000 Compatible Access'" -Server $__adServer -ErrorAction Stop
-            }
-
-            if ($group) {
-                $groupDN = $group.DistinguishedName
-                $members = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroupMember Pre-Windows 2000 Compatible Access' -Query {
-                    Get-ADGroupMember -Identity $group -Server $__adServer -ErrorAction Stop
-                }
-
-                foreach ($member in @($members)) {
-                    $sidValue = if ($member.SID) { $member.SID.Value } else { $null }
-                    if ($sidValue -and $Script:PreWin2000DangerousSids.ContainsKey($sidValue)) {
-                        [void]$broadPrincipals.Add($Script:PreWin2000DangerousSids[$sidValue])
-                    }
-                }
-            }
-            else {
-                Write-Verbose "Test-ADDomainHardeningFlags: 'Pre-Windows 2000 Compatible Access' group not found."
-            }
+            Write-Verbose "Test-ADDomainHardeningFlags: 'Pre-Windows 2000 Compatible Access' group not found."
         }
 
         if ($broadPrincipals.Count -gt 0) {
@@ -282,103 +241,96 @@ function Test-ADDomainHardeningFlags {
     # -------------------------------------------------------------------
     # Check 3: Anonymous LDAP / RootDSE binding (live probe only)
     # -------------------------------------------------------------------
-    if (-not $Snapshot) {
-        try {
-            # Fixed: previously resolved a single DC via
-            # Get-ADTargetDomainController (either the -Discover result or,
-            # if a -Server override was active, that one overridden
-            # host) and probed only that one DC. That meant the finding -
-            # and even whether the probe errored at all - depended on
-            # whichever single DC happened to be picked that run, not on
-            # the domain's actual anonymous-bind posture: a domain with a
-            # mix of hardened and non-hardened DCs could show a finding on
-            # one run and none on the next, and a single unreachable
-            # override host could error out the whole check even though
-            # every other DC was reachable. Now enumerates every DC in the
-            # TARGET DOMAIN via Get-ADSecurityAuditDomainController (see
-            # Common.ps1 - a bare `Get-ADDomainController -Filter *` is
-            # forest-wide regardless of -Server, which would have silently
-            # probed other domains' DCs too) and probes each independently.
-            $anonDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (anonymous-bind probe)' -Query {
-                Get-ADSecurityAuditDomainController -Server $__adServer
-            })
+    try {
+        # Fixed: previously resolved a single DC via
+        # Get-ADTargetDomainController (either the -Discover result or,
+        # if a -Server override was active, that one overridden
+        # host) and probed only that one DC. That meant the finding -
+        # and even whether the probe errored at all - depended on
+        # whichever single DC happened to be picked that run, not on
+        # the domain's actual anonymous-bind posture: a domain with a
+        # mix of hardened and non-hardened DCs could show a finding on
+        # one run and none on the next, and a single unreachable
+        # override host could error out the whole check even though
+        # every other DC was reachable. Now enumerates every DC in the
+        # TARGET DOMAIN via Get-ADSecurityAuditDomainController (see
+        # Common.ps1 - a bare `Get-ADDomainController -Filter *` is
+        # forest-wide regardless of -Server, which would have silently
+        # probed other domains' DCs too) and probes each independently.
+        $anonDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (anonymous-bind probe)' -Query {
+            Get-ADSecurityAuditDomainController -Server $__adServer
+        })
 
-            if (-not $anonDomainControllers -or $anonDomainControllers.Count -eq 0) {
-                Write-Verbose "Test-ADDomainHardeningFlags: no Domain Controllers found; skipping anonymous-bind probe."
+        if (-not $anonDomainControllers -or $anonDomainControllers.Count -eq 0) {
+            Write-Verbose "Test-ADDomainHardeningFlags: no Domain Controllers found; skipping anonymous-bind probe."
+        }
+        else {
+            $anonBindResults = [System.Collections.ArrayList]::new()
+
+            foreach ($dc in $anonDomainControllers) {
+                $dcHost = if ($dc.HostName) { $dc.HostName } else { $dc.Name }
+                $probePath = "LDAP://$dcHost/RootDSE"
+                $anonBindSucceeded = $false
+                $anonEntry = $null
+
+                try {
+                    $anonEntry = New-Object System.DirectoryServices.DirectoryEntry(
+                        $probePath, $null, $null, [System.DirectoryServices.AuthenticationTypes]::Anonymous
+                    )
+                    # ADSI binds lazily; force the actual network bind
+                    # by touching a property. An exception here means
+                    # the anonymous bind was refused (the secure
+                    # state) - or, less commonly, that this specific
+                    # DC could not be reached at all; either way, no
+                    # anonymous read was achieved against it.
+                    [void]$anonEntry.Properties['currentTime']
+                    [void]$anonEntry.NativeObject
+                    $anonBindSucceeded = $true
+                }
+                catch {
+                    Write-Verbose "Test-ADDomainHardeningFlags: anonymous RootDSE bind against '$dcHost' refused or failed (treated as secure for this DC): $_"
+                    $anonBindSucceeded = $false
+                }
+                finally {
+                    if ($anonEntry) { $anonEntry.Dispose() }
+                }
+
+                [void]$anonBindResults.Add([PSCustomObject]@{
+                    DomainController  = $dcHost
+                    AnonBindSucceeded = $anonBindSucceeded
+                    ProbePath         = $probePath
+                })
+            }
+
+            $vulnerableDCs = @($anonBindResults | Where-Object { $_.AnonBindSucceeded } | ForEach-Object { $_.DomainController })
+
+            if ($vulnerableDCs.Count -gt 0) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Domain Hardening'
+                $finding.Issue = 'Anonymous LDAP / RootDSE Binding Permitted'
+                $finding.Severity = 'Medium'
+                $finding.SeverityLevel = 2
+                $finding.AffectedObject = ($vulnerableDCs -join ', ')
+                $finding.Description = "An anonymous (unauthenticated) LDAP bind to RootDSE succeeded against $($vulnerableDCs.Count) of $($anonDomainControllers.Count) Domain Controller(s): $($vulnerableDCs -join ', ')."
+                $finding.Impact = "Anonymous LDAP binding is a null-session indicator: it lets unauthenticated clients enumerate directory-service metadata (naming contexts, supported capabilities, schema/config paths) without any credentials, aiding reconnaissance ahead of further attacks. Because this was observed on only some Domain Controllers, exposure is inconsistent across the environment rather than a single domain-wide setting - see PerDomainControllerResults for which DCs still refuse the bind."
+                $finding.Remediation = "Restrict anonymous LDAP operations via dSHeuristics (character 7) and/or the 'Network access: Let Everyone permissions apply to anonymous users' and related null-session security policy settings, ensuring the policy is applied consistently to every Domain Controller listed above, then re-test."
+                $finding.EstimatedEffort = 'Medium - disabling anonymous LDAP bind requires confirming no legacy or third-party application relies on anonymous read access first.'
+                $finding.KnownRisks = 'Some legacy or third-party applications (older Unix LDAP clients, network appliances) query AD anonymously for RootDSE/schema info or basic lookups and will break once anonymous bind is disabled.'
+                $finding.BackupRollback = 'Easy - revert the dsHeuristics anonymous-bind bit (or equivalent registry/GPO setting) to its prior value; effective at next LDAP bind attempt, no data loss.'
+                $finding.Details = @{
+                    DomainControllersTested     = $anonDomainControllers.Count
+                    VulnerableDomainControllers = $vulnerableDCs
+                    PerDomainControllerResults  = @($anonBindResults)
+                }
+                $findings += $finding
             }
             else {
-                $anonBindResults = [System.Collections.ArrayList]::new()
-
-                foreach ($dc in $anonDomainControllers) {
-                    $dcHost = if ($dc.HostName) { $dc.HostName } else { $dc.Name }
-                    $probePath = "LDAP://$dcHost/RootDSE"
-                    $anonBindSucceeded = $false
-                    $anonEntry = $null
-
-                    try {
-                        $anonEntry = New-Object System.DirectoryServices.DirectoryEntry(
-                            $probePath, $null, $null, [System.DirectoryServices.AuthenticationTypes]::Anonymous
-                        )
-                        # ADSI binds lazily; force the actual network bind
-                        # by touching a property. An exception here means
-                        # the anonymous bind was refused (the secure
-                        # state) - or, less commonly, that this specific
-                        # DC could not be reached at all; either way, no
-                        # anonymous read was achieved against it.
-                        [void]$anonEntry.Properties['currentTime']
-                        [void]$anonEntry.NativeObject
-                        $anonBindSucceeded = $true
-                    }
-                    catch {
-                        Write-Verbose "Test-ADDomainHardeningFlags: anonymous RootDSE bind against '$dcHost' refused or failed (treated as secure for this DC): $_"
-                        $anonBindSucceeded = $false
-                    }
-                    finally {
-                        if ($anonEntry) { $anonEntry.Dispose() }
-                    }
-
-                    [void]$anonBindResults.Add([PSCustomObject]@{
-                        DomainController  = $dcHost
-                        AnonBindSucceeded = $anonBindSucceeded
-                        ProbePath         = $probePath
-                    })
-                }
-
-                $vulnerableDCs = @($anonBindResults | Where-Object { $_.AnonBindSucceeded } | ForEach-Object { $_.DomainController })
-
-                if ($vulnerableDCs.Count -gt 0) {
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'Domain Hardening'
-                    $finding.Issue = 'Anonymous LDAP / RootDSE Binding Permitted'
-                    $finding.Severity = 'Medium'
-                    $finding.SeverityLevel = 2
-                    $finding.AffectedObject = ($vulnerableDCs -join ', ')
-                    $finding.Description = "An anonymous (unauthenticated) LDAP bind to RootDSE succeeded against $($vulnerableDCs.Count) of $($anonDomainControllers.Count) Domain Controller(s): $($vulnerableDCs -join ', ')."
-                    $finding.Impact = "Anonymous LDAP binding is a null-session indicator: it lets unauthenticated clients enumerate directory-service metadata (naming contexts, supported capabilities, schema/config paths) without any credentials, aiding reconnaissance ahead of further attacks. Because this was observed on only some Domain Controllers, exposure is inconsistent across the environment rather than a single domain-wide setting - see PerDomainControllerResults for which DCs still refuse the bind."
-                    $finding.Remediation = "Restrict anonymous LDAP operations via dSHeuristics (character 7) and/or the 'Network access: Let Everyone permissions apply to anonymous users' and related null-session security policy settings, ensuring the policy is applied consistently to every Domain Controller listed above, then re-test."
-                    $finding.EstimatedEffort = 'Medium - disabling anonymous LDAP bind requires confirming no legacy or third-party application relies on anonymous read access first.'
-                    $finding.KnownRisks = 'Some legacy or third-party applications (older Unix LDAP clients, network appliances) query AD anonymously for RootDSE/schema info or basic lookups and will break once anonymous bind is disabled.'
-                    $finding.BackupRollback = 'Easy - revert the dsHeuristics anonymous-bind bit (or equivalent registry/GPO setting) to its prior value; effective at next LDAP bind attempt, no data loss.'
-                    $finding.Details = @{
-                        DomainControllersTested     = $anonDomainControllers.Count
-                        VulnerableDomainControllers = $vulnerableDCs
-                        PerDomainControllerResults  = @($anonBindResults)
-                    }
-                    $findings += $finding
-                }
-                else {
-                    Write-Verbose "Test-ADDomainHardeningFlags: anonymous RootDSE binding refused on all $($anonDomainControllers.Count) Domain Controller(s); no finding (secure)."
-                }
+                Write-Verbose "Test-ADDomainHardeningFlags: anonymous RootDSE binding refused on all $($anonDomainControllers.Count) Domain Controller(s); no finding (secure)."
             }
         }
-        catch {
-            Write-Warning "Test-ADDomainHardeningFlags: error during anonymous-bind probe: $_"
-        }
     }
-    else {
-        Write-Verbose "Test-ADDomainHardeningFlags: -Snapshot supplied; skipping live anonymous-bind network probe (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'DomainHardeningFlags' -Check 'Anonymous LDAP bind probe' `
-            -Reason 'A live network probe against a DC, not an AD attribute. Run this check live (without -Snapshot) if you need this coverage.'
+    catch {
+        Write-Warning "Test-ADDomainHardeningFlags: error during anonymous-bind probe: $_"
     }
 
     # -------------------------------------------------------------------
@@ -391,159 +343,152 @@ function Test-ADDomainHardeningFlags {
     # and the now-shared Get-ADLiveRegistryValuePerDc in Common.ps1) instead
     # of duplicating that logic here.
     # -------------------------------------------------------------------
-    if (-not $Snapshot) {
-        try {
-            Import-Module GroupPolicy -ErrorAction Stop
+    try {
+        Import-Module GroupPolicy -ErrorAction Stop
 
-            $nsDomain = Get-ADDomain -Server $__adServer -ErrorAction Stop
-            # Get-ADSecurityAuditDomainController, not a bare
-            # Get-ADDomainController -Filter * - the latter is forest-wide
-            # regardless of -Server; see Common.ps1 for why.
-            $nsDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (null-session audit)' -Query {
-                Get-ADSecurityAuditDomainController -Server $__adServer
-            })
+        $nsDomain = Get-ADDomain -Server $__adServer -ErrorAction Stop
+        # Get-ADSecurityAuditDomainController, not a bare
+        # Get-ADDomainController -Filter * - the latter is forest-wide
+        # regardless of -Server; see Common.ps1 for why.
+        $nsDomainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (null-session audit)' -Query {
+            Get-ADSecurityAuditDomainController -Server $__adServer
+        })
 
-            if (-not $nsDomainControllers -or $nsDomainControllers.Count -eq 0) {
-                Write-Verbose "Test-ADDomainHardeningFlags: no Domain Controllers found; cannot evaluate null-session pipe/share access."
+        if (-not $nsDomainControllers -or $nsDomainControllers.Count -eq 0) {
+            Write-Verbose "Test-ADDomainHardeningFlags: no Domain Controllers found; cannot evaluate null-session pipe/share access."
+        }
+        else {
+            # Discover the actual Domain Controllers OU from a real DC's
+            # parent container, same approach as Test-ADLegacyAuthSurface,
+            # so this still resolves correctly if that OU was renamed/moved.
+            $nsDcOuDn = $null
+            try {
+                $firstDcDn = $nsDomainControllers[0].ComputerObjectDN
+                if ($firstDcDn -and $firstDcDn -match '^CN=[^,]+,(.+)$') {
+                    $nsDcOuDn = $Matches[1]
+                }
+            }
+            catch {
+                Write-Verbose "Test-ADDomainHardeningFlags: could not derive Domain Controllers OU for null-session check: $_"
+            }
+            if (-not $nsDcOuDn) {
+                $nsDcOuDn = "OU=Domain Controllers,$($nsDomain.DistinguishedName)"
+                Write-Verbose "Test-ADDomainHardeningFlags: falling back to default Domain Controllers OU path '$nsDcOuDn' for null-session check."
+            }
+
+            # DC OU precedence first (most specific to the DCs being
+            # evaluated), domain root as fallback - same ordering as
+            # Test-ADLegacyAuthSurface's $dcScopeGpos.
+            $nsDcOuGpos   = Get-ADLinkedGposOrdered -TargetDn $nsDcOuDn -Server $__adServer
+            $nsDomainGpos = Get-ADLinkedGposOrdered -TargetDn $nsDomain.DistinguishedName -Server $__adServer
+            $nsScopeGpos  = @($nsDcOuGpos + $nsDomainGpos)
+
+            $restrictTarget = @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa'; ValueName = 'RestrictNullSessAccess' }
+            $pipesTarget    = @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'; ValueName = 'NullSessionPipes' }
+            $sharesTarget   = @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'; ValueName = 'NullSessionShares' }
+
+            $restrictPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $restrictTarget.Key -ValueName $restrictTarget.ValueName -Server $__adServer
+
+            $restrictDisabled = $false
+            $source = $null
+            $detail = @{}
+
+            if ($restrictPolicy) {
+                $restrictDisabled = ([int]$restrictPolicy.Value -eq 0)
+                $source = "GPO: $($restrictPolicy.Source)"
+                $detail.RestrictNullSessAccess = [int]$restrictPolicy.Value
+                $detail.Source = $source
             }
             else {
-                # Discover the actual Domain Controllers OU from a real DC's
-                # parent container, same approach as Test-ADLegacyAuthSurface,
-                # so this still resolves correctly if that OU was renamed/moved.
-                $nsDcOuDn = $null
+                $perDc = Get-ADLiveRegistryValuePerDc -DomainControllers $nsDomainControllers -Key $restrictTarget.Key -ValueName $restrictTarget.ValueName
+                $disabledDCs = @($perDc | Where-Object { $null -ne $_.Value -and [int]$_.Value -eq 0 } | ForEach-Object { $_.DomainController })
+                # No enforcing GPO and no live value observed at all
+                # (fully unset) is left as-is - unlike LmCompatibilityLevel,
+                # RestrictNullSessAccess has no single documented
+                # universally-secure OS default to fall back on across
+                # Windows Server versions, so only an explicitly
+                # observed 0 is flagged, not the mere absence of a
+                # value (same "unset is not itself a finding" posture
+                # LmCompatibilityLevel already applies).
+                $restrictDisabled = $disabledDCs.Count -gt 0
+                $source = 'No enforcing GPO found; observed via direct per-DC registry read'
+                $detail.Source = $source
+                $detail.AffectedDomainControllers = $disabledDCs
+                $detail.PerDomainControllerState = @($perDc)
+            }
+
+            if ($restrictDisabled) {
+                # RestrictNullSessAccess is disabled - this is the
+                # primary signal and is sufficient on its own to raise
+                # the finding. Also fetch the pipe/share allow-lists
+                # purely to enrich the finding with how much surface is
+                # exposed; a lookup failure here doesn't block the
+                # primary finding from being raised.
+                $nullSessionPipes  = @()
+                $nullSessionShares = @()
                 try {
-                    $firstDcDn = $nsDomainControllers[0].ComputerObjectDN
-                    if ($firstDcDn -and $firstDcDn -match '^CN=[^,]+,(.+)$') {
-                        $nsDcOuDn = $Matches[1]
+                    $pipesPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $pipesTarget.Key -ValueName $pipesTarget.ValueName -Server $__adServer
+                    if ($pipesPolicy) {
+                        $nullSessionPipes = @($pipesPolicy.Value)
+                    }
+                    else {
+                        $pipesPerDc = Get-ADLiveRegistryValuePerDc -DomainControllers $nsDomainControllers -Key $pipesTarget.Key -ValueName $pipesTarget.ValueName
+                        $firstWithValue = $pipesPerDc | Where-Object { $_.Value } | Select-Object -First 1
+                        if ($firstWithValue) { $nullSessionPipes = @($firstWithValue.Value) }
                     }
                 }
                 catch {
-                    Write-Verbose "Test-ADDomainHardeningFlags: could not derive Domain Controllers OU for null-session check: $_"
+                    Write-Verbose "Test-ADDomainHardeningFlags: could not read NullSessionPipes for null-session finding detail: $_"
                 }
-                if (-not $nsDcOuDn) {
-                    $nsDcOuDn = "OU=Domain Controllers,$($nsDomain.DistinguishedName)"
-                    Write-Verbose "Test-ADDomainHardeningFlags: falling back to default Domain Controllers OU path '$nsDcOuDn' for null-session check."
-                }
-
-                # DC OU precedence first (most specific to the DCs being
-                # evaluated), domain root as fallback - same ordering as
-                # Test-ADLegacyAuthSurface's $dcScopeGpos.
-                $nsDcOuGpos   = Get-ADLinkedGposOrdered -TargetDn $nsDcOuDn -Server $__adServer
-                $nsDomainGpos = Get-ADLinkedGposOrdered -TargetDn $nsDomain.DistinguishedName -Server $__adServer
-                $nsScopeGpos  = @($nsDcOuGpos + $nsDomainGpos)
-
-                $restrictTarget = @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa'; ValueName = 'RestrictNullSessAccess' }
-                $pipesTarget    = @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'; ValueName = 'NullSessionPipes' }
-                $sharesTarget   = @{ Key = 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'; ValueName = 'NullSessionShares' }
-
-                $restrictPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $restrictTarget.Key -ValueName $restrictTarget.ValueName -Server $__adServer
-
-                $restrictDisabled = $false
-                $source = $null
-                $detail = @{}
-
-                if ($restrictPolicy) {
-                    $restrictDisabled = ([int]$restrictPolicy.Value -eq 0)
-                    $source = "GPO: $($restrictPolicy.Source)"
-                    $detail.RestrictNullSessAccess = [int]$restrictPolicy.Value
-                    $detail.Source = $source
-                }
-                else {
-                    $perDc = Get-ADLiveRegistryValuePerDc -DomainControllers $nsDomainControllers -Key $restrictTarget.Key -ValueName $restrictTarget.ValueName
-                    $disabledDCs = @($perDc | Where-Object { $null -ne $_.Value -and [int]$_.Value -eq 0 } | ForEach-Object { $_.DomainController })
-                    # No enforcing GPO and no live value observed at all
-                    # (fully unset) is left as-is - unlike LmCompatibilityLevel,
-                    # RestrictNullSessAccess has no single documented
-                    # universally-secure OS default to fall back on across
-                    # Windows Server versions, so only an explicitly
-                    # observed 0 is flagged, not the mere absence of a
-                    # value (same "unset is not itself a finding" posture
-                    # LmCompatibilityLevel already applies).
-                    $restrictDisabled = $disabledDCs.Count -gt 0
-                    $source = 'No enforcing GPO found; observed via direct per-DC registry read'
-                    $detail.Source = $source
-                    $detail.AffectedDomainControllers = $disabledDCs
-                    $detail.PerDomainControllerState = @($perDc)
-                }
-
-                if ($restrictDisabled) {
-                    # RestrictNullSessAccess is disabled - this is the
-                    # primary signal and is sufficient on its own to raise
-                    # the finding. Also fetch the pipe/share allow-lists
-                    # purely to enrich the finding with how much surface is
-                    # exposed; a lookup failure here doesn't block the
-                    # primary finding from being raised.
-                    $nullSessionPipes  = @()
-                    $nullSessionShares = @()
-                    try {
-                        $pipesPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $pipesTarget.Key -ValueName $pipesTarget.ValueName -Server $__adServer
-                        if ($pipesPolicy) {
-                            $nullSessionPipes = @($pipesPolicy.Value)
-                        }
-                        else {
-                            $pipesPerDc = Get-ADLiveRegistryValuePerDc -DomainControllers $nsDomainControllers -Key $pipesTarget.Key -ValueName $pipesTarget.ValueName
-                            $firstWithValue = $pipesPerDc | Where-Object { $_.Value } | Select-Object -First 1
-                            if ($firstWithValue) { $nullSessionPipes = @($firstWithValue.Value) }
-                        }
-                    }
-                    catch {
-                        Write-Verbose "Test-ADDomainHardeningFlags: could not read NullSessionPipes for null-session finding detail: $_"
-                    }
-                    try {
-                        $sharesPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $sharesTarget.Key -ValueName $sharesTarget.ValueName -Server $__adServer
-                        if ($sharesPolicy) {
-                            $nullSessionShares = @($sharesPolicy.Value)
-                        }
-                        else {
-                            $sharesPerDc = Get-ADLiveRegistryValuePerDc -DomainControllers $nsDomainControllers -Key $sharesTarget.Key -ValueName $sharesTarget.ValueName
-                            $firstWithValue = $sharesPerDc | Where-Object { $_.Value } | Select-Object -First 1
-                            if ($firstWithValue) { $nullSessionShares = @($firstWithValue.Value) }
-                        }
-                    }
-                    catch {
-                        Write-Verbose "Test-ADDomainHardeningFlags: could not read NullSessionShares for null-session finding detail: $_"
-                    }
-
-                    $nullSessionPipes  = @($nullSessionPipes  | Where-Object { $_ })
-                    $nullSessionShares = @($nullSessionShares | Where-Object { $_ })
-
-                    $listSummary = if ($nullSessionPipes.Count -gt 0 -or $nullSessionShares.Count -gt 0) {
-                        " Configured allow-list(s): $($nullSessionPipes.Count) named pipe(s), $($nullSessionShares.Count) share(s)."
+                try {
+                    $sharesPolicy = Get-ADPolicyRegistryValue -Gpos $nsScopeGpos -Key $sharesTarget.Key -ValueName $sharesTarget.ValueName -Server $__adServer
+                    if ($sharesPolicy) {
+                        $nullSessionShares = @($sharesPolicy.Value)
                     }
                     else {
-                        ''
+                        $sharesPerDc = Get-ADLiveRegistryValuePerDc -DomainControllers $nsDomainControllers -Key $sharesTarget.Key -ValueName $sharesTarget.ValueName
+                        $firstWithValue = $sharesPerDc | Where-Object { $_.Value } | Select-Object -First 1
+                        if ($firstWithValue) { $nullSessionShares = @($firstWithValue.Value) }
                     }
+                }
+                catch {
+                    Write-Verbose "Test-ADDomainHardeningFlags: could not read NullSessionShares for null-session finding detail: $_"
+                }
 
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'Domain Hardening'
-                    $finding.Issue = 'Null-Session Pipe/Share Access Permitted'
-                    $finding.Severity = 'Medium'
-                    $finding.SeverityLevel = 2
-                    $finding.AffectedObject = if ($restrictPolicy) { $nsDcOuDn } else { ($detail.AffectedDomainControllers -join ', ') }
-                    $finding.Description = "`RestrictNullSessAccess` ('Network access: Restrict anonymous access to Named Pipes and Shares') is disabled ($source).$listSummary"
-                    $finding.Impact = "With this restriction disabled, an unauthenticated (null-session) client can access the named pipes and shares listed in `NullSessionPipes`/`NullSessionShares` without any credentials - the SMB/named-pipe equivalent of the anonymous LDAP bind exposure above, aiding reconnaissance (e.g. share/pipe enumeration, IPC`$ access) and, depending on which pipes/shares are exposed, further attacks."
-                    $finding.Remediation = "Set 'Network access: Restrict anonymous access to Named Pipes and Shares' (`RestrictNullSessAccess`) to Enabled (value 1) via a GPO enforced on Domain Controllers (and ideally all member servers), and review the `NullSessionPipes`/`NullSessionShares` allow-lists to remove any entries not genuinely required for legacy compatibility."
-                    $finding.EstimatedEffort = 'Medium - restricting NullSessionPipes/NullSessionShares across every DC; confirm no legacy trust relationship or very old third-party tool relies on anonymous IPC$/named-pipe access.'
-                    $finding.KnownRisks = 'Removing null-session access can break very old applications or trust setups that rely on anonymous IPC$ or named-pipe access, though this is rare in modern environments.'
-                    $finding.BackupRollback = 'Easy - restore the prior registry/GPO values; effective at next policy refresh/service restart.'
-                    $detail.NullSessionPipes  = $nullSessionPipes
-                    $detail.NullSessionShares = $nullSessionShares
-                    $finding.Details = $detail
-                    $findings += $finding
+                $nullSessionPipes  = @($nullSessionPipes  | Where-Object { $_ })
+                $nullSessionShares = @($nullSessionShares | Where-Object { $_ })
+
+                $listSummary = if ($nullSessionPipes.Count -gt 0 -or $nullSessionShares.Count -gt 0) {
+                    " Configured allow-list(s): $($nullSessionPipes.Count) named pipe(s), $($nullSessionShares.Count) share(s)."
                 }
                 else {
-                    Write-Verbose "Test-ADDomainHardeningFlags: null-session pipe/share access is restricted (policy-enforced, observed live, or unset/default)."
+                    ''
                 }
+
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Domain Hardening'
+                $finding.Issue = 'Null-Session Pipe/Share Access Permitted'
+                $finding.Severity = 'Medium'
+                $finding.SeverityLevel = 2
+                $finding.AffectedObject = if ($restrictPolicy) { $nsDcOuDn } else { ($detail.AffectedDomainControllers -join ', ') }
+                $finding.Description = "`RestrictNullSessAccess` ('Network access: Restrict anonymous access to Named Pipes and Shares') is disabled ($source).$listSummary"
+                $finding.Impact = "With this restriction disabled, an unauthenticated (null-session) client can access the named pipes and shares listed in `NullSessionPipes`/`NullSessionShares` without any credentials - the SMB/named-pipe equivalent of the anonymous LDAP bind exposure above, aiding reconnaissance (e.g. share/pipe enumeration, IPC`$ access) and, depending on which pipes/shares are exposed, further attacks."
+                $finding.Remediation = "Set 'Network access: Restrict anonymous access to Named Pipes and Shares' (`RestrictNullSessAccess`) to Enabled (value 1) via a GPO enforced on Domain Controllers (and ideally all member servers), and review the `NullSessionPipes`/`NullSessionShares` allow-lists to remove any entries not genuinely required for legacy compatibility."
+                $finding.EstimatedEffort = 'Medium - restricting NullSessionPipes/NullSessionShares across every DC; confirm no legacy trust relationship or very old third-party tool relies on anonymous IPC$/named-pipe access.'
+                $finding.KnownRisks = 'Removing null-session access can break very old applications or trust setups that rely on anonymous IPC$ or named-pipe access, though this is rare in modern environments.'
+                $finding.BackupRollback = 'Easy - restore the prior registry/GPO values; effective at next policy refresh/service restart.'
+                $detail.NullSessionPipes  = $nullSessionPipes
+                $detail.NullSessionShares = $nullSessionShares
+                $finding.Details = $detail
+                $findings += $finding
+            }
+            else {
+                Write-Verbose "Test-ADDomainHardeningFlags: null-session pipe/share access is restricted (policy-enforced, observed live, or unset/default)."
             }
         }
-        catch {
-            Write-Warning "Test-ADDomainHardeningFlags: error evaluating null-session pipe/share access: $_"
-        }
     }
-    else {
-        Write-Verbose "Test-ADDomainHardeningFlags: -Snapshot supplied; skipping live GPO-linked/per-DC null-session registry check (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'DomainHardeningFlags' -Check 'Null-session pipe/share access (RestrictNullSessAccess/NullSessionPipes/NullSessionShares)' `
-            -Reason 'GPO-linked registry policy state and per-DC registry reads have no AD-schema/snapshot equivalent. Run this check live (without -Snapshot) if you need this coverage.'
+    catch {
+        Write-Warning "Test-ADDomainHardeningFlags: error evaluating null-session pipe/share access: $_"
     }
 
     Write-Verbose "Domain Hardening Flags audit complete. Found $($findings.Count) issues."

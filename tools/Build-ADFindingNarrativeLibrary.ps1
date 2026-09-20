@@ -35,12 +35,10 @@
     Merge-ADFindingNarrativeGaps).
 
     Where the SAME Issue name is used for more than one distinct finding
-    block with different text for these fields (a handful of cases in
-    PermissionsAudits.ps1 today - the same Issue populated once for the
-    -Snapshot path and once for the live path, worded slightly
-    differently), the FIRST occurrence encountered wins and a warning is
-    printed - this is a best-effort backfill tool, not an exact
-    reproduction of "what the original run would have shown."
+    block with different text for these fields, the FIRST occurrence
+    encountered wins and a warning is printed - this is a best-effort
+    backfill tool, not an exact reproduction of "what the original run
+    would have shown."
 .PARAMETER SourceRoot
     Root of the ADSecurityAudit repo (containing src/). Defaults to the
     parent of this script's own folder.

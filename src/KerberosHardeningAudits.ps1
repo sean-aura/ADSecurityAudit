@@ -106,28 +106,11 @@ function Test-ADKerberosHardening {
              bit set, which permits a client's TGT to be forwarded across
              the trust boundary during constrained delegation (S4U2Proxy),
              widening the blast radius if the receiving side is compromised.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        the account-level RC4 check reads msDS-SupportedEncryptionTypes from
-        `Snapshot.Users` (matched against the Tier-0 set derived from
-        `Snapshot.Groups`) and the trust-level checks (RC4-without-AES and
-        cross-trust TGT delegation) read from `Snapshot.Trusts`, instead of
-        live queries. The domain-wide encryption-type policy and the FAST/
-        armoring checks read GPO-linked registry policy and, as a fallback,
-        live per-DC registry state that is not part of the current snapshot
-        schema; consistent with the -FromSnapshot contract of performing NO
-        live AD/network access (see Test-ADLegacyAuthSurface,
-        Test-ADCoercionAndRelayExposure, and the anonymous-bind probe in
-        Test-ADDomainHardeningFlags), those portions are skipped entirely
-        when -Snapshot is supplied.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
     param(
-        [Parameter()]
-        [hashtable]$Snapshot,
-
         # Defense-in-depth for multi-domain forests: when this function is
         # called standalone (not via Start-ADSecurityAudit -Server, which
         # already installs a session-wide override before this ever runs),
@@ -163,86 +146,62 @@ function Test-ADKerberosHardening {
         $rc4Trusts         = [System.Collections.ArrayList]::new()
         $domainPolicyDetail = $null
 
-        # --- 1a. Tier-0 (privileged) accounts + krbtgt (snapshot-aware) ---
+        # --- 1a. Tier-0 (privileged) accounts + krbtgt ---
         try {
-            $tier0 = @(Get-ADTier0Principal -Snapshot $Snapshot)
+            $tier0 = @(Get-ADTier0Principal)
             $tier0Dns = @($tier0 | ForEach-Object { $_.DistinguishedName } | Where-Object { $_ })
 
-            if ($Snapshot -and $Snapshot.ContainsKey('Users')) {
-                Write-Verbose "Test-ADKerberosHardening: evaluating account-level RC4 permission from snapshot."
-                $krbtgtDn = ($Snapshot.Users | Where-Object { $_.SamAccountName -eq 'krbtgt' } | Select-Object -First 1).DistinguishedName
-                $watchDns = @($tier0Dns + $krbtgtDn | Where-Object { $_ } | Select-Object -Unique)
-
-                foreach ($user in $Snapshot.Users) {
-                    if ($user.DistinguishedName -notin $watchDns) { continue }
-                    if (Test-ADKerbRC4Permitted -EncryptionTypes $user.'msDS-SupportedEncryptionTypes') {
+            Write-Verbose "Test-ADKerberosHardening: evaluating account-level RC4 permission via live queries."
+            $krbtgt = Invoke-ADQueryWithRetry -OperationName 'Get-ADUser krbtgt (kerberos hardening)' -Query {
+                if ($__adServer) { Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Server $__adServer -Properties 'msDS-SupportedEncryptionTypes' -ErrorAction Stop } else { Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Properties 'msDS-SupportedEncryptionTypes' -ErrorAction Stop }
+            }
+            $watchIdentities = @($tier0 | Where-Object { $_.SID -or $_.DistinguishedName })
+            foreach ($principal in $watchIdentities) {
+                try {
+                    # Prefer DistinguishedName over SID: Get-ADObject
+                    # -Identity accepts either, but in some environments
+                    # (verified during v1.24 lab testing - 8/8 Tier-0
+                    # principals failed with "Cannot find an object with
+                    # identity" when queried by SID, while the same
+                    # objects resolved fine by DN elsewhere in the same
+                    # run) SID-based lookup fails while DN-based lookup
+                    # succeeds. DN is always unambiguous for a specific
+                    # object, so prefer it and fall back to SID only
+                    # when no DN is available.
+                    $identity = if ($principal.DistinguishedName) { $principal.DistinguishedName } else { $principal.SID }
+                    $adObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject $identity (kerberos hardening)" -Query {
+                        if ($__adServer) { Get-ADObject -Identity $identity -Server $__adServer -Properties 'msDS-SupportedEncryptionTypes', 'objectClass' -ErrorAction Stop } else { Get-ADObject -Identity $identity -Properties 'msDS-SupportedEncryptionTypes', 'objectClass' -ErrorAction Stop }
+                    }
+                    if ($adObject -and $adObject.objectClass -eq 'user' -and (Test-ADKerbRC4Permitted -EncryptionTypes $adObject.'msDS-SupportedEncryptionTypes')) {
                         [void]$rc4Accounts.Add(@{
-                            SamAccountName        = $user.SamAccountName
-                            DistinguishedName     = $user.DistinguishedName
-                            SupportedEncryptionTypes = $user.'msDS-SupportedEncryptionTypes'
+                            SamAccountName        = $principal.SamAccountName
+                            DistinguishedName     = $adObject.DistinguishedName
+                            SupportedEncryptionTypes = $adObject.'msDS-SupportedEncryptionTypes'
                         })
                     }
                 }
+                catch {
+                    Write-Verbose "Test-ADKerberosHardening: could not evaluate encryption types for '$($principal.DistinguishedName)': $_"
+                }
             }
-            else {
-                Write-Verbose "Test-ADKerberosHardening: evaluating account-level RC4 permission via live queries."
-                $krbtgt = Invoke-ADQueryWithRetry -OperationName 'Get-ADUser krbtgt (kerberos hardening)' -Query {
-                    if ($__adServer) { Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Server $__adServer -Properties 'msDS-SupportedEncryptionTypes' -ErrorAction Stop } else { Get-ADUser -Filter "SamAccountName -eq 'krbtgt'" -Properties 'msDS-SupportedEncryptionTypes' -ErrorAction Stop }
-                }
-                $watchIdentities = @($tier0 | Where-Object { $_.SID -or $_.DistinguishedName })
-                foreach ($principal in $watchIdentities) {
-                    try {
-                        # Prefer DistinguishedName over SID: Get-ADObject
-                        # -Identity accepts either, but in some environments
-                        # (verified during v1.24 lab testing - 8/8 Tier-0
-                        # principals failed with "Cannot find an object with
-                        # identity" when queried by SID, while the same
-                        # objects resolved fine by DN elsewhere in the same
-                        # run) SID-based lookup fails while DN-based lookup
-                        # succeeds. DN is always unambiguous for a specific
-                        # object, so prefer it and fall back to SID only
-                        # when no DN is available.
-                        $identity = if ($principal.DistinguishedName) { $principal.DistinguishedName } else { $principal.SID }
-                        $adObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject $identity (kerberos hardening)" -Query {
-                            if ($__adServer) { Get-ADObject -Identity $identity -Server $__adServer -Properties 'msDS-SupportedEncryptionTypes', 'objectClass' -ErrorAction Stop } else { Get-ADObject -Identity $identity -Properties 'msDS-SupportedEncryptionTypes', 'objectClass' -ErrorAction Stop }
-                        }
-                        if ($adObject -and $adObject.objectClass -eq 'user' -and (Test-ADKerbRC4Permitted -EncryptionTypes $adObject.'msDS-SupportedEncryptionTypes')) {
-                            [void]$rc4Accounts.Add(@{
-                                SamAccountName        = $principal.SamAccountName
-                                DistinguishedName     = $adObject.DistinguishedName
-                                SupportedEncryptionTypes = $adObject.'msDS-SupportedEncryptionTypes'
-                            })
-                        }
-                    }
-                    catch {
-                        Write-Verbose "Test-ADKerberosHardening: could not evaluate encryption types for '$($principal.DistinguishedName)': $_"
-                    }
-                }
-                if ($krbtgt -and (Test-ADKerbRC4Permitted -EncryptionTypes $krbtgt.'msDS-SupportedEncryptionTypes')) {
-                    [void]$rc4Accounts.Add(@{
-                        SamAccountName        = 'krbtgt'
-                        DistinguishedName     = $krbtgt.DistinguishedName
-                        SupportedEncryptionTypes = $krbtgt.'msDS-SupportedEncryptionTypes'
-                    })
-                }
+            if ($krbtgt -and (Test-ADKerbRC4Permitted -EncryptionTypes $krbtgt.'msDS-SupportedEncryptionTypes')) {
+                [void]$rc4Accounts.Add(@{
+                    SamAccountName        = 'krbtgt'
+                    DistinguishedName     = $krbtgt.DistinguishedName
+                    SupportedEncryptionTypes = $krbtgt.'msDS-SupportedEncryptionTypes'
+                })
             }
         }
         catch {
             Write-Warning "Test-ADKerberosHardening: error evaluating account-level RC4 permission: $_"
         }
 
-        # --- 1b. Trust-level: TRUST_USES_AES_KEYS not set (snapshot-aware) ---
+        # --- 1b. Trust-level: TRUST_USES_AES_KEYS not set ---
         try {
-            $trusts = if ($Snapshot -and $Snapshot.ContainsKey('Trusts')) {
-                Write-Verbose "Test-ADKerberosHardening: evaluating trust encryption from snapshot."
-                @($Snapshot.Trusts)
-            }
-            else {
-                Write-Verbose "Test-ADKerberosHardening: evaluating trust encryption via live Get-ADTrust."
-                @(Invoke-ADQueryWithRetry -OperationName 'Get-ADTrust (kerberos hardening)' -Query {
-                    if ($__adServer) { Get-ADTrust -Filter * -Server $__adServer -Properties * -ErrorAction Stop } else { Get-ADTrust -Filter * -Properties * -ErrorAction Stop }
-                })
-            }
+            Write-Verbose "Test-ADKerberosHardening: evaluating trust encryption via live Get-ADTrust."
+            $trusts = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADTrust (kerberos hardening)' -Query {
+                if ($__adServer) { Get-ADTrust -Filter * -Server $__adServer -Properties * -ErrorAction Stop } else { Get-ADTrust -Filter * -Properties * -ErrorAction Stop }
+            })
 
             foreach ($trust in $trusts) {
                 if ($null -eq $trust.trustAttributes) { continue }
@@ -261,95 +220,87 @@ function Test-ADKerberosHardening {
         }
 
         # --- 1c. Domain-wide encryption-type policy (live-only) ---
-        if (-not $Snapshot) {
-            try {
-                Import-Module GroupPolicy -ErrorAction Stop
-                $domain = if ($__adServer) { Get-ADDomain -Server $__adServer -ErrorAction Stop } else { Get-ADDomain -ErrorAction Stop }
-                # Get-ADSecurityAuditDomainController, not a bare
-                # Get-ADDomainController -Filter * - the latter is
-                # forest-wide regardless of -Server; see Common.ps1.
-                $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (kerberos hardening)' -Query {
-                    if ($__adServer) { Get-ADSecurityAuditDomainController -Server $__adServer } else { Get-ADSecurityAuditDomainController }
-                })
+        try {
+            Import-Module GroupPolicy -ErrorAction Stop
+            $domain = if ($__adServer) { Get-ADDomain -Server $__adServer -ErrorAction Stop } else { Get-ADDomain -ErrorAction Stop }
+            # Get-ADSecurityAuditDomainController, not a bare
+            # Get-ADDomainController -Filter * - the latter is
+            # forest-wide regardless of -Server; see Common.ps1.
+            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (kerberos hardening)' -Query {
+                if ($__adServer) { Get-ADSecurityAuditDomainController -Server $__adServer } else { Get-ADSecurityAuditDomainController }
+            })
 
-                if ($domainControllers -and $domainControllers.Count -gt 0) {
-                    $dcOuDn = $null
-                    try {
-                        $firstDcDn = $domainControllers[0].ComputerObjectDN
-                        if ($firstDcDn -and $firstDcDn -match '^CN=[^,]+,(.+)$') {
-                            $dcOuDn = $Matches[1]
-                        }
+            if ($domainControllers -and $domainControllers.Count -gt 0) {
+                $dcOuDn = $null
+                try {
+                    $firstDcDn = $domainControllers[0].ComputerObjectDN
+                    if ($firstDcDn -and $firstDcDn -match '^CN=[^,]+,(.+)$') {
+                        $dcOuDn = $Matches[1]
                     }
-                    catch {
-                        Write-Verbose "Test-ADKerberosHardening: could not derive Domain Controllers OU: $_"
-                    }
-                    if (-not $dcOuDn) { $dcOuDn = "OU=Domain Controllers,$($domain.DistinguishedName)" }
+                }
+                catch {
+                    Write-Verbose "Test-ADKerberosHardening: could not derive Domain Controllers OU: $_"
+                }
+                if (-not $dcOuDn) { $dcOuDn = "OU=Domain Controllers,$($domain.DistinguishedName)" }
 
-                    $dcScopeGpos = @((Get-ADLinkedGposOrdered -TargetDn $dcOuDn -Server $__adServer) + (Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName -Server $__adServer))
+                $dcScopeGpos = @((Get-ADLinkedGposOrdered -TargetDn $dcOuDn -Server $__adServer) + (Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName -Server $__adServer))
 
-                    function Get-ADKerbLiveRegistryValuePerDc {
-                        param([array]$DomainControllers, [string]$Key, [string]$ValueName)
-                        $results = [System.Collections.ArrayList]::new()
-                        $regPath = "Registry::$Key"
-                        foreach ($dc in $DomainControllers) {
-                            $dcName = if ($dc.HostName) { $dc.HostName } else { $dc.Name }
-                            try {
-                                $value = Invoke-ADQueryWithRetry -OperationName "Read '$Key\$ValueName' on $dcName" -Query {
-                                    Invoke-Command -ComputerName $dcName -ErrorAction Stop -ScriptBlock {
-                                        param($p, $vn)
-                                        (Get-ItemProperty -Path $p -Name $vn -ErrorAction SilentlyContinue).$vn
-                                    } -ArgumentList $regPath, $ValueName
-                                }
-                                [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $value; Error = $null })
+                function Get-ADKerbLiveRegistryValuePerDc {
+                    param([array]$DomainControllers, [string]$Key, [string]$ValueName)
+                    $results = [System.Collections.ArrayList]::new()
+                    $regPath = "Registry::$Key"
+                    foreach ($dc in $DomainControllers) {
+                        $dcName = if ($dc.HostName) { $dc.HostName } else { $dc.Name }
+                        try {
+                            $value = Invoke-ADQueryWithRetry -OperationName "Read '$Key\$ValueName' on $dcName" -Query {
+                                Invoke-Command -ComputerName $dcName -ErrorAction Stop -ScriptBlock {
+                                    param($p, $vn)
+                                    (Get-ItemProperty -Path $p -Name $vn -ErrorAction SilentlyContinue).$vn
+                                } -ArgumentList $regPath, $ValueName
                             }
-                            catch {
-                                Write-Verbose "Get-ADKerbLiveRegistryValuePerDc: could not read '$Key\$ValueName' on '$dcName': $_"
-                                [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $null; Error = "$_" })
-                            }
+                            [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $value; Error = $null })
                         }
-                        return $results
-                    }
-
-                    $target = $Script:KerbHardeningRegistryTargets.DomainEncTypes
-                    $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
-
-                    $aesOnlyMask = ($Script:KerbEncTypeFlags.AES128 -bor $Script:KerbEncTypeFlags.AES256)
-                    $weakMask    = ($Script:KerbEncTypeFlags.DES_CBC_CRC -bor $Script:KerbEncTypeFlags.DES_CBC_MD5 -bor $Script:KerbEncTypeFlags.RC4_HMAC)
-
-                    if ($policy) {
-                        $enforcedValue = [int]$policy.Value
-                        $permitsWeak = (($enforcedValue -band $weakMask) -ne 0)
-                        $domainPolicyDetail = @{
-                            Enforced      = $true
-                            Source        = "GPO: $($policy.Source)"
-                            Value         = $enforcedValue
-                            PermitsRC4OrDES = $permitsWeak
+                        catch {
+                            Write-Verbose "Get-ADKerbLiveRegistryValuePerDc: could not read '$Key\$ValueName' on '$dcName': $_"
+                            [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $null; Error = "$_" })
                         }
                     }
-                    else {
-                        $perDc = Get-ADKerbLiveRegistryValuePerDc -DomainControllers $domainControllers -Key $target.Key -ValueName $target.ValueName
-                        $anyWeak = $false
-                        foreach ($r in $perDc) {
-                            if ($null -eq $r.Value -or (([int]$r.Value) -band $weakMask) -ne 0) { $anyWeak = $true }
-                        }
-                        $domainPolicyDetail = @{
-                            Enforced      = $false
-                            Source        = 'No enforcing GPO found; observed via direct per-DC registry read (unset defaults to permitting RC4/DES)'
-                            PermitsRC4OrDES = $anyWeak
-                            PerDomainControllerState = @($perDc)
-                        }
+                    return $results
+                }
+
+                $target = $Script:KerbHardeningRegistryTargets.DomainEncTypes
+                $policy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $target.Key -ValueName $target.ValueName -Server $__adServer
+
+                $aesOnlyMask = ($Script:KerbEncTypeFlags.AES128 -bor $Script:KerbEncTypeFlags.AES256)
+                $weakMask    = ($Script:KerbEncTypeFlags.DES_CBC_CRC -bor $Script:KerbEncTypeFlags.DES_CBC_MD5 -bor $Script:KerbEncTypeFlags.RC4_HMAC)
+
+                if ($policy) {
+                    $enforcedValue = [int]$policy.Value
+                    $permitsWeak = (($enforcedValue -band $weakMask) -ne 0)
+                    $domainPolicyDetail = @{
+                        Enforced      = $true
+                        Source        = "GPO: $($policy.Source)"
+                        Value         = $enforcedValue
+                        PermitsRC4OrDES = $permitsWeak
+                    }
+                }
+                else {
+                    $perDc = Get-ADKerbLiveRegistryValuePerDc -DomainControllers $domainControllers -Key $target.Key -ValueName $target.ValueName
+                    $anyWeak = $false
+                    foreach ($r in $perDc) {
+                        if ($null -eq $r.Value -or (([int]$r.Value) -band $weakMask) -ne 0) { $anyWeak = $true }
+                    }
+                    $domainPolicyDetail = @{
+                        Enforced      = $false
+                        Source        = 'No enforcing GPO found; observed via direct per-DC registry read (unset defaults to permitting RC4/DES)'
+                        PermitsRC4OrDES = $anyWeak
+                        PerDomainControllerState = @($perDc)
                     }
                 }
             }
-            catch {
-                Write-Warning "Test-ADKerberosHardening: error evaluating domain-wide Kerberos encryption-type policy: $_"
-            }
         }
-        else {
-            Write-Verbose "Test-ADKerberosHardening: -Snapshot supplied; domain-wide encryption-type GPO/registry policy is live-only and is skipped."
-            Add-ADOfflineSkipNote -Test 'KerberosHardening' -Check 'Domain-wide Kerberos encryption-type GPO/registry policy' `
-                -Reason 'Live GPO/registry policy read with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
-            $domainPolicyDetail = @{ Enforced = $null; Source = 'Skipped in -Snapshot mode (live-only GPO/registry check)'; PermitsRC4OrDES = $null }
+        catch {
+            Write-Warning "Test-ADKerberosHardening: error evaluating domain-wide Kerberos encryption-type policy: $_"
         }
 
         $domainPolicyWeak = ($domainPolicyDetail -and $domainPolicyDetail.PermitsRC4OrDES -eq $true)
@@ -391,144 +342,131 @@ function Test-ADKerberosHardening {
     # =====================================================================
     # Check 2: Kerberos Armoring (FAST) Not Enabled (live-only)
     # =====================================================================
-    if ($Snapshot) {
-        Write-Verbose "Test-ADKerberosHardening: -Snapshot supplied; Kerberos Armoring (FAST) GPO/registry policy state is not part of the snapshot schema, so this check is skipped entirely (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'KerberosHardening' -Check 'Kerberos Armoring (FAST) GPO/registry policy' `
-            -Reason 'Live GPO/registry policy read with no AD-schema equivalent. Run this check live (without -Snapshot) if you need this coverage.'
-    }
-    else {
-        try {
-            Import-Module GroupPolicy -ErrorAction Stop
-            $domain = if ($__adServer) { Get-ADDomain -Server $__adServer -ErrorAction Stop } else { Get-ADDomain -ErrorAction Stop }
-            # Get-ADSecurityAuditDomainController, not a bare
-            # Get-ADDomainController -Filter * - the latter is forest-wide
-            # regardless of -Server; see Common.ps1 for why.
-            $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (FAST audit)' -Query {
-                if ($__adServer) { Get-ADSecurityAuditDomainController -Server $__adServer } else { Get-ADSecurityAuditDomainController }
-            })
-
-            if (-not $domainControllers -or $domainControllers.Count -eq 0) {
-                Write-Verbose "Test-ADKerberosHardening: no Domain Controllers found; cannot evaluate FAST/armoring policy state."
-            }
-            else {
-                $dcOuDn = $null
-                try {
-                    $firstDcDn = $domainControllers[0].ComputerObjectDN
-                    if ($firstDcDn -and $firstDcDn -match '^CN=[^,]+,(.+)$') {
-                        $dcOuDn = $Matches[1]
-                    }
-                }
-                catch {
-                    Write-Verbose "Test-ADKerberosHardening: could not derive Domain Controllers OU: $_"
-                }
-                if (-not $dcOuDn) { $dcOuDn = "OU=Domain Controllers,$($domain.DistinguishedName)" }
-
-                $dcOuGpos    = Get-ADLinkedGposOrdered -TargetDn $dcOuDn -Server $__adServer
-                $domainGpos  = Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName -Server $__adServer
-                $dcScopeGpos = @($dcOuGpos + $domainGpos)
-
-                function Get-ADKerbArmorLiveRegistryValuePerDc {
-                    param([array]$DomainControllers, [string]$Key, [string]$ValueName)
-                    $results = [System.Collections.ArrayList]::new()
-                    $regPath = "Registry::$Key"
-                    foreach ($dc in $DomainControllers) {
-                        $dcName = if ($dc.HostName) { $dc.HostName } else { $dc.Name }
-                        try {
-                            $value = Invoke-ADQueryWithRetry -OperationName "Read '$Key\$ValueName' on $dcName" -Query {
-                                Invoke-Command -ComputerName $dcName -ErrorAction Stop -ScriptBlock {
-                                    param($p, $vn)
-                                    (Get-ItemProperty -Path $p -Name $vn -ErrorAction SilentlyContinue).$vn
-                                } -ArgumentList $regPath, $ValueName
-                            }
-                            [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $value; Error = $null })
-                        }
-                        catch {
-                            Write-Verbose "Get-ADKerbArmorLiveRegistryValuePerDc: could not read '$Key\$ValueName' on '$dcName': $_"
-                            [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $null; Error = "$_" })
-                        }
-                    }
-                    return $results
-                }
-
-                # --- KDC-side armoring support ---
-                $kdcTarget = $Script:KerbHardeningRegistryTargets.KdcArmoring
-                $kdcPolicy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $kdcTarget.Key -ValueName $kdcTarget.ValueName -Server $__adServer
-
-                $kdcEnabled = $false
-                $kdcDetail  = @{}
-                if ($kdcPolicy) {
-                    $kdcEnabled = ([int]$kdcPolicy.Value -ge 1)
-                    $kdcDetail  = @{ Source = "GPO: $($kdcPolicy.Source)"; Value = [int]$kdcPolicy.Value }
-                }
-                else {
-                    $perDc = Get-ADKerbArmorLiveRegistryValuePerDc -DomainControllers $domainControllers -Key $kdcTarget.Key -ValueName $kdcTarget.ValueName
-                    $enabledDCs = @($perDc | Where-Object { $null -ne $_.Value -and [int]$_.Value -ge 1 } | ForEach-Object { $_.DomainController })
-                    $kdcEnabled = ($enabledDCs.Count -eq $domainControllers.Count -and $domainControllers.Count -gt 0)
-                    $kdcDetail  = @{ Source = 'No enforcing GPO found; observed via direct per-DC registry read'; PerDomainControllerState = @($perDc) }
-                }
-
-                # --- Client-side armoring support ---
-                $clientTarget = $Script:KerbHardeningRegistryTargets.ClientArmoring
-                $clientPolicy = Get-ADPolicyRegistryValue -Gpos $domainGpos -Key $clientTarget.Key -ValueName $clientTarget.ValueName -Server $__adServer
-
-                $clientEnabled = $false
-                $clientDetail  = @{}
-                if ($clientPolicy) {
-                    $clientEnabled = ([int]$clientPolicy.Value -ge 1)
-                    $clientDetail  = @{ Source = "GPO: $($clientPolicy.Source)"; Value = [int]$clientPolicy.Value }
-                }
-                else {
-                    $perDc = Get-ADKerbArmorLiveRegistryValuePerDc -DomainControllers $domainControllers -Key $clientTarget.Key -ValueName $clientTarget.ValueName
-                    $enabledDCs = @($perDc | Where-Object { $null -ne $_.Value -and [int]$_.Value -ge 1 } | ForEach-Object { $_.DomainController })
-                    $clientEnabled = ($enabledDCs.Count -eq $domainControllers.Count -and $domainControllers.Count -gt 0)
-                    $clientDetail  = @{ Source = 'No enforcing GPO found (domain root); observed via direct per-DC registry read as a representative sample - not every workstation/member server is probed'; PerDomainControllerState = @($perDc) }
-                }
-
-                if (-not $kdcEnabled -or -not $clientEnabled) {
-                    $finding = [ADSecurityFinding]::new()
-                    $finding.Category = 'Kerberos Security'
-                    $finding.Issue = 'Kerberos Armoring (FAST) Not Enabled'
-                    $finding.Severity = 'Medium'
-                    $finding.SeverityLevel = 2
-                    $finding.AffectedObject = $domain.DNSRoot
-                    $finding.Description = "Kerberos Armoring (FAST) is not fully enabled: KDC support $(if ($kdcEnabled) { 'enabled' } else { 'NOT enabled' }); client support $(if ($clientEnabled) { 'enabled' } else { 'NOT enabled' })."
-                    $finding.Impact = "Without FAST/armoring, the initial AS-REQ exchange is unprotected, leaving pre-authentication data exposed to offline attack and preventing use of compound authentication/claims-based conditional access policies."
-                    $finding.Remediation = "Enable 'KDC support for claims, compound authentication, and Kerberos armoring' (set to at least 'Supported') on all Domain Controllers, and 'Kerberos client support for claims, compound authentication, and Kerberos armoring' domain-wide, via GPO."
-                    $finding.EstimatedEffort = 'Medium - enabling requires the domain functional level and all clients to support FAST (Windows 8/Server 2012 R2+); Microsoft''s own guidance recommends a staged "Supported" rollout before "Always provide claims" enforcement.'
-                    $finding.KnownRisks = 'Enforcing Kerberos armoring will break authentication for any client that doesn''t support FAST - older Windows versions and many non-Windows Kerberos implementations - so a "Supported" (not yet enforced) first step is Microsoft''s own documented recommendation.'
-                    $finding.BackupRollback = 'Easy - revert the GPO setting to Not Defined/Supported; effective at next Group Policy refresh and Kerberos ticket renewal, no data loss.'
-                    $finding.Details = @{
-                        KdcArmoringEnabled    = $kdcEnabled
-                        KdcDetail             = $kdcDetail
-                        ClientArmoringEnabled = $clientEnabled
-                        ClientDetail          = $clientDetail
-                    }
-                    $findings += $finding
-                }
-                else {
-                    Write-Verbose "Test-ADKerberosHardening: Kerberos Armoring (FAST) is enabled for both KDC and client scope."
-                }
-            }
-        }
-        catch {
-            Write-Warning "Test-ADKerberosHardening: error evaluating Kerberos Armoring (FAST) policy state: $_"
-        }
-    }
-
-    # =====================================================================
-    # Check 3: Cross-Trust TGT Delegation Enabled (snapshot-aware)
-    # =====================================================================
     try {
-        $trusts = if ($Snapshot -and $Snapshot.ContainsKey('Trusts')) {
-            Write-Verbose "Test-ADKerberosHardening: evaluating cross-trust TGT delegation from snapshot."
-            @($Snapshot.Trusts)
+        Import-Module GroupPolicy -ErrorAction Stop
+        $domain = if ($__adServer) { Get-ADDomain -Server $__adServer -ErrorAction Stop } else { Get-ADDomain -ErrorAction Stop }
+        # Get-ADSecurityAuditDomainController, not a bare
+        # Get-ADDomainController -Filter * - the latter is forest-wide
+        # regardless of -Server; see Common.ps1 for why.
+        $domainControllers = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADSecurityAuditDomainController (FAST audit)' -Query {
+            if ($__adServer) { Get-ADSecurityAuditDomainController -Server $__adServer } else { Get-ADSecurityAuditDomainController }
+        })
+
+        if (-not $domainControllers -or $domainControllers.Count -eq 0) {
+            Write-Verbose "Test-ADKerberosHardening: no Domain Controllers found; cannot evaluate FAST/armoring policy state."
         }
         else {
-            Write-Verbose "Test-ADKerberosHardening: evaluating cross-trust TGT delegation via live Get-ADTrust."
-            @(Invoke-ADQueryWithRetry -OperationName 'Get-ADTrust (TGT delegation audit)' -Query {
-                if ($__adServer) { Get-ADTrust -Filter * -Server $__adServer -Properties * -ErrorAction Stop } else { Get-ADTrust -Filter * -Properties * -ErrorAction Stop }
-            })
+            $dcOuDn = $null
+            try {
+                $firstDcDn = $domainControllers[0].ComputerObjectDN
+                if ($firstDcDn -and $firstDcDn -match '^CN=[^,]+,(.+)$') {
+                    $dcOuDn = $Matches[1]
+                }
+            }
+            catch {
+                Write-Verbose "Test-ADKerberosHardening: could not derive Domain Controllers OU: $_"
+            }
+            if (-not $dcOuDn) { $dcOuDn = "OU=Domain Controllers,$($domain.DistinguishedName)" }
+
+            $dcOuGpos    = Get-ADLinkedGposOrdered -TargetDn $dcOuDn -Server $__adServer
+            $domainGpos  = Get-ADLinkedGposOrdered -TargetDn $domain.DistinguishedName -Server $__adServer
+            $dcScopeGpos = @($dcOuGpos + $domainGpos)
+
+            function Get-ADKerbArmorLiveRegistryValuePerDc {
+                param([array]$DomainControllers, [string]$Key, [string]$ValueName)
+                $results = [System.Collections.ArrayList]::new()
+                $regPath = "Registry::$Key"
+                foreach ($dc in $DomainControllers) {
+                    $dcName = if ($dc.HostName) { $dc.HostName } else { $dc.Name }
+                    try {
+                        $value = Invoke-ADQueryWithRetry -OperationName "Read '$Key\$ValueName' on $dcName" -Query {
+                            Invoke-Command -ComputerName $dcName -ErrorAction Stop -ScriptBlock {
+                                param($p, $vn)
+                                (Get-ItemProperty -Path $p -Name $vn -ErrorAction SilentlyContinue).$vn
+                            } -ArgumentList $regPath, $ValueName
+                        }
+                        [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $value; Error = $null })
+                    }
+                    catch {
+                        Write-Verbose "Get-ADKerbArmorLiveRegistryValuePerDc: could not read '$Key\$ValueName' on '$dcName': $_"
+                        [void]$results.Add([PSCustomObject]@{ DomainController = $dcName; Value = $null; Error = "$_" })
+                    }
+                }
+                return $results
+            }
+
+            # --- KDC-side armoring support ---
+            $kdcTarget = $Script:KerbHardeningRegistryTargets.KdcArmoring
+            $kdcPolicy = Get-ADPolicyRegistryValue -Gpos $dcScopeGpos -Key $kdcTarget.Key -ValueName $kdcTarget.ValueName -Server $__adServer
+
+            $kdcEnabled = $false
+            $kdcDetail  = @{}
+            if ($kdcPolicy) {
+                $kdcEnabled = ([int]$kdcPolicy.Value -ge 1)
+                $kdcDetail  = @{ Source = "GPO: $($kdcPolicy.Source)"; Value = [int]$kdcPolicy.Value }
+            }
+            else {
+                $perDc = Get-ADKerbArmorLiveRegistryValuePerDc -DomainControllers $domainControllers -Key $kdcTarget.Key -ValueName $kdcTarget.ValueName
+                $enabledDCs = @($perDc | Where-Object { $null -ne $_.Value -and [int]$_.Value -ge 1 } | ForEach-Object { $_.DomainController })
+                $kdcEnabled = ($enabledDCs.Count -eq $domainControllers.Count -and $domainControllers.Count -gt 0)
+                $kdcDetail  = @{ Source = 'No enforcing GPO found; observed via direct per-DC registry read'; PerDomainControllerState = @($perDc) }
+            }
+
+            # --- Client-side armoring support ---
+            $clientTarget = $Script:KerbHardeningRegistryTargets.ClientArmoring
+            $clientPolicy = Get-ADPolicyRegistryValue -Gpos $domainGpos -Key $clientTarget.Key -ValueName $clientTarget.ValueName -Server $__adServer
+
+            $clientEnabled = $false
+            $clientDetail  = @{}
+            if ($clientPolicy) {
+                $clientEnabled = ([int]$clientPolicy.Value -ge 1)
+                $clientDetail  = @{ Source = "GPO: $($clientPolicy.Source)"; Value = [int]$clientPolicy.Value }
+            }
+            else {
+                $perDc = Get-ADKerbArmorLiveRegistryValuePerDc -DomainControllers $domainControllers -Key $clientTarget.Key -ValueName $clientTarget.ValueName
+                $enabledDCs = @($perDc | Where-Object { $null -ne $_.Value -and [int]$_.Value -ge 1 } | ForEach-Object { $_.DomainController })
+                $clientEnabled = ($enabledDCs.Count -eq $domainControllers.Count -and $domainControllers.Count -gt 0)
+                $clientDetail  = @{ Source = 'No enforcing GPO found (domain root); observed via direct per-DC registry read as a representative sample - not every workstation/member server is probed'; PerDomainControllerState = @($perDc) }
+            }
+
+            if (-not $kdcEnabled -or -not $clientEnabled) {
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Kerberos Security'
+                $finding.Issue = 'Kerberos Armoring (FAST) Not Enabled'
+                $finding.Severity = 'Medium'
+                $finding.SeverityLevel = 2
+                $finding.AffectedObject = $domain.DNSRoot
+                $finding.Description = "Kerberos Armoring (FAST) is not fully enabled: KDC support $(if ($kdcEnabled) { 'enabled' } else { 'NOT enabled' }); client support $(if ($clientEnabled) { 'enabled' } else { 'NOT enabled' })."
+                $finding.Impact = "Without FAST/armoring, the initial AS-REQ exchange is unprotected, leaving pre-authentication data exposed to offline attack and preventing use of compound authentication/claims-based conditional access policies."
+                $finding.Remediation = "Enable 'KDC support for claims, compound authentication, and Kerberos armoring' (set to at least 'Supported') on all Domain Controllers, and 'Kerberos client support for claims, compound authentication, and Kerberos armoring' domain-wide, via GPO."
+                $finding.EstimatedEffort = 'Medium - enabling requires the domain functional level and all clients to support FAST (Windows 8/Server 2012 R2+); Microsoft''s own guidance recommends a staged "Supported" rollout before "Always provide claims" enforcement.'
+                $finding.KnownRisks = 'Enforcing Kerberos armoring will break authentication for any client that doesn''t support FAST - older Windows versions and many non-Windows Kerberos implementations - so a "Supported" (not yet enforced) first step is Microsoft''s own documented recommendation.'
+                $finding.BackupRollback = 'Easy - revert the GPO setting to Not Defined/Supported; effective at next Group Policy refresh and Kerberos ticket renewal, no data loss.'
+                $finding.Details = @{
+                    KdcArmoringEnabled    = $kdcEnabled
+                    KdcDetail             = $kdcDetail
+                    ClientArmoringEnabled = $clientEnabled
+                    ClientDetail          = $clientDetail
+                }
+                $findings += $finding
+            }
+            else {
+                Write-Verbose "Test-ADKerberosHardening: Kerberos Armoring (FAST) is enabled for both KDC and client scope."
+            }
         }
+    }
+    catch {
+        Write-Warning "Test-ADKerberosHardening: error evaluating Kerberos Armoring (FAST) policy state: $_"
+    }
+
+    # =====================================================================
+    # Check 3: Cross-Trust TGT Delegation Enabled
+    # =====================================================================
+    try {
+        Write-Verbose "Test-ADKerberosHardening: evaluating cross-trust TGT delegation via live Get-ADTrust."
+        $trusts = @(Invoke-ADQueryWithRetry -OperationName 'Get-ADTrust (TGT delegation audit)' -Query {
+            if ($__adServer) { Get-ADTrust -Filter * -Server $__adServer -Properties * -ErrorAction Stop } else { Get-ADTrust -Filter * -Properties * -ErrorAction Stop }
+        })
 
         $delegationTrusts = [System.Collections.ArrayList]::new()
         foreach ($trust in $trusts) {

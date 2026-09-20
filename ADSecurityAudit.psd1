@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.24.2'
+    ModuleVersion = '1.28.0'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -21,15 +21,18 @@
         'Test-ADCertificateServices',
         'Test-ADCSExtended',
         'Test-ADCSChaseFallback',
+        'Test-ADCSWeakCertificateBinding',
         'Test-KRBTGTAccount',
         'Test-ADDomainTrusts',
         'Test-LAPSDeployment',
+        'Test-ADManagedServiceAccountSecurity',
         'Test-AuditPolicyConfiguration',
         'Test-ConstrainedDelegation',
         'Test-ADDomainAdminEquivalence',
         'Test-ADMachineAccountQuota',
         'Test-ADDomainHardeningFlags',
         'Test-ADCoercionAndRelayExposure',
+        'Test-ADLsaProtection',
         'Test-ADDnsSecurity',
         'Test-ADLegacyAuthSurface',
         'Test-ADKerberosHardening',
@@ -55,8 +58,6 @@
         'Get-ADRiskScore',
         'Set-ADFindingMetadata',
         'Get-ADFindingMetadataMap',
-        'Get-ADSnapshot',
-        'Invoke-ADRuleSet',
         'Get-ADTier0Principal',
         'Invoke-ADQueryWithRetry',
         'ConvertTo-SafeCsvValue'
@@ -71,6 +72,46 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.28.0 - Eight New AD CS Checks: ESC5, ESC9, ESC10, ESC11, ESC13, ESC14, ESC16, ESC17
+- New: ESC17 (Test-ADCertificateServices) - Server Authentication EKU + enrollee-supplied SAN + low-priv enrollment + no manager approval. Disclosed by the Digitrace team in early 2026; new enough that even commercial AD CS scanners generally only flag it rather than fully validate it.
+- New: ESC5 (Test-ADCSExtended) - weak ACLs on non-template PKI container objects (Public Key Services, AIA, Certification Authorities, Enrollment Services, KRA, OID), extending the existing ESC4 template-ACL pattern.
+- New: ESC9 - a template with CT_FLAG_NO_SECURITY_EXTENSION (0x80000) combined with low-privileged enrollment.
+- New: ESC13 - a template's Issuance Policy OID linked (msDS-OIDToGroupLink) to a privileged group, combined with a client-auth EKU and low-priv enrollment.
+- New: ESC11 and ESC16 (Test-ADCSChaseFallback) - unencrypted CA RPC enrollment (InterfaceFlags missing IF_ENFORCEENCRYPTICERTREQUEST) and CA-wide security-extension disabling (DisableExtensionList), both reusing the same remote-registry connection already opened for the chase-fallback/ESC6 checks.
+- New: ESC10 (new Test-ADCSWeakCertificateBinding) - reads CertificateBackdatingCompensation on Domain Controllers. Deliberately does NOT check the more commonly-cited StrongCertificateBindingEnforcement value, since Microsoft made full enforcement permanent and unconditional as of the September 9, 2025 security update, making that older value moot to check on a patched DC.
+- New: ESC14 (DomainAdminEquivalence.ps1) - a weak (Issuer+Subject) altSecurityIdentities mapping on a privileged account, plus a new evidence edge for write access to that attribute (checked against both its own schema GUID and the broader Public-Information property-set GUID that can also grant write access to it).
+- Excludes ESC12 (CA private key on external HSM device) - requires CA-server shell access to verify, outside this module's AD-object/registry detection model.
+
+v1.27.1 - Cleanup: Removed Orphaned ForcedFail Fixture Files Left Behind by v1.25.0
+- Cleanup only - no check logic, scoring, or test behavior changed. When offline/-Snapshot mode was removed in v1.25.0, that release's notes claimed the ForcedFail fixture ecosystem was removed too, but only tools/Test-ForcedFailFixture.ps1, tests/ForcedFailFixture.Tests.ps1, and tests/InvokeADRuleSet.Tests.ps1 had actually been deleted; tests/fixtures/ForcedFail-{100,60,25}pct-Snapshot.json and tools/build-forcedfail-fixtures.py were left behind, only marked "not currently runnable" in a fixtures README. That README also called the two .ps1 files "dev-branch only" - true of this branch at the time, not of the repository as a whole: both files, plus tests/InvokeADRuleSet.Tests.ps1, still exist on main. Confirmed via full-repo grep that nothing on this branch loaded or executed the JSON fixtures or the Python generator before removing them.
+- Removed: tools/build-forcedfail-fixtures.py, the three tests/fixtures/ForcedFail-*pct-Snapshot.json files, tests/fixtures/README.md, and the now-empty tests/fixtures/ directory.
+- Kept: tools/Build-ADFindingNarrativeLibrary.ps1 - unrelated, still actively used and tested.
+
+v1.27.0 - Eight New Checks from ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK's AD-Compromise Guidance
+- New: account lockout policy checks (Account Lockout Disabled / Account Lockout Threshold Above Recommended Maximum) in Test-ADDomainSecurity.
+- New: "Account is sensitive and cannot be delegated" check for Domain Admins/Enterprise Admins/Schema Admins members in Test-ADUserSecurity.
+- New: built-in Administrator (RID 500) check - enabled with a stale/never-set password, identified by SID so renaming the account isn't penalized.
+- New: "Domain Computers" added to the control-path graph's broad-principal classification (ControlPaths.ps1) - a dangerous ACE or Tier-0 membership held by this group is as broad a path as one held by Domain Users.
+- New: ESC6 check (CA-Wide SAN Attribute Flag Enabled) in Test-ADCSChaseFallback, reusing the same policy\EditFlags registry read already done for the chase-fallback bit.
+- New: cross-domain sIDHistory hygiene catch-all (SID History Attribute Populated) in Test-ADDomainAdminEquivalence, beyond the existing same-domain and privileged-RID checks.
+- New: LSA Protection (RunAsPPL) check, new Test-ADLsaProtection - the primary mitigation for Skeleton Key and similar LSASS-tampering techniques.
+- New: NTLM restriction check (RestrictNTLMInDomain) in Test-ADLegacyAuthSurface, distinct from the existing LmCompatibilityLevel (LM/NTLMv1 downgrade) check.
+- Of the 17 AD-compromise techniques covered by the source guidance, 16 already had solid coverage in this module; these eight close the remaining gaps in its preventive/configuration mitigations (its event-log/SIEM detection guidance is a different tool category, intentionally out of scope here).
+
+v1.26.0 - gMSA Password-Retrieval Audit, User-Declarable Tier-0 Scope, GPO Restricted Groups/Ownership
+- New: gMSA/managed-password retrieval-rights audit (Test-ADManagedServiceAccountSecurity) - flags PrincipalsAllowedToRetrieveManagedPassword grants to broad principals or, on a privileged gMSA, to any non-Tier-0 principal.
+- New: user-declarable additional Tier-0 scope via Start-ADSecurityAudit -AdditionalTier0DN, picked up automatically by every check built on Get-ADTier0Principal.
+- Extended: the constrained-delegation-target check now covers the full Tier-0 set, not just Domain Controllers.
+- New: GPO Restricted Groups audit (local group membership pushed via GPO) and a GPO ownership check resolved by SID rather than name (new Resolve-ADPrincipalNameToSid helper).
+- Fixed: "GPO Linked to Domain Controllers with Weak Permissions" now resolves the actual DC-containing OU dynamically instead of matching a hardcoded "OU=Domain Controllers" string.
+
+v1.25.0 - Removed Offline/-Snapshot Mode; Export-ADSecurityReportHTMLFromJson Is Now the Supported Re-Analysis Path
+- BREAKING: Removed offline/-Snapshot mode in its entirety. Get-ADSnapshot, Invoke-ADRuleSet, and ConvertTo-ADHashtable no longer exist; Start-ADSecurityAudit no longer accepts -FromSnapshot or -AllowLiveFallbackForUnsupportedTests; every Test-* function's [hashtable]$Snapshot parameter and offline code branch has been removed, leaving only each function's live AD query path. Export-ADSecurityReportHTML no longer accepts -RunMode, -SnapshotCollectedDate, or -OfflineSkipNotes, and the HTML report's "Offline / Snapshot-Based Report" and "Offline Mode Coverage Notes" boxes are gone.
+- Why: the JSON findings export every live run already produces, together with Export-ADSecurityReportHTMLFromJson (kept, unchanged, and now the sole supported way to regenerate/re-share the HTML report with no live AD access), already covered the real use case without the maintenance cost of a second, independent offline code path across all 27 Test-* functions - a cost documented at length across the v1.19.0-v1.19.1 "offline-parity backlog" entries below and every "Offline Mode Coverage Notes" admission that offline re-analysis could produce different findings than an equivalent live run.
+- Kept, unaffected: the JSON findings export itself, Export-ADSecurityReportHTMLFromJson, Export-ADSecurityReportCSVFromJson, and the v1.23.9 "Run Scope Information" report section (unrelated feature - Get-ADRunScopeNotes/Add-ADRunScopeNote/Reset-ADRunScopeNotes are untouched).
+- Migration: existing .json snapshot files produced by Get-ADSnapshot -ToJson are no longer usable with -FromSnapshot, which no longer exists. If you have scripts calling -FromSnapshot, switch to running Start-ADSecurityAudit live and, if you need to regenerate the HTML report later, run Export-ADSecurityReportHTMLFromJson against its JSON findings output instead. Note this is not a like-for-like replacement for point-in-time re-analysis: Export-ADSecurityReportHTMLFromJson rebuilds the HTML view of already-computed findings (recomputing only the risk score - see its own documented LIMITATIONS) and does not re-run detection logic against a frozen AD state the way -FromSnapshot did.
+- Test suite: removed the "Snapshot mode"/-Snapshot Pester coverage from the affected test files (live-mode coverage in those same files is unchanged) and the dedicated Invoke-ADRuleSet/Get-ADSnapshot infrastructure tests.
+
 v1.24.2 - Example ForcedFail Snapshot Fixtures, New Computer Unconstrained-Delegation Check, Trust Date-Cast Fix
 - Added three tiered, entirely synthetic tests/fixtures/ForcedFail-{100,60,25}pct-Snapshot.json -FromSnapshot fixtures (fake domain, no real environment/identities) exercising the full pipeline end-to-end with no live AD access, generated from one parameterized tools/build-forcedfail-fixtures.py script so all three stay consistent as checks change. Run via tools/Test-ForcedFailFixture.ps1 -Tier <100|60|25> or the tests/ForcedFailFixture.Tests.ps1 Pester smoke test.
 - New finding: "Computer Account with Unconstrained Delegation" (Test-ConstrainedDelegation) - found by tracing the new fixtures against the codebase, Test-ADUserSecurity already flagged bare unconstrained delegation on USER accounts but no equivalent existed for COMPUTER accounts, despite that being the far more common and consequential place to find it in practice. Domain Controllers are correctly excluded.

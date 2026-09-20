@@ -10,20 +10,6 @@
 # A-DnsZoneTransfert, A-DnsZoneUpdate1, A-DnsZoneUpdate2,
 # A-DnsZoneAUCreateChild.
 #
-# Snapshot-aware for the DnsAdmins membership check only: it reads the
-# 'DnsAdmins' entry from Snapshot.Groups (Members flattened to DNs, same
-# shape used by the Pre-Windows 2000 check in DomainHardeningAudits.ps1)
-# when a snapshot is supplied. The per-zone checks (zone transfer, dynamic
-# update, ADIDNS CreateChild ACL, and delegation staleness) read zone-level
-# attributes (dNSProperty), ACLs (nTSecurityDescriptor), and delegation/NS
-# records that are not part of the existing Snapshot.DnsZones shape
-# (Name/DistinguishedName only), so - per the established -FromSnapshot
-# contract of performing NO live AD/network access (see
-# Test-ADCoercionAndRelayExposure, the anonymous-bind probe in
-# Test-ADDomainHardeningFlags, and the ESC4/ESC8 checks in
-# Test-ADCSExtended) - they are live-only and are skipped entirely when
-# this function is invoked with -Snapshot.
-#
 # DETECTION ONLY: this module reads group membership, AD-integrated zone
 # object attributes/ACLs, and (optionally) the read-only DNS Server
 # PowerShell cmdlets `Get-DnsServerZone` (transfer settings are read from its
@@ -186,24 +172,11 @@ function Test-ADDnsSecurity {
         5 has no `dNSProperty`-based fallback (delegation/NS records have no
         such representation) and is skipped entirely when the DnsServer
         module is unavailable.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied,
-        the DnsAdmins membership check is derived from `Snapshot.Groups`
-        instead of a live query. The zone-level checks (transfer, dynamic
-        update, ADIDNS CreateChild, delegation staleness) read zone
-        attributes/ACLs/delegation records that are not part of the current
-        snapshot schema and are live-only network/AD operations, so -
-        consistent with the -FromSnapshot contract of performing no live
-        AD/network access - they are skipped entirely when -Snapshot is
-        supplied.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Starting AD-integrated DNS security audit..."
     $findings = @()
@@ -216,53 +189,30 @@ function Test-ADDnsSecurity {
         $nonDefaultMembers = [System.Collections.ArrayList]::new()
         $dnsAdminsDN = $null
 
-        if ($Snapshot -and $Snapshot.ContainsKey('Groups')) {
-            Write-Verbose "Test-ADDnsSecurity: using snapshot data for DnsAdmins membership."
-            $dnsAdminsGroup = $Snapshot.Groups | Where-Object { $_.Name -eq 'DnsAdmins' } | Select-Object -First 1
-
-            if ($dnsAdminsGroup) {
-                $dnsAdminsDN = $dnsAdminsGroup.DistinguishedName
-                foreach ($memberDN in @($dnsAdminsGroup.Members)) {
-                    if (-not $memberDN) { continue }
-                    $isExpected = $false
-                    foreach ($sid in $Script:DnsAdminsExpectedSids.Keys) {
-                        if ($memberDN -match "CN=$sid,") { $isExpected = $true; break }
-                    }
-                    if (-not $isExpected) {
-                        [void]$nonDefaultMembers.Add($memberDN)
-                    }
-                }
+        $dnsAdminsGroup = $null
+        try {
+            $dnsAdminsGroup = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup DnsAdmins' -Query {
+                Get-ADGroup -Filter "Name -eq 'DnsAdmins'" -Server $__adServer -ErrorAction Stop
             }
-            else {
-                Write-Verbose "Test-ADDnsSecurity: 'DnsAdmins' group not found in snapshot (DNS role may not be installed)."
+        }
+        catch {
+            Write-Verbose "Test-ADDnsSecurity: error looking up 'DnsAdmins' group: $_"
+        }
+
+        if ($dnsAdminsGroup) {
+            $dnsAdminsDN = $dnsAdminsGroup.DistinguishedName
+            $members = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroupMember DnsAdmins' -Query {
+                Get-ADGroupMember -Identity $dnsAdminsGroup -Server $__adServer -ErrorAction Stop
+            }
+
+            foreach ($member in @($members)) {
+                $sidValue = if ($member.SID) { $member.SID.Value } else { $null }
+                if ($sidValue -and $Script:DnsAdminsExpectedSids.ContainsKey($sidValue)) { continue }
+                [void]$nonDefaultMembers.Add("$($member.SamAccountName) ($($member.objectClass))")
             }
         }
         else {
-            $dnsAdminsGroup = $null
-            try {
-                $dnsAdminsGroup = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroup DnsAdmins' -Query {
-                    Get-ADGroup -Filter "Name -eq 'DnsAdmins'" -Server $__adServer -ErrorAction Stop
-                }
-            }
-            catch {
-                Write-Verbose "Test-ADDnsSecurity: error looking up 'DnsAdmins' group: $_"
-            }
-
-            if ($dnsAdminsGroup) {
-                $dnsAdminsDN = $dnsAdminsGroup.DistinguishedName
-                $members = Invoke-ADQueryWithRetry -OperationName 'Get-ADGroupMember DnsAdmins' -Query {
-                    Get-ADGroupMember -Identity $dnsAdminsGroup -Server $__adServer -ErrorAction Stop
-                }
-
-                foreach ($member in @($members)) {
-                    $sidValue = if ($member.SID) { $member.SID.Value } else { $null }
-                    if ($sidValue -and $Script:DnsAdminsExpectedSids.ContainsKey($sidValue)) { continue }
-                    [void]$nonDefaultMembers.Add("$($member.SamAccountName) ($($member.objectClass))")
-                }
-            }
-            else {
-                Write-Verbose "Test-ADDnsSecurity: 'DnsAdmins' group not found (DNS role may not be installed on any DC)."
-            }
+            Write-Verbose "Test-ADDnsSecurity: 'DnsAdmins' group not found (DNS role may not be installed on any DC)."
         }
 
         if ($nonDefaultMembers.Count -gt 0) {
@@ -294,19 +244,8 @@ function Test-ADDnsSecurity {
 
     # -------------------------------------------------------------------
     # Checks 2-5: per-zone transfer / dynamic update / ADIDNS CreateChild /
-    # delegation staleness. These read zone-level attributes/ACLs/delegation
-    # records that are not part of the current snapshot schema and require
-    # live AD/network access, so they are skipped entirely when -Snapshot is
-    # supplied (offline mode performs no live AD/network access).
+    # delegation staleness.
     # -------------------------------------------------------------------
-    if ($Snapshot) {
-        Write-Verbose "Test-ADDnsSecurity: -Snapshot supplied; skipping live zone transfer/dynamic-update/ADIDNS/delegation-staleness checks (offline mode performs no live AD/network access)."
-        Add-ADOfflineSkipNote -Test 'DnsSecurity' -Check 'Zone transfer, dynamic-update, ADIDNS CreateChild, and delegation-staleness permissions/records' `
-            -Reason 'Zone-level attributes/ACLs/delegation records not present in the current snapshot schema. Run this check live (without -Snapshot) if you need this coverage.'
-        Write-Verbose "AD-integrated DNS security audit complete. Found $($findings.Count) issue(s)."
-        return $findings
-    }
-
     try {
         $domain = Get-ADDomain -Server $__adServer -ErrorAction Stop
         $forest = Get-ADForest -Server $__adServer -ErrorAction SilentlyContinue

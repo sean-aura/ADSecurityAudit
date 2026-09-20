@@ -65,92 +65,64 @@ function Test-ADExchangeEscalation {
         Detection only: reads nTSecurityDescriptor.Access. Performs no
         exploitation, PrivExchange push-subscription, NTLM relay, or any
         other coercion/PoC traffic to any host.
-    .PARAMETER Snapshot
-        Optional snapshot hashtable (from Get-ADSnapshot). When supplied
-        and it contains ACLs.DomainRoot / ACLs.AdminSDHolder (collected by
-        Get-ADSnapshot since v1.3.0), those flattened ACEs are used instead
-        of live queries, so this audit fully supports -FromSnapshot with no
-        snapshot schema change required.
     .OUTPUTS
         [ADSecurityFinding[]]
     #>
     [CmdletBinding()]
-    param(
-        [Parameter()]
-        [hashtable]$Snapshot
-    )
+    param()
 
     Write-Verbose "Starting Exchange-in-AD privilege escalation audit..."
     $findings = @()
 
     # -------------------------------------------------------------------
-    # Resolve the two ACLs to inspect - either from the snapshot or live.
+    # Resolve the two ACLs to inspect.
     # -------------------------------------------------------------------
     $domainDN = $null
     $adminSDHolderDN = $null
     $domainAces = @()
     $adminSDHolderAces = @()
 
-    if ($Snapshot -and $Snapshot.ContainsKey('ACLs')) {
-        Write-Verbose "Test-ADExchangeEscalation: using ACLs from snapshot."
-
-        if ($Snapshot.ACLs.ContainsKey('DomainRoot') -and $Snapshot.ACLs.DomainRoot) {
-            $domainDN = $Snapshot.ACLs.DomainRoot.DistinguishedName
-            $domainAces = @($Snapshot.ACLs.DomainRoot.Access)
-        }
-        if ($Snapshot.ACLs.ContainsKey('AdminSDHolder') -and $Snapshot.ACLs.AdminSDHolder) {
-            $adminSDHolderDN = $Snapshot.ACLs.AdminSDHolder.DistinguishedName
-            $adminSDHolderAces = @($Snapshot.ACLs.AdminSDHolder.Access)
-        }
-
-        if (-not $domainDN -and -not $adminSDHolderDN) {
-            Write-Verbose "Test-ADExchangeEscalation: snapshot has no DomainRoot/AdminSDHolder ACL entries; no findings."
-            return $findings
+    $__adServer = Get-ADSecurityAuditTargetServerValue
+    try {
+        $domain = Invoke-ADQueryWithRetry -OperationName 'Get-ADDomain (exchange-escalation audit)' -Query {
+            Get-ADDomain -Server $__adServer -ErrorAction Stop
         }
     }
-    else {
-        $__adServer = Get-ADSecurityAuditTargetServerValue
-        try {
-            $domain = Invoke-ADQueryWithRetry -OperationName 'Get-ADDomain (exchange-escalation audit)' -Query {
-                Get-ADDomain -Server $__adServer -ErrorAction Stop
-            }
-        }
-        catch {
-            Write-Error "Test-ADExchangeEscalation: failed to resolve domain: $_"
-            return $findings
-        }
+    catch {
+        Write-Error "Test-ADExchangeEscalation: failed to resolve domain: $_"
+        return $findings
+    }
 
-        if (-not $domain) {
-            Write-Warning "Test-ADExchangeEscalation: could not resolve domain; skipping."
-            return $findings
-        }
+    if (-not $domain) {
+        Write-Warning "Test-ADExchangeEscalation: could not resolve domain; skipping."
+        return $findings
+    }
 
-        $domainDN = $domain.DistinguishedName
-        $adminSDHolderDN = "CN=AdminSDHolder,CN=System,$domainDN"
+    $domainDN = $domain.DistinguishedName
+    $adminSDHolderDN = "CN=AdminSDHolder,CN=System,$domainDN"
 
-        try {
-            $domainObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor on $domainDN" -Query {
-                Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
-            }
-            if ($domainObject -and $domainObject.nTSecurityDescriptor) {
-                $domainAces = @($domainObject.nTSecurityDescriptor.Access)
-            }
+    try {
+        $domainObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor on $domainDN" -Query {
+            Get-ADObject -Identity $domainDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
         }
-        catch {
-            Write-Verbose "Test-ADExchangeEscalation: could not read ACL on domain head '$domainDN': $_"
+        if ($domainObject -and $domainObject.nTSecurityDescriptor) {
+            $domainAces = @($domainObject.nTSecurityDescriptor.Access)
         }
+    }
+    catch {
+        Write-Verbose "Test-ADExchangeEscalation: could not read ACL on domain head '$domainDN': $_"
+    }
 
-        try {
-            $adminSDHolderObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor on $adminSDHolderDN" -Query {
-                Get-ADObject -Identity $adminSDHolderDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
-            }
-            if ($adminSDHolderObject -and $adminSDHolderObject.nTSecurityDescriptor) {
-                $adminSDHolderAces = @($adminSDHolderObject.nTSecurityDescriptor.Access)
-            }
+    try {
+        $adminSDHolderObject = Invoke-ADQueryWithRetry -OperationName "Get-ADObject nTSecurityDescriptor on $adminSDHolderDN" -Query {
+            Get-ADObject -Identity $adminSDHolderDN -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop
         }
-        catch {
-            Write-Verbose "Test-ADExchangeEscalation: could not read ACL on AdminSDHolder '$adminSDHolderDN': $_"
+        if ($adminSDHolderObject -and $adminSDHolderObject.nTSecurityDescriptor) {
+            $adminSDHolderAces = @($adminSDHolderObject.nTSecurityDescriptor.Access)
         }
+    }
+    catch {
+        Write-Verbose "Test-ADExchangeEscalation: could not read ACL on AdminSDHolder '$adminSDHolderDN': $_"
     }
 
     if ((-not $domainAces -or $domainAces.Count -eq 0) -and (-not $adminSDHolderAces -or $adminSDHolderAces.Count -eq 0)) {
@@ -163,7 +135,7 @@ function Test-ADExchangeEscalation {
     # the domain's privileged set.
     $tier0Names = @{}
     try {
-        foreach ($p in @(Get-ADTier0Principal -Snapshot $Snapshot)) {
+        foreach ($p in @(Get-ADTier0Principal)) {
             if ($p.SamAccountName) { $tier0Names[$p.SamAccountName] = $true }
         }
     }

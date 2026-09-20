@@ -5,16 +5,14 @@
     added as "Check 4" to Test-ADDomainHardeningFlags.
 
     This check is live-only (GPO-linked registry policy state and per-DC
-    registry reads have no snapshot representation), so - unlike the rest of
-    DomainHardeningFlags.Tests.ps1, which runs entirely under -Snapshot -
-    these tests call Test-ADDomainHardeningFlags with NO -Snapshot argument
-    and shadow every live AD/GPO/registry cmdlet the check touches:
+    registry reads). These tests shadow every live AD/GPO/registry cmdlet
+    the check touches:
     Import-Module, Get-ADDomain, Get-ADDomainController, Get-GPInheritance,
     Get-GPO, Get-GPRegistryValue, and Invoke-Command. No real Active
     Directory, GroupPolicy module, or network access is used.
 
     Check 1 (dSHeuristics) and Check 2 (Pre-Win2000 membership) also run in
-    this mode since -Snapshot is not supplied, but both fail fast and
+    this mode, but both fail fast and
     harmlessly: Check 1's raw ADSI RootDSE bind throws immediately with no
     real directory service present, and Check 2's Get-ADGroup call is an
     unrecognized command - both are caught by their own existing try/catch
@@ -138,20 +136,5 @@ Describe 'Test-ADDomainHardeningFlags (Null-Session Pipe/Share Access - live per
 
         $findings = Test-ADDomainHardeningFlags
         ($findings | Where-Object { $_.Issue -eq 'Null-Session Pipe/Share Access Permitted' }) | Should -BeNullOrEmpty
-    }
-}
-
-Describe 'Test-ADDomainHardeningFlags (Null-Session check offline-mode contract)' {
-    It 'is skipped (no finding, offline note recorded) when -Snapshot is supplied' {
-        Reset-ADOfflineSkipNotes
-        $snapshot = @{
-            DsHeuristics      = '0000000'
-            PreWin2000Members = @()
-        }
-        $findings = Test-ADDomainHardeningFlags -Snapshot $snapshot
-        ($findings | Where-Object { $_.Issue -eq 'Null-Session Pipe/Share Access Permitted' }) | Should -BeNullOrEmpty
-
-        $notes = Get-ADOfflineSkipNotes
-        ($notes | Where-Object { $_.Check -match 'Null-session' }) | Should -Not -BeNullOrEmpty
     }
 }
