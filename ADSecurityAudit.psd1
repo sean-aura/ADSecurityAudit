@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.29.1'
+    ModuleVersion = '1.29.2'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -72,6 +72,15 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.29.2 - Codebase Health Scan (Claim-vs-Code Audit, Safety Posture, Enhancement Pitches)
+- Documentation-only pass; no code changes. Full report: health-scan-2026-09-summary.md.
+- Critical-priority detection-only safety check: clean, no boundary violations found.
+- Confirmed gap: 'S-DCRegistration' claimed in StaleObjectDepthAudits.ps1's header with no logic behind it - corroborates files/16-rogue-dc-registration-integrity.md, already written up from the PingCastle delta scan.
+- Confirmed bug: README Version History had v1.29.0 out of order and v1.29.1 missing entirely - written up as files/24-readme-version-history-drift.md.
+- Partial-coverage note: A-CertTempAnyone is claimed in the wrong file (logic lives in a sibling file's ESC1 check).
+- Everything else verified clean: all other PingCastle-comparable claims trace to real logic; zero dead-weight Scoring.ps1 entries (143/143 reachable); FunctionsToExport/$allTests/module dot-sourcing all internally consistent; ADSecurityFinding schema provably additive-only; neither historical bug class (emoji/mojibake encoding, .modal[hidden] CSS specificity) has recurred in newer code.
+- 4 enhancement ideas pitched (not expanded): remediation burn-down projection, extending ForestConsolidation's cross-domain annotation pattern, a real-BloodHound-collection diff, and reusing Get-ADKnownVulnUBR for a refinement already flagged in KnownVulnAudits.ps1's own comments.
+
 v1.29.1 - AD Security-Tool Delta Scan (PingCastle+ Comparison Refresh)
 - Bug-fix and documentation pass - no new detection logic added directly.
 - Fixed: 'Bidirectional Domain Trust' had no TrustType scoping and fired on ordinary intra-forest ParentChild/TreeRoot/CrossLink/Shortcut trusts. Added tests/DomainTrustAudits.Tests.ps1, which didn't exist before.
