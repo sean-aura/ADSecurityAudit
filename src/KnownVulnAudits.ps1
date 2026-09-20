@@ -3,10 +3,11 @@
 # Flags Domain Controller exposure to the highest-impact AD CVEs strictly
 # from OS build/version, installed CU/hotfix level, and service/config
 # state - ZeroLogon (CVE-2020-1472), MS17-010/EternalBlue, MS14-068,
-# PrintNightmare (CVE-2021-34527), CVE-2026-41089 (unauthenticated Netlogon
-# RCE), and BadSuccessor/dMSA escalation exposure on Windows Server
-# 2025-level Domain Controllers, including (as of v1.18.0) a per-DC
-# CVE-2025-53779 KDC-side patch-level (UBR) classification.
+# PrintNightmare (CVE-2021-34527), CVE-2026-41089 and CVE-2026-72982 (two
+# distinct unauthenticated Netlogon RCEs), and BadSuccessor/dMSA escalation
+# exposure on Windows Server 2025-level Domain Controllers, including (as
+# of v1.18.0) a per-DC CVE-2025-53779 KDC-side patch-level (UBR)
+# classification.
 # PingCastle-comparable check(s): S-Vuln-MS14-068, S-Vuln-MS17_010, A-Krbtgt, A-DC-Spooler,
 # A-BadSuccessor.
 #
@@ -81,17 +82,44 @@ $Script:KnownVulnFixThresholds = @{
     # Active in-the-wild exploitation was reported by Belgium's CCB
     # starting May 29, 2026, per the same sources.
     # Re-checked 2026-09-20: fix date, CVSS, and exploitation status unchanged
-    # since prior review. NOTE: a SEPARATE, unrelated Netlogon RCE
-    # (CVE-2026-72982, CVSS 9.8, disclosed on MSRC 2026-09-08) shipped in the
-    # September 2026 Patch Tuesday - do not confuse the two. Per the
-    # refresh-prompt process this is flagged as a new candidate check in a
-    # feature-request doc rather than folded into this threshold.
-    Netlogon2026 = @{
+    # since prior review. Renamed this key from Netlogon2026 to
+    # Netlogon2026May (and its Issue/finding text left unchanged) because a
+    # SECOND, unrelated Netlogon RCE - CVE-2026-72982, disclosed on MSRC
+    # 2026-09-08 (see Netlogon2026Sep below) - shipped in the September 2026
+    # Patch Tuesday. Same component (MS-NRPC), same CVSS 9.8, same
+    # unauthenticated pre-auth class, but two distinct CVEs fixed by two
+    # distinct updates - a DC patched for one is not necessarily patched for
+    # the other, hence the disambiguated names.
+    Netlogon2026May = @{
         Issue       = 'DC Missing CVE-2026-41089 Patch (Netlogon RCE)'
         Cve         = 'CVE-2026-41089'
         FixDate     = [datetime]'2026-05-12'
         FixNote     = 'May 12, 2026 Patch Tuesday cumulative updates - Netlogon Remote Protocol (MS-NRPC) packet-handling stack buffer overflow fix. Per-OS fixed-build boundaries (CERT-EU, citing MSRC): Server 2016 >= 10.0.14393.9140, Server 2019 >= 10.0.17763.8755, Server 2022 >= 10.0.20348.5074, Server 2022 23H2 >= 10.0.25398.2330, Server 2025 >= 10.0.26100.32772. Confirm the exact KB number for your specific OS build via Windows Update / the Microsoft Update Catalog, since third-party aggregator KB numbers for this CVE have been inconsistent.'
         Description = 'An unauthenticated, network-only attacker can trigger a stack-based buffer overflow in the Netlogon RPC interface (MS-NRPC) and achieve SYSTEM-level remote code execution on the Domain Controller, with no credentials or user interaction required (CVSS 9.8). Reported under active exploitation in the wild starting May 29, 2026 (Belgium CCB advisory).'
+    }
+    # Added 2026-09-20 per files/13-dc-known-cve-2026-72982-netlogon-rce.md.
+    # Verified directly against MSRC's Security Update Guide entry for
+    # CVE-2026-72982 (released Sep 8, 2026) and cross-checked against
+    # independent Patch Tuesday writeups (CrowdStrike, Action1, Talos, ZDI),
+    # all consistent on CVSS 9.8, CWE-121 (stack-based buffer overflow), and
+    # unauthenticated network-only RCE. NOT confirmed exploited in the wild
+    # as of this writing (unlike CVE-2026-41089/Netlogon2026May above).
+    # Per-OS fixed builds confirmed directly against Microsoft's own KB
+    # support articles for the September 8, 2026 cumulative updates: Server
+    # 2016 (KB5122878) >= 10.0.14393.9512, Server 2019 (KB5122876) >=
+    # 10.0.17763.9245, Server 2022 (KB5122882) >= 10.0.20348.5622. The
+    # Server 2025 fixed build was NOT independently confirmed via a
+    # dedicated Microsoft KB article at the time of this addition - confirm
+    # via the Microsoft Update Catalog before relying on it. As with
+    # Netlogon2026May, this function's threshold intentionally stays
+    # FixDate-only (not per-OS build); the confirmed builds above are
+    # recorded here for reference / a future refinement.
+    Netlogon2026Sep = @{
+        Issue       = 'DC Missing CVE-2026-72982 Patch (Netlogon RCE)'
+        Cve         = 'CVE-2026-72982'
+        FixDate     = [datetime]'2026-09-08'
+        FixNote     = 'September 8, 2026 Patch Tuesday cumulative updates - a second, distinct Netlogon Remote Protocol (MS-NRPC) packet-handling stack buffer overflow fix (unrelated to the May 2026 CVE-2026-41089 fix). Confirmed per-OS fixed builds: Server 2016 (KB5122878) >= 10.0.14393.9512, Server 2019 (KB5122876) >= 10.0.17763.9245, Server 2022 (KB5122882) >= 10.0.20348.5622. Server 2025 fixed build not independently confirmed at authoring time - confirm the exact KB/build for your OS via Windows Update / the Microsoft Update Catalog before considering a Server 2025 DC remediated.'
+        Description = 'An unauthenticated, network-only attacker can trigger a stack-based buffer overflow in the Netlogon RPC interface (MS-NRPC) and achieve SYSTEM-level remote code execution on the Domain Controller, with no credentials or user interaction required (CVSS 9.8). A distinct vulnerability from CVE-2026-41089, sharing the same component and severity class; not confirmed exploited in the wild as of this writing, but multiple vendors group it with a broader September 2026 cluster of unauthenticated, wormable-class RCEs and recommend prioritizing patching regardless of confirmed in-the-wild status given the Domain Controller blast radius.'
     }
 }
 
@@ -206,6 +234,11 @@ function Test-ADKnownDCVulnerabilities {
             critical (CVSS 9.8) Netlogon RPC remote code execution against
             any DC, evaluated with the same patch-date evidence as the
             other build/patch-only checks above.
+          - DC Missing CVE-2026-72982 Patch (Netlogon RCE) - a second,
+            distinct unauthenticated, critical (CVSS 9.8) Netlogon RPC
+            remote code execution, patched by a separate September 2026
+            update; a DC patched for CVE-2026-41089 is not necessarily
+            patched for this one, so both are checked independently.
           - BadSuccessor / dMSA Escalation Exposure - only on Domain
             Controllers running Windows Server 2025 (build >=
             $Script:KnownVulnServer2025Build), since dMSA is a Server 2025
@@ -268,6 +301,7 @@ function Test-ADKnownDCVulnerabilities {
     $ms14068DCs        = [System.Collections.ArrayList]::new()
     $printNightmareDCs = [System.Collections.ArrayList]::new()
     $netlogon2026DCs   = [System.Collections.ArrayList]::new()
+    $netlogon2026SepDCs = [System.Collections.ArrayList]::new()
     $server2025DCs     = [System.Collections.ArrayList]::new()
     $badSuccessorPatchedDCs   = [System.Collections.ArrayList]::new()
     $badSuccessorUnpatchedDCs = [System.Collections.ArrayList]::new()
@@ -413,8 +447,11 @@ function Test-ADKnownDCVulnerabilities {
             if ($dcState.SpoolerStatus -eq 'Running' -and $dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.PrintNightmare.FixDate) {
                 [void]$printNightmareDCs.Add($dcName)
             }
-            if ($dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.Netlogon2026.FixDate) {
+            if ($dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.Netlogon2026May.FixDate) {
                 [void]$netlogon2026DCs.Add($dcName)
+            }
+            if ($dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.Netlogon2026Sep.FixDate) {
+                [void]$netlogon2026SepDCs.Add($dcName)
             }
         }
         else {
@@ -553,7 +590,7 @@ function Test-ADKnownDCVulnerabilities {
     # Finding: DC Missing CVE-2026-41089 Patch (Netlogon RCE)
     # -------------------------------------------------------------------
     if ($netlogon2026DCs.Count -gt 0) {
-        $info = $Script:KnownVulnFixThresholds.Netlogon2026
+        $info = $Script:KnownVulnFixThresholds.Netlogon2026May
         $finding = [ADSecurityFinding]::new()
         $finding.Category = 'Known DC Vulnerabilities'
         $finding.Issue = $info.Issue
@@ -577,6 +614,36 @@ function Test-ADKnownDCVulnerabilities {
     }
     else {
         Write-Verbose "Test-ADKnownDCVulnerabilities: no DC found missing the CVE-2026-41089 (Netlogon RCE) patch."
+    }
+
+    # -------------------------------------------------------------------
+    # Finding: DC Missing CVE-2026-72982 Patch (Netlogon RCE)
+    # -------------------------------------------------------------------
+    if ($netlogon2026SepDCs.Count -gt 0) {
+        $info = $Script:KnownVulnFixThresholds.Netlogon2026Sep
+        $finding = [ADSecurityFinding]::new()
+        $finding.Category = 'Known DC Vulnerabilities'
+        $finding.Issue = $info.Issue
+        $finding.Severity = 'Critical'
+        $finding.SeverityLevel = 4
+        $finding.AffectedObject = ($netlogon2026SepDCs -join ', ')
+        $finding.Description = "$($netlogon2026SepDCs.Count) Domain Controller(s) show no patch/build evidence on or after the $($info.Cve) fix date of $($info.FixDate.ToString('yyyy-MM-dd')): $($netlogon2026SepDCs -join ', ')."
+        $finding.Impact = $info.Description
+        $finding.Remediation = "Install the $($info.FixNote) Verify with `Get-HotFix -ComputerName <DC>` and confirm against the current MSRC Update Guide entry for $($info.Cve) before considering a DC remediated. Note this is a separate patch from the one required for CVE-2026-41089 - a DC already patched for that CVE is not necessarily patched for this one."
+        $finding.EstimatedEffort = 'High - requires coordinated patching across every DC in the same maintenance window; a partially-patched DC fleet leaves a viable, unauthenticated, network-reachable entry point on any unpatched DC.'
+        $finding.KnownRisks = 'No legitimate functionality relies on the vulnerable Netlogon packet-handling code path; the risk of leaving any single DC unpatched is that it remains a viable, unauthenticated entry point to the rest of the domain.'
+        $finding.BackupRollback = 'Moderate - the update can technically be uninstalled if it causes a regression, but doing so reopens an unauthenticated remote-code-execution vulnerability on a domain controller.'
+        $finding.Details = @{
+            Cve                       = $info.Cve
+            FixDate                   = $info.FixDate.ToString('yyyy-MM-dd')
+            FixNote                   = $info.FixNote
+            AffectedDomainControllers = @($netlogon2026SepDCs)
+            PerDomainControllerState  = @($perDcState)
+        }
+        $findings += $finding
+    }
+    else {
+        Write-Verbose "Test-ADKnownDCVulnerabilities: no DC found missing the CVE-2026-72982 (Netlogon RCE) patch."
     }
 
     # -------------------------------------------------------------------

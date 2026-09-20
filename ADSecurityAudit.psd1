@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.28.1'
+    ModuleVersion = '1.29.1'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -72,13 +72,29 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.29.1 - AD Security-Tool Delta Scan (PingCastle+ Comparison Refresh)
+- Bug-fix and documentation pass - no new detection logic added directly.
+- Fixed: 'Bidirectional Domain Trust' had no TrustType scoping and fired on ordinary intra-forest ParentChild/TreeRoot/CrossLink/Shortcut trusts. Added tests/DomainTrustAudits.Tests.ps1, which didn't exist before.
+- Investigated three other PingCastle bug-fix candidates (1500-member group truncation, BUILTIN\Users exclusion, SMB2 negotiate-response parsing) - none apply to this codebase's implementation.
+- Investigated the Sept 2026 CISA/NSA/ASD guidance's DCSync detection redesign - it's a SIEM/event-log concern, not applicable to this static-config tool.
+- Added PSGuerrilla to the comparison-tool roster (newly discovered this pass).
+- Wrote 10 feature-request docs (files/14-23) covering 26 new-rule/changed-rule candidates from PingCastle, Purple Knight, PSGuerrilla, and the CISA/NSA/ASD guidance, tracked in the new 00-IMPLEMENTATION-ORDER.md. None implemented in this pass.
+
+v1.29.0 - New Check: CVE-2026-72982 (Second, Distinct Netlogon RCE)
+- New: Test-ADKnownDCVulnerabilities now also checks for CVE-2026-72982, a critical (CVSS 9.8) unauthenticated Windows Netlogon RCE disclosed by Microsoft on Sep 8, 2026 - a separate vulnerability from the already-tracked CVE-2026-41089, patched by a separate update. A DC patched for one is not necessarily patched for the other, so both are evaluated independently against their own fix-date threshold.
+- Renamed the internal $Script:KnownVulnFixThresholds key for the existing May 2026 Netlogon CVE from Netlogon2026 to Netlogon2026May to disambiguate it from the new Netlogon2026Sep entry; the Issue string and finding text for CVE-2026-41089 are unchanged.
+- New Scoring.ps1 entry for the new Issue string ('DC Missing CVE-2026-72982 Patch (Netlogon RCE)'), reusing the existing T1210 MITRE mapping.
+- New Pester coverage in tests/KnownVulnAudits.Tests.ps1: fix/no-fix cases for CVE-2026-72982, and a dedicated test confirming the two Netlogon checks fire independently of each other.
+- Fixed a pre-existing test-data bug found in the same file: two tests used a 2015-01-01 date while asserting the MS14-068 (fix date 2014-11-18) finding fires, which would fail since 2015 postdates that fix; changed to 2010-01-01.
+- README updated (feature bullet, Known DC Vulnerabilities summary, Version History).
+- Per files/13-dc-known-cve-2026-72982-netlogon-rce.md - implements that feature request in full.
+
 v1.28.1 - External-Intelligence Refresh (CVEs, MITRE, Hotfix Dates)
 - Data/citation correction pass - no new checks, no schema changes.
 - Fixed: $Script:MitreTechniqueNames was missing display names for four technique ids already used in $Script:ADFindingMetadataMap (T1078, T1098.007, T1547.005, T1552.005). Added, verified against current MITRE ATT&CK (v19.2).
 - Fixed: two stale MITRE display names (T1484.001, T1557.001) updated to match MITRE ATT&CK v19's renames.
 - Fixed: T1562.002 was revoked by MITRE ATT&CK v19 in favor of T1685.001 - updated the name table and all four Issue entries that referenced the old id, in this same commit.
 - Re-verified against MSRC: ZeroLogon, MS17-010, MS14-068, PrintNightmare, and CVE-2026-41089 fix-date thresholds are all unchanged. Re-confirmed the BadSuccessor/dMSA build-26100 guard doesn't need widening (no backport to earlier OS builds found).
-- Flagged, not implemented: CVE-2026-72982 (critical, unauthenticated Netlogon RCE, disclosed Sep 2026) is a new candidate check - see files/13-dc-known-cve-2026-72982-netlogon-rce.md.
 
 v1.28.0 - Eight New AD CS Checks: ESC5, ESC9, ESC10, ESC11, ESC13, ESC14, ESC16, ESC17
 - New: ESC17 (Test-ADCertificateServices) - Server Authentication EKU + enrollee-supplied SAN + low-priv enrollment + no manager approval. Disclosed by the Digitrace team in early 2026; new enough that even commercial AD CS scanners generally only flag it rather than fully validate it.

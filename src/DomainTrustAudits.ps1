@@ -1,4 +1,22 @@
 #region Domain Trust Audits
+#
+# PingCastle-comparable check(s): S-DomainTrust-Bidirectional (informal -
+# PingCastle does not expose a single stable rule id for the equivalent
+# "review bidirectional trusts" behavior; comparable in effect, not a
+# literal rule-id match).
+#
+# Fixed 2026-09-20: 'Bidirectional Domain Trust' previously had no
+# TrustType scoping and fired on every bidirectional trust, including
+# ordinary intra-forest ParentChild/TreeRoot/CrossLink/Shortcut trusts,
+# which are bidirectional and transitive by design in any multi-domain
+# forest and are not a security concern the same way a bidirectional
+# External or Forest (inter-forest) trust is. Found while investigating a
+# PingCastle-comparable bug-fix candidate (3.5.x: "New CrossRef-based
+# filtering logic correctly identifies within-forest trusts and no longer
+# flags them as insecure") - the exact mechanism differs, but the
+# practical effect (over-flagging benign within-forest trust structure)
+# is the same class of issue. The other two checks in this file already
+# scoped correctly by TrustType; only this one didn't.
 
 function Test-ADDomainTrusts {
     <#
@@ -25,8 +43,20 @@ function Test-ADDomainTrusts {
         Write-Verbose "Analyzing $($trusts.Count) domain trust(s)..."
         
         foreach ($trust in $trusts) {
-            # Check for bidirectional trusts
-            if ($trust.Direction -eq 'Bidirectional') {
+            # Check for bidirectional trusts - excluding intra-forest trust
+            # types (ParentChild, TreeRoot, CrossLink, Shortcut), which are
+            # bidirectional and transitive by design in every multi-domain
+            # forest and are not a security concern the way a bidirectional
+            # External or Forest (inter-forest) trust is. Without this
+            # exclusion, this check fired on every normal parent-child
+            # domain relationship in a multi-domain forest - a false-
+            # positive class analogous to one PingCastle fixed in its own
+            # trust-classification logic (3.5.x: "New CrossRef-based
+            # filtering logic correctly identifies within-forest trusts and
+            # no longer flags them as insecure"). The other two checks in
+            # this function (SID filtering, selective authentication)
+            # already correctly scope by TrustType; this one didn't.
+            if ($trust.Direction -eq 'Bidirectional' -and $trust.TrustType -notin @('ParentChild', 'TreeRoot', 'CrossLink', 'Shortcut')) {
                 $finding = [ADSecurityFinding]::new()
                 $finding.Category = 'Domain Trusts'
                 $finding.Issue = 'Bidirectional Domain Trust'

@@ -276,6 +276,7 @@ $Script:ADFindingMetadataMap = @{
     'DC Vulnerable to MS14-068'                           = @{ Mitre = 'T1558.001'; Anssi = 'vuln1_ms14068_unpatched';      Weight = 40 }
     'PrintNightmare Exposure on DC'                       = @{ Mitre = 'T1068';     Anssi = 'vuln2_printnightmare_exposed'; Weight = 20 }
     'DC Missing CVE-2026-41089 Patch (Netlogon RCE)'      = @{ Mitre = 'T1210';     Anssi = 'vuln1_netlogon_cve2026_41089_unpatched'; Weight = 40 }
+    'DC Missing CVE-2026-72982 Patch (Netlogon RCE)'      = @{ Mitre = 'T1210';     Anssi = 'vuln1_netlogon_cve2026_72982_unpatched'; Weight = 40 }
     'BadSuccessor / dMSA Escalation Exposure'             = @{ Mitre = 'T1098';     Anssi = 'vuln2_badsuccessor_dmsa';      Weight = 20 }
 
     # --- Exchange-in-AD Privilege Escalation (Exchange Windows Permissions / WriteDACL) ---
