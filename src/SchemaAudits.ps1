@@ -22,26 +22,56 @@
 # traffic of any kind.
 
 # Reference table of Microsoft-documented defaultSecurityDescriptor
-# values (as SDDL) for the classes most relevant to privilege
-# escalation. INTENTIONALLY LEFT EMPTY at authoring time: unlike the
-# per-OS-build/fixed-UBR tables elsewhere in this project (which cite a
-# single, independently verifiable source per entry), the correct
-# defaultSecurityDescriptor SDDL string is long, forest-functional-level-
-# and OS-version-dependent, and easy to get subtly wrong from memory or a
-# secondary source. Populate this table by reading
-# defaultSecurityDescriptor directly from a known-clean, unmodified
-# schema (a fresh lab forest at the same functional level as the target
-# environment, or Microsoft's own current schema reference) before
-# relying on this check - the check below deliberately SKIPS any class
-# with no entry here rather than comparing against a guessed value, to
-# avoid a false sense of security from an unverified reference table.
-# Maintain this the same way KnownVulnAudits.ps1's CVE fix-date table is
-# maintained: one inline citation per entry, re-verified periodically.
+# values (as SDDL), sourced directly from the official AD Schema
+# Reference class pages (learn.microsoft.com/windows/win32/adschema/c-*),
+# each of which publishes a "Default Security Descriptor" row per OS
+# implementation. Populated 2026-09 for the four classes most relevant to
+# privilege escalation, using each class's Windows Server 2003+ value
+# (the schema version in effect once a domain has ever been at Server
+# 2003 functional level or later, which is effectively universal in
+# 2026) - EXCEPT organizationalUnit, whose documented default has not
+# changed since Windows 2000 Server through Server 2012, per the same
+# reference page listing one shared value across all of them.
+#
+# IMPORTANT CAVEATS, read before trusting this table blindly:
+#   - These values are current as of the OS versions Microsoft's public
+#     schema reference documents (through Windows Server 2012). No
+#     defaultSecurityDescriptor change for these four classes has been
+#     found documented for any later OS version, but Microsoft does not
+#     appear to have republished this specific reference for newer
+#     Windows Server releases (2016+) - if a future schema update changes
+#     these defaults, this table will not reflect it until manually
+#     re-verified against a current, unmodified schema or updated
+#     documentation.
+#   - "user" and "computer" both inherit their SDDL almost entirely from
+#     each other (computer subclasses user) but are NOT identical - do
+#     not assume one for the other.
+#   - Maintain this table the same way KnownVulnAudits.ps1's CVE
+#     fix-date table is maintained: cite the source inline, re-verify
+#     periodically against Microsoft's current documentation.
 $Script:SchemaDefaultSecurityDescriptors = @{
-    # 'user'               = 'D:...'  # populate from a verified reference schema
-    # 'computer'           = 'D:...'
-    # 'group'              = 'D:...'
-    # 'organizationalUnit' = 'D:...'
+    # Source: https://learn.microsoft.com/windows/win32/adschema/c-user
+    # ("Windows Server 2003" implementation table - current value once a
+    # domain has ever reached Server 2003 schema version or later).
+    'user' = 'D:(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;DA)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;SY)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;AO)(A;;RPLCLORC;;;PS)(OA;;CR;ab721a53-1e2f-11d0-9819-00aa0040529b;;PS)(OA;;CR;ab721a54-1e2f-11d0-9819-00aa0040529b;;PS)(OA;;CR;ab721a56-1e2f-11d0-9819-00aa0040529b;;PS)(OA;;RPWP;77B5B886-944A-11d1-AEBD-0000F80367C1;;PS)(OA;;RPWP;E45795B2-9455-11d1-AEBD-0000F80367C1;;PS)(OA;;RPWP;E45795B3-9455-11d1-AEBD-0000F80367C1;;PS)(OA;;RP;037088f8-0ae1-11d2-b422-00a0c968f939;;RS)(OA;;RP;4c164200-20c0-11d0-a768-00aa006e0529;;RS)(OA;;RP;bc0ac240-79a9-11d0-9020-00c04fc2d4cf;;RS)(A;;RC;;;AU)(OA;;RP;59ba2f42-79a2-11d0-9020-00c04fc2d3cf;;AU)(OA;;RP;77B5B886-944A-11d1-AEBD-0000F80367C1;;AU)(OA;;RP;E45795B3-9455-11d1-AEBD-0000F80367C1;;AU)(OA;;RP;e48d0154-bcf8-11d1-8702-00c04fb96050;;AU)(OA;;CR;ab721a53-1e2f-11d0-9819-00aa0040529b;;WD)(OA;;RP;5f202010-79a5-11d0-9020-00c04fc2d4cf;;RS)(OA;;RPWP;bf967a7f-0de6-11d0-a285-00aa003049e2;;CA)(OA;;RP;46a9b11d-60ae-405a-b7e8-ff8a58d456d2;;S-1-5-32-560)(OA;;WPRP;6db69a1c-9422-11d1-aebd-0000f80367c1;;S-1-5-32-561)'
+
+    # Source: https://learn.microsoft.com/windows/win32/adschema/c-computer
+    # ("Windows Server 2003" implementation table). NOTE: computer
+    # subclasses user in the schema but has a materially different
+    # default SD - do not conflate the two.
+    'computer' = 'D:(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;DA)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;AO)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;SY)(A;;RPCRLCLORCSDDT;;;CO)(OA;;WP;4c164200-20c0-11d0-a768-00aa006e0529;;CO)(A;;RPLCLORC;;;AU)(OA;;CR;ab721a53-1e2f-11d0-9819-00aa0040529b;;WD)(A;;CCDC;;;PS)(OA;;CCDC;bf967aa8-0de6-11d0-a285-00aa003049e2;;PO)(OA;;RPWP;bf967a7f-0de6-11d0-a285-00aa003049e2;;CA)(OA;;SW;f3a64788-5306-11d1-a9c5-0000f80367c1;;PS)(OA;;RPWP;77B5B886-944A-11d1-AEBD-0000F80367C1;;PS)(OA;;SW;72e39547-7b18-11d1-adef-00c04fd8d5cd;;PS)(OA;;SW;72e39547-7b18-11d1-adef-00c04fd8d5cd;;CO)(OA;;SW;f3a64788-5306-11d1-a9c5-0000f80367c1;;CO)(OA;;WP;3e0abfd0-126a-11d0-a060-00aa006c33ed;bf967a86-0de6-11d0-a285-00aa003049e2;CO)(OA;;WP;5f202010-79a5-11d0-9020-00c04fc2d4cf;bf967a86-0de6-11d0-a285-00aa003049e2;CO)(OA;;WP;bf967950-0de6-11d0-a285-00aa003049e2;bf967a86-0de6-11d0-a285-00aa003049e2;CO)(OA;;WP;bf967953-0de6-11d0-a285-00aa003049e2;bf967a86-0de6-11d0-a285-00aa003049e2;CO)(OA;;RP;46a9b11d-60ae-405a-b7e8-ff8a58d456d2;;S-1-5-32-560)'
+
+    # Source: https://learn.microsoft.com/windows/win32/adschema/c-group
+    # ("Windows Server 2003" implementation table).
+    'group' = 'D:(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;DA)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;SY)(A;;RPLCLORC;;;AU)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;AO)(A;;RPLCLORC;;;PS)(OA;;CR;ab721a55-1e2f-11d0-9819-00aa0040529b;;AU)(OA;;RP;46a9b11d-60ae-405a-b7e8-ff8a58d456d2;;S-1-5-32-560)'
+
+    # Source:
+    # https://learn.microsoft.com/windows/win32/adschema/c-organizationalunit
+    # - listed as one shared value across every implementation from
+    # Windows 2000 Server through Windows Server 2012 (no version-to-
+    # version change documented for this class, unlike user/computer/
+    # group above).
+    'organizationalUnit' = 'D:(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;SY)(A;;RPWPCRCCDCLCLORCWOWDSDDTSW;;;DA)(OA;;CCDC;bf967a86-0de6-11d0-a285-00aa003049e2;;AO)(OA;;CCDC;bf967aba-0de6-11d0-a285-00aa003049e2;;AO)(OA;;CCDC;bf967a9c-0de6-11d0-a285-00aa003049e2;;AO)(OA;;CCDC;bf967aa8-0de6-11d0-a285-00aa003049e2;;PO)(A;;RPLCLORC;;;AU)'
 }
 
 function Test-ADSchemaIntegrity {
@@ -173,7 +203,7 @@ function Test-ADSchemaIntegrity {
         # Check 2: Schema defaultSecurityDescriptor Modified
         # ---------------------------------------------------------------
         if ($Script:SchemaDefaultSecurityDescriptors.Count -eq 0) {
-            Write-Verbose "Test-ADSchemaIntegrity: `$Script:SchemaDefaultSecurityDescriptors reference table is empty (not yet populated against a verified source); skipping defaultSecurityDescriptor comparison rather than guessing at defaults."
+            Write-Verbose "Test-ADSchemaIntegrity: `$Script:SchemaDefaultSecurityDescriptors reference table is empty; skipping defaultSecurityDescriptor comparison rather than guessing at defaults."
         }
         else {
             $modifiedClasses = @()
@@ -389,7 +419,14 @@ function Test-ADSchemaIntegrity {
                 $finding.Severity = 'Medium'
                 $finding.SeverityLevel = 2
                 $finding.AffectedObject = $ds.DistinguishedName
-                $finding.Description = "DisplaySpecifier '$($ds.DistinguishedName)' has an adminContextMenu entry referencing '$path' that matches known higher-risk pattern(s): $($reasons -join ' ')"
+                # Multiple matched reasons are built as a newline-separated
+                # bullet list (not one long joined sentence) - Reporting.ps1
+                # already converts newline-separated Description content to
+                # <br> for HTML display, the same convention Domain Admin
+                # Equivalence/ESC4 findings already use for multi-reason
+                # descriptions.
+                $reasonBullets = ($reasons | ForEach-Object { "- $_" }) -join "`n"
+                $finding.Description = "DisplaySpecifier '$($ds.DistinguishedName)' has an adminContextMenu entry referencing '$path' that matches known higher-risk pattern(s):`n$reasonBullets"
                 $finding.Impact = "adminContextMenu entries run in the administrator's own UI context whenever triggered from the Active Directory management console (ADUC, etc.), so a persistence mechanism placed here waits for an administrator to trigger it rather than requiring further attacker action. IMPORTANT: THIS CHECK DOES NOT VALIDATE WHETHER THE REFERENCED FILE OR URL IS ACTUALLY MALICIOUS. It only flags a placement or naming pattern that published guidance (the LOLBAS project, MITRE ATT&CK) associates with elevated risk for this kind of registration - as the LOLBAS project's own maintainers put it, 'none of these binaries is a vulnerability... the line between legitimate administration and attack sits in the context, not the file,' and this LDAP-only read has no way to evaluate that context. Manually confirm this is not a legitimate, currently-used administrative tool before treating it as confirmed tampering."
                 $finding.Remediation = "Confirm whether this entry is a currently-used, legitimate administrative extension. If not, remove it. If it is legitimate but points at a user-writable or non-SYSVOL network location, move the target to a location only administrators can write to (SYSVOL, or a local path under %SystemRoot%/%ProgramFiles% on every DC/admin workstation)."
                 $finding.EstimatedEffort = 'Low - removing a single attribute value on this DisplaySpecifier object, but confirm the referenced tool isn''t a legitimate (if unusually placed or named) admin console extension before removing.'

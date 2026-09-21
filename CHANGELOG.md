@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.30.4] - 2026-09-21
+
+Packaging and documentation only - no detection-logic, scoring, or output-contract changes.
+
+### Added
+
+- **`tools/synthetic-fixtures-samples/`** - the actual, real output from `tools/New-ADSecurityAuditSyntheticFixtures.ps1` (not hand-written): all four tiers (25/50/75/100%) of JSON findings, score sidecars, rebuilt HTML, and rebuilt CSV, checked in as reference samples. Includes a `README.md` documenting what they are, how to regenerate them, and a step-by-step checklist for validating a **new check** before it ships:
+  1. Confirm its `Scoring.ps1` entry exists (`$Script:ADFindingMetadataMap.ContainsKey(...)`)
+  2. Confirm it has a `FindingNarrativeLibrary.ps1` entry
+  3. Regenerate the synthetic fixtures and confirm the new Issue appears in the right tier/`Category`, and that `CategoryScores` moves as expected
+  4. Write/extend a Pester test for the check specifically
+  5. Run the full Pester suite
+
+### Fixed
+
+- **A real `.gitignore` collision**, found by actually testing with `git`: the blanket `AD_Security_Audit_*.json`/`.html`/`.csv` and `AD_Security_Score_*.json` patterns (which exist specifically to keep real audit output out of the repo) matched the new sample filenames exactly, so `git add` would have silently dropped every one of them. Added explicit negation exceptions scoped to `tools/synthetic-fixtures-samples/` only. Verified with a real `git add -A`: the samples now stage correctly (confirmed `git status` shows all 20 files as `A`), and genuine audit output elsewhere in the repo (tested with a synthetic `AD_Security_Audit_<real-timestamp>.json` outside that folder) is still correctly ignored.
+
+### Changed
+
+- `tools/New-ADSecurityAuditSyntheticFixtures.ps1`'s own `.NOTES` section now points at the samples folder.
+- `README.md`'s Test Coverage section links to the samples folder and the new-check checklist.
+
+## [1.30.3] - 2026-09-21
+
+First real PowerShell-execution validation pass of this whole delta-scan series. A PowerShell 7.6.6 runtime became available partway through this release series - everything before this was verified by hand-tracing PowerShell semantics only, with no way to actually parse or run any of it.
+
+### Verified (not fixed - confirmed correct via real execution)
+
+- Full AST parse of every file in `src/`, `tools/`, and `tests/` (87 files): **zero syntax errors**.
+- The entire module (all 44 `src/*.ps1` files) dot-sources cleanly with zero errors; every new and modified function loads correctly.
+- Direct execution (mocked AD cmdlets - Pester itself could not be installed/built in this environment; see below) of the highest-risk logic from this series, all passing:
+  - The Netlogon UBR/FixDate fallback regression fix (v1.30.0) - all 4 interaction cases (conclusive-Patched, conclusive-Unpatched, inconclusive-with-stale-FixDate, inconclusive-with-current-FixDate)
+  - The `AD Display Specifier Tampered` rework (v1.30.1), including the **exact reported false positive** (`remoteStorageServicePoint`/`RsAdmin.msc` - confirmed no longer flagged) alongside genuinely suspicious UNC/LOLBAS/extension cases (confirmed still flagged, with the bulleted-reason-list formatting rendering correctly)
+  - The three new checks covered by v1.30.2's Pester files (`AdminSDHolder Inheritance Re-Enabled`, `Legacy LAPS SearchFlags Exposes Password`, `SPN-Holding Account Also Has DCSync Rights`)
+- Pester could not be installed (PowerShell Gallery is network-blocked in this environment) or built from source (requires compiling a C# assembly via the .NET SDK, also unavailable here). Direct execution of the actual code paths above is not a substitute for a real Pester run, but it is genuine execution, not static analysis.
+
+### Fixed
+
+- **`tools/New-ADSecurityAuditSyntheticFixtures.ps1` (new in v1.30.2) had a real bug, found only by actually running it**: every synthetic finding was tagged with one shared `"Synthetic Fixture"` `Category`. `Get-ADRiskScore`'s scoring model computes each category's score independently (with diminishing returns) and takes the *max* across categories as `TotalScore` - concentrating every finding into one category saturated it almost immediately, so all four tiers (25/50/75/100%) came back with the identical `TotalScore=100`, defeating the entire point of a four-tier maturity demonstration.
+
+  Fixed by having the tool extract each Issue's **real** `Category` directly from its own `$finding.Category` assignment in `src/*.ps1` (a source-code scan, not a guess) before building synthetic findings.
+
+  Verified after the fix: the 25% tier now genuinely differs (`TotalScore=92`, 20 categories represented) from the 50/75/100% tiers (21/27/29 categories) - though `TotalScore` itself still saturates at 100 for those three once enough Critical-weight findings concentrate in any one category. That's a faithful reflection of the real "weakest link" scoring model, not a remaining bug - the category-count and per-category-score breakdown is where the tier gradient is genuinely visible at the higher tiers.
+
+  Ran the fixed generator end-to-end with `-GenerateReports`: confirmed real HTML (correct per-category grouping and finding counts) and CSV (`EstimatedEffort`/`KnownRisks`/`BackupRollback` correctly backfilled from `FindingNarrativeLibrary.ps1` via `Merge-ADFindingNarrativeGaps`, not left as placeholder text) output for all four tiers.
+
+No detection-logic or output-contract changes to any check beyond the synthetic-fixture-generator fix above; all `Issue`/`Scoring`/`Category` behavior for real (non-synthetic) findings is unchanged from v1.30.2.
+
+## [1.30.2] - 2026-09-21
+
+Follow-up fixes and tooling, addressing gaps found after v1.30.1 shipped.
+
+### Fixed
+
+- **`'Schema defaultSecurityDescriptor Modified'` is no longer a permanent stub.** `$Script:SchemaDefaultSecurityDescriptors` (`SchemaAudits.ps1`) is now populated with the actual current default SDDL for the `user`, `computer`, `group`, and `organizationalUnit` classes, sourced directly from [Microsoft's own AD Schema Reference class pages](https://learn.microsoft.com/windows/win32/adschema/) - not reconstructed from memory. Known caveat: Microsoft's public reference documents these values through Windows Server 2012 only; no later change has been found documented, but this has not been independently re-verified against a current, unmodified schema. Maintain this table the same way `KnownVulnAudits.ps1`'s CVE fix-date table is maintained - one inline citation per entry, re-verified periodically.
+
+### Changed
+
+- **`'AD Display Specifier Tampered'` formatting**: when a single entry matches more than one higher-risk pattern (e.g. a non-SYSVOL UNC path *and* a risky file extension), the matched reasons now render as a bulleted list in `Description` instead of a run-on joined sentence - reusing this project's own existing newline-to-`<br>` HTML rendering convention (already used elsewhere, e.g. Domain Admin Equivalence/ESC4 findings), rather than inventing a new formatting mechanism.
+
+### Added
+
+- **New Pester coverage for three files that had none at all**, despite shipping new v1.30.0 checks:
+  - `tests/AdminSDAudits.Tests.ps1` - `'AdminSDHolder Inheritance Re-Enabled'`
+  - `tests/LapsAudits.Tests.ps1` - `'Legacy LAPS SearchFlags Exposes Password'`
+  - `tests/ReplicationAudits.Tests.ps1` - `'SPN-Holding Account Also Has DCSync Rights'`
+
+  The DCSync cross-check tests deliberately use SID-format identity strings rather than `"DOMAIN\name"` strings: the real code path resolves non-SID identities via a live `[System.Security.Principal.NTAccount]::Translate()` .NET call that requires a real Windows account/domain to resolve and would fail in any non-domain-joined test environment. A SID string bypasses that call entirely, keeping the tests fully offline and deterministic.
+
+- **New `tools/New-ADSecurityAuditSyntheticFixtures.ps1`**: generates synthetic `AD_Security_Audit_*.json` findings files (and, with `-GenerateReports`, their HTML/CSV reports) at four failure-density tiers - 25%/50%/75%/100% of every Issue this project's own `$Script:ADFindingMetadataMap` knows about - so report rendering can be exercised across the full maturity spectrum without a real Active Directory environment. Every synthetic finding is clearly labeled `"[SYNTHETIC TEST DATA]"` in its `Description`/`Impact`/`Remediation` text; this proves report *rendering* works, not that detection logic is correct, and is not a substitute for testing against a real domain or running the Pester suite.
+
+No detection-logic or output-contract changes beyond the `defaultSecurityDescriptor` table populating (which lets an already-shipped, already-scored Issue fire for the first time) and the Display Specifier `Description` formatting change - the `Issue` strings and `Scoring.ps1` mappings from v1.30.0/v1.30.1 are unchanged.
+
 ## [1.30.1] - 2026-09-21
 
 Bug fix release. Fixes a real false positive reported after v1.30.0 shipped, in `'AD Display Specifier Tampered'` (`SchemaAudits.ps1`).
