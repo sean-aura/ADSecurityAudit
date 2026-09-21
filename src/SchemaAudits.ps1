@@ -220,6 +220,78 @@ function Test-ADSchemaIntegrity {
     # -------------------------------------------------------------------
     # Check 3: AD Display Specifier Tampered
     # -------------------------------------------------------------------
+    # REWORKED TWICE (v1.30.1):
+    #
+    # (1) The original version flagged any command NOT under a SYSVOL
+    #     policies path. That was wrong - Microsoft ships plenty of
+    #     built-in adminContextMenu entries that point at local system
+    #     consoles/executables (e.g. the Remote Storage feature's own
+    #     remoteStorageServicePoint class legitimately registers
+    #     RsAdmin.msc, a stock Windows MMC console under
+    #     %SystemRoot%\System32), which is the normal, healthy default
+    #     state of a domain - not evidence of tampering. Reworked to flag
+    #     only PLACEMENT PATTERNS that are themselves inherently
+    #     suspicious, regardless of what ships by default: a URL, a UNC
+    #     path outside SYSVOL\<domain>\Policies\, or a per-user-writable
+    #     location. A bare filename (Microsoft's own common registration
+    #     style for built-in consoles) or a local path rooted under
+    #     %SystemRoot%/%ProgramFiles% is treated as safe, since writing
+    #     there already requires local admin rights on that machine.
+    #
+    # (2) Reported false positive fixed, then two further changes made
+    #     based on published community guidance rather than this
+    #     project's own invented heuristics:
+    #       - Added a second, INDEPENDENT signal: the referenced command
+    #         names a binary from the LOLBAS (Living Off The Land
+    #         Binaries And Scripts) project's own well-established "most
+    #         commonly abused" set - certutil, mshta, regsvr32, rundll32,
+    #         wscript/cscript, bitsadmin, msiexec, installutil, msbuild,
+    #         cmstp, forfiles, wmic, powershell/pwsh - matching MITRE
+    #         ATT&CK T1218 (System Binary Proxy Execution) and T1216
+    #         (System Script Proxy Execution). This fires REGARDLESS of
+    #         placement, since referencing one of these as a static
+    #         admin-console command at all is itself unusual (Microsoft's
+    #         own built-in registrations are consoles/executables
+    #         specific to that object class, not general-purpose
+    #         dual-use proxy binaries).
+    #       - Added a third signal: the referenced file's extension is a
+    #         script/direct-execution type (.hta/.vbs/.vbe/.js/.jse/
+    #         .wsf/.wsh/.scr/.ps1/.psm1/.chm/.hlp) - Microsoft's own
+    #         static registrations are essentially always .msc or .exe,
+    #         never a raw script, so this is a low-false-positive signal
+    #         independent of location.
+    #       - Split what used to be ONE aggregated finding (every
+    #         suspicious entry across the whole domain joined into a
+    #         single long Description string) into ONE FINDING PER
+    #         SUSPICIOUS ENTRY, matching this project's own established
+    #         one-finding-per-affected-object convention used everywhere
+    #         else (see e.g. UserAudits.ps1) - a long comma-joined string
+    #         is hard to read/triage and doesn't sort/filter per-object
+    #         the way the rest of this project's output does.
+    #       - Added an explicit, prominent statement that THIS CHECK DOES
+    #         NOT VALIDATE WHETHER THE REFERENCED FILE OR URL IS ACTUALLY
+    #         MALICIOUS - it only flags a placement or naming pattern
+    #         that published guidance associates with higher risk (see
+    #         LOLBAS project maintainers' own framing: "None of them is a
+    #         vulnerability... the line between legitimate administration
+    #         and attack does not sit in the file; it sits in the
+    #         context" - this project has no way to evaluate that
+    #         context from an LDAP-only read).
+    #
+    # Sources: LOLBAS project (lolbas-project.github.io); MITRE ATT&CK
+    # T1218 (System Binary Proxy Execution) / T1216 (System Script Proxy
+    # Execution) / T1059 (Command and Scripting Interpreter).
+    $Script:AdminContextMenuLolbasBinaries = @(
+        'certutil', 'mshta', 'regsvr32', 'rundll32', 'wscript', 'cscript',
+        'bitsadmin', 'msiexec', 'installutil', 'msbuild', 'cmstp',
+        'forfiles', 'wmic', 'powershell', 'pwsh', 'regsvcs', 'regasm',
+        'msdt', 'odbcconf', 'control'
+    )
+    $Script:AdminContextMenuRiskyExtensions = @(
+        '.hta', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.scr',
+        '.ps1', '.psm1', '.chm', '.hlp'
+    )
+
     try {
         $displaySpecifiersContainer = "CN=DisplaySpecifiers,$configContext"
         $displaySpecifierObjects = @(Invoke-ADQueryWithRetry -OperationName 'Get DisplaySpecifier objects (schema integrity audit)' -Query {
@@ -227,7 +299,6 @@ function Test-ADSchemaIntegrity {
                 -Properties adminContextMenu -Server $__adServer -ErrorAction Stop
         })
 
-        $tamperedSpecifiers = @()
         foreach ($ds in $displaySpecifierObjects) {
             $menuValues = @($ds.adminContextMenu | Where-Object { $_ })
             foreach ($menuValue in $menuValues) {
@@ -239,16 +310,10 @@ function Test-ADSchemaIntegrity {
                 #     (2 fields) - the CLSID is a GUID resolved via COM on
                 #     the administrator's own machine, not a filesystem
                 #     path recorded in AD at all. This is the common,
-                #     default, benign shape (built-in AD snap-in
-                #     extensions typically register this way) and must be
-                #     SKIPPED here, not flagged - checking a GUID against
-                #     a SYSVOL-path pattern would always "fail" and flood
-                #     every healthy environment with false positives.
+                #     default, benign shape and must be SKIPPED here.
                 #   - Static context menu item: "<order number>,<menu
                 #     text>,<command>" (3 fields) - <command> is the
                 #     actual program/file/URL invoked via ShellExecute.
-                #     THIS is the shape the tampering check cares about:
-                #     a <command> pointing outside SYSVOL is the anomaly.
                 $parts = $menuValue -split ','
                 if ($parts.Count -eq 2) {
                     # COM object registration (order,CLSID) - not evaluated.
@@ -259,36 +324,90 @@ function Test-ADSchemaIntegrity {
                     # evaluate confidently; skip rather than guess.
                     continue
                 }
-                $path = ($parts[2..($parts.Count - 1)] -join ',')
-                if ($path -and ($path -notmatch '(?i)\\sysvol\\.*\\policies\\')) {
-                    $tamperedSpecifiers += [PSCustomObject]@{
-                        DistinguishedName = $ds.DistinguishedName
-                        MenuValue         = $menuValue
-                        Path              = $path
+                $path = ($parts[2..($parts.Count - 1)] -join ',').Trim()
+                if (-not $path) { continue }
+
+                $reasons = [System.Collections.ArrayList]::new()
+
+                if ($path -match '(?i)^(https?|ftp|file)://') {
+                    [void]$reasons.Add('References a URL (ShellExecute-invokable), not a standard static file/console registration.')
+                }
+                elseif ($path -match '^\\\\') {
+                    # UNC path - suspicious unless it's specifically the
+                    # SYSVOL policies path GPO-deployed extensions use.
+                    if ($path -notmatch '(?i)\\sysvol\\.*\\policies\\') {
+                        [void]$reasons.Add('UNC path outside SYSVOL\<domain>\Policies\ - a network share GPO-deployed admin extensions are not meant to live on.')
                     }
                 }
+                elseif ($path -match '(?i)(\\users\\|%temp%|%tmp%|%appdata%|%localappdata%|%userprofile%|\\appdata\\|\\windows\\temp\\)') {
+                    [void]$reasons.Add('Path is under a per-user-writable or temp location - any authenticated user, not just an admin, can write there.')
+                }
+                # Otherwise: a bare filename (no path separators - the
+                # common built-in-console registration style), a
+                # drive-letter/%SystemRoot%/%ProgramFiles%-rooted local
+                # path, or a SYSVOL policies path - none flagged on
+                # placement alone.
+
+                # Independent signal: a well-known LOLBAS dual-use binary
+                # referenced as the command itself, regardless of path.
+                $fileNameOnly = $null
+                $fileBaseName = $null
+                $fileExtension = $null
+                try {
+                    $fileNameOnly = ($path -split '[\\/]')[-1]
+                    $fileBaseName = [System.IO.Path]::GetFileNameWithoutExtension($fileNameOnly)
+                    $fileExtension = [System.IO.Path]::GetExtension($fileNameOnly)
+                }
+                catch {
+                    # A malformed/unusual value shouldn't abort evaluation
+                    # of the rest of this DisplaySpecifier's other menu
+                    # values - the placement-pattern reasons above (if
+                    # any) still apply; only the filename-based signals
+                    # are skipped for this one value.
+                    Write-Verbose "Test-ADSchemaIntegrity: could not parse filename/extension from adminContextMenu value '$menuValue': $_"
+                }
+                if ($fileBaseName -and ($Script:AdminContextMenuLolbasBinaries -icontains $fileBaseName)) {
+                    [void]$reasons.Add("References '$fileNameOnly', a binary on the LOLBAS (Living Off The Land Binaries And Scripts) project's list of commonly-abused dual-use Windows binaries (MITRE ATT&CK T1218/T1216) - unusual as a static admin-console command regardless of where it's located.")
+                }
+
+                # Independent signal: a script/direct-execution extension,
+                # a shape Microsoft's own built-in registrations don't use
+                # (those are always .msc/.exe).
+                if ($fileExtension -and ($Script:AdminContextMenuRiskyExtensions -icontains $fileExtension)) {
+                    [void]$reasons.Add("File extension '$fileExtension' is a script/direct-execution type Microsoft's own built-in adminContextMenu registrations do not use (those are always .msc or .exe).")
+                }
+
+                if ($reasons.Count -eq 0) { continue }
+
+                # One finding per suspicious entry (not aggregated across
+                # the whole domain into a single long string) - matches
+                # this project's established one-finding-per-affected-
+                # object convention.
+                $finding = [ADSecurityFinding]::new()
+                $finding.Category = 'Schema Integrity'
+                $finding.Issue = 'AD Display Specifier Tampered'
+                $finding.Severity = 'Medium'
+                $finding.SeverityLevel = 2
+                $finding.AffectedObject = $ds.DistinguishedName
+                $finding.Description = "DisplaySpecifier '$($ds.DistinguishedName)' has an adminContextMenu entry referencing '$path' that matches known higher-risk pattern(s): $($reasons -join ' ')"
+                $finding.Impact = "adminContextMenu entries run in the administrator's own UI context whenever triggered from the Active Directory management console (ADUC, etc.), so a persistence mechanism placed here waits for an administrator to trigger it rather than requiring further attacker action. IMPORTANT: THIS CHECK DOES NOT VALIDATE WHETHER THE REFERENCED FILE OR URL IS ACTUALLY MALICIOUS. It only flags a placement or naming pattern that published guidance (the LOLBAS project, MITRE ATT&CK) associates with elevated risk for this kind of registration - as the LOLBAS project's own maintainers put it, 'none of these binaries is a vulnerability... the line between legitimate administration and attack sits in the context, not the file,' and this LDAP-only read has no way to evaluate that context. Manually confirm this is not a legitimate, currently-used administrative tool before treating it as confirmed tampering."
+                $finding.Remediation = "Confirm whether this entry is a currently-used, legitimate administrative extension. If not, remove it. If it is legitimate but points at a user-writable or non-SYSVOL network location, move the target to a location only administrators can write to (SYSVOL, or a local path under %SystemRoot%/%ProgramFiles% on every DC/admin workstation)."
+                $finding.EstimatedEffort = 'Low - removing a single attribute value on this DisplaySpecifier object, but confirm the referenced tool isn''t a legitimate (if unusually placed or named) admin console extension before removing.'
+                $finding.KnownRisks = 'Removing a legitimate admin console extension (if one happens to be configured this way) will break that specific right-click context-menu action for administrators - confirm before removing. This check only flags a specific set of published, inherently-suspicious patterns (placement, LOLBAS binary names, script extensions); it cannot and does not confirm actual malicious intent or behavior, and a malicious entry placed inside an otherwise-protected system directory with an otherwise-unremarkable name would not be caught by this LDAP-only check.'
+                $finding.BackupRollback = 'Easy - record the current adminContextMenu value before removing it; effective immediately, no data loss.'
+                $finding.Details = @{
+                    DistinguishedName          = $ds.DistinguishedName
+                    MenuValue                  = $menuValue
+                    Path                       = $path
+                    MatchedReasons             = @($reasons)
+                    MaliciousnessNotValidated  = $true
+                    Sources                    = 'LOLBAS project (lolbas-project.github.io); MITRE ATT&CK T1218/T1216/T1059'
+                }
+                $findings += $finding
             }
         }
 
-        if ($tamperedSpecifiers.Count -gt 0) {
-            $finding = [ADSecurityFinding]::new()
-            $finding.Category = 'Schema Integrity'
-            $finding.Issue = 'AD Display Specifier Tampered'
-            $finding.Severity = 'Medium'
-            $finding.SeverityLevel = 2
-            $finding.AffectedObject = (($tamperedSpecifiers | ForEach-Object { $_.DistinguishedName }) -join '; ')
-            $finding.Description = "$($tamperedSpecifiers.Count) DisplaySpecifier adminContextMenu entrie(s) reference a script/COM object outside the SYSVOL policies path: $(($tamperedSpecifiers | ForEach-Object { "$($_.DistinguishedName) -> $($_.Path)" }) -join '; ')."
-            $finding.Impact = "adminContextMenu entries run in the administrator's own UI context whenever triggered from the Active Directory management console (ADUC, etc.). A value pointing outside SYSVOL is either leftover from a decommissioned legitimate tool or - more concerning - a persistence mechanism waiting for an administrator to trigger it."
-            $finding.Remediation = "Review each listed adminContextMenu value; remove any that are not a confirmed, currently-used legitimate administrative extension referencing a SYSVOL-hosted script/COM object."
-            $finding.EstimatedEffort = 'Low - removing a single attribute value per affected DisplaySpecifier object, but confirm the referenced tool isn''t a legitimate (if unusually placed) admin console extension before removing.'
-            $finding.KnownRisks = 'Removing a legitimate admin console extension (if one happens to be configured this way) will break that specific right-click context-menu action for administrators - confirm before removing.'
-            $finding.BackupRollback = 'Easy - record the current adminContextMenu value before removing it; effective immediately, no data loss.'
-            $finding.Details = @{
-                TamperedDisplaySpecifiers = @($tamperedSpecifiers)
-            }
-            $findings += $finding
-        }
-        else {
+        if (-not ($findings | Where-Object { $_.Issue -eq 'AD Display Specifier Tampered' })) {
             Write-Verbose "Test-ADSchemaIntegrity: no DisplaySpecifier adminContextMenu tampering found."
         }
     }

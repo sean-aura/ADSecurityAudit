@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.30.0'
+    ModuleVersion = '1.30.1'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -78,6 +78,44 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.30.1 - Bug fix: AD Display Specifier Tampered rework (real false positive reported)
+- Fixes a real false positive reported after v1.30.0 shipped:
+  'remoteStorageServicePoint' (a native, Microsoft-defined AD schema
+  class dating to Windows 2000 Server, part of the old Remote Storage
+  feature) was flagged for its adminContextMenu entry pointing at
+  RsAdmin.msc - a completely standard, Microsoft-shipped MMC console.
+  The check's core assumption ("flag anything not under SYSVOL") was
+  wrong: plenty of legitimate, built-in entries point at local system
+  consoles/executables under %SystemRoot%\System32, which is the
+  normal, healthy default state of a domain.
+- Reworked detection to flag inherently-suspicious PATTERNS instead of
+  an allowlist of "known good" locations: a URL, a UNC path outside
+  SYSVOL\<domain>\Policies\, or a per-user-writable directory - plus two
+  new, independent signals sourced from published community guidance
+  (not this project's own invented heuristics): a command naming a
+  binary from the LOLBAS (Living Off The Land Binaries And Scripts)
+  project's well-established commonly-abused set (certutil, mshta,
+  regsvr32, rundll32, wscript/cscript, bitsadmin, msiexec, installutil,
+  msbuild, cmstp, forfiles, wmic, powershell/pwsh, regsvcs, regasm,
+  msdt, odbcconf, control - matching MITRE ATT&CK T1218/T1216), and a
+  command with a script/direct-execution file extension Microsoft's own
+  built-in registrations never use (.hta/.vbs/.vbe/.js/.jse/.wsf/.wsh/
+  .scr/.ps1/.psm1/.chm/.hlp).
+- Every finding from this check now carries an explicit, prominent
+  statement that it DOES NOT VALIDATE WHETHER THE REFERENCED FILE OR
+  URL IS ACTUALLY MALICIOUS - it only flags a pattern published guidance
+  associates with elevated risk for this kind of registration
+  (Details.MaliciousnessNotValidated = $true, plus the same statement in
+  the finding's own Impact text).
+- Changed output shape: previously every suspicious entry across the
+  whole domain was aggregated into ONE finding with a single long,
+  comma-joined Description string. Now emits ONE FINDING PER SUSPICIOUS
+  ENTRY, matching this project's established one-finding-per-affected-
+  object convention used everywhere else in the codebase - easier to
+  triage, sort, and filter.
+- No schema/output-contract change beyond the per-entry finding split
+  above; Issue string, Category, and Scoring.ps1 mapping are unchanged.
+
 v1.30.0 - PingCastle+ Delta Scan Implementation Pass (files/14-20, 23, 25-27; #21/22/28 deferred)
 - Ships eleven of the fourteen docs queued in 00-IMPLEMENTATION-ORDER.md
   from the 2026-09 PingCastle+ delta scan and codebase health scan, in

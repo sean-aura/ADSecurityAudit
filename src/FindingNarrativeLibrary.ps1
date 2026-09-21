@@ -166,8 +166,8 @@ $Script:ADFindingNarrativeLibrary = @{
         OperationalNotes = ''
     }
     'AD Display Specifier Tampered' = @{
-        EstimatedEffort  = 'Low - removing a single attribute value per affected DisplaySpecifier object, but confirm the referenced tool isn''t a legitimate (if unusually placed) admin console extension before removing.'
-        KnownRisks       = 'Removing a legitimate admin console extension (if one happens to be configured this way) will break that specific right-click context-menu action for administrators - confirm before removing.'
+        EstimatedEffort  = 'Low - removing a single attribute value on this DisplaySpecifier object, but confirm the referenced tool isn''t a legitimate (if unusually placed or named) admin console extension before removing.'
+        KnownRisks       = 'Removing a legitimate admin console extension (if one happens to be configured this way) will break that specific right-click context-menu action for administrators - confirm before removing. This check only flags a specific set of published, inherently-suspicious patterns (placement, LOLBAS binary names, script extensions); it cannot and does not confirm actual malicious intent or behavior, and a malicious entry placed inside an otherwise-protected system directory with an otherwise-unremarkable name would not be caught by this LDAP-only check.'
         BackupRollback   = 'Easy - record the current adminContextMenu value before removing it; effective immediately, no data loss.'
         OperationalNotes = ''
     }
