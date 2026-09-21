@@ -154,7 +154,7 @@ Remove the over-privileged ACE and grant only the required permissions:
                             $finding.Severity = 'High'
                             $finding.SeverityLevel = 3
                             $finding.AffectedObject = 'Enterprise Key Admins - Domain Naming Context'
-                            $finding.Description = "Enterprise Key Admins has WriteProperty rights that are not scoped to the msDS-KeyCredentialLink attribute only."
+                            $finding.Description = "Enterprise Key Admins has $($ace.ActiveDirectoryRights) rights scoped to ObjectType $($ace.ObjectType) instead of being scoped specifically to the msDS-KeyCredentialLink attribute (GUID: $keyCredentialLinkGuid)."
                             $finding.Impact = "Excessive property write permissions may allow unintended modifications to domain objects beyond the intended key credential management scope."
                             $finding.Remediation = "Scope Enterprise Key Admins permissions specifically to msDS-KeyCredentialLink attribute (GUID: $keyCredentialLinkGuid) only."
                             $finding.EstimatedEffort = 'Medium - a single-object ACE removal, but on a forest-wide replicated object, so it warrants confirming with the relevant application owner (e.g. Exchange, ADFS, or backup/DR tooling that sometimes provisions Configuration-NC rights during setup) before removing, plus a short post-change monitoring window.'

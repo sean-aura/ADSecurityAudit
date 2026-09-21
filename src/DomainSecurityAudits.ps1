@@ -364,7 +364,7 @@ function Test-ADDomainSecurity {
                 $finding.Severity = 'High'
                 $finding.SeverityLevel = 3
                 $finding.AffectedObject = $account.SamAccountName
-                $finding.Description = "Azure AD Seamless SSO computer account password has not been rotated within the last 30 days."
+                $finding.Description = "Azure AD Seamless SSO computer account password has not been rotated within the last 30 days$(if ($passwordAge -ne [TimeSpan]::MaxValue) { " (currently $([int]$passwordAge.TotalDays) days old, last set $($account.PasswordLastSet))" } else { " (PasswordLastSet is not set at all - the key has apparently never been rotated since the account was created)" })."
                 $finding.Impact = "Stale Kerberos decryption keys increase the risk of credential compromise for Seamless SSO."
                 $finding.Remediation = "Roll over the Azure AD Seamless SSO Kerberos decryption key using Azure AD Connect or the Update-AzureADSSOForest PowerShell cmdlet. Reference: https://learn.microsoft.com/azure/active-directory/hybrid/tshoot-connect-sso#roll-over-the-kerberos-decryption-key"
                 $finding.EstimatedEffort = 'Low - a single documented cmdlet (Update-AzureADSSOForest / Azure AD Connect) rolls the key over.'

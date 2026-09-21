@@ -206,42 +206,51 @@ function Test-ADSchemaIntegrity {
             Write-Verbose "Test-ADSchemaIntegrity: `$Script:SchemaDefaultSecurityDescriptors reference table is empty; skipping defaultSecurityDescriptor comparison rather than guessing at defaults."
         }
         else {
-            $modifiedClasses = @()
             foreach ($c in $classSchemas) {
                 if (-not $c.lDAPDisplayName) { continue }
                 if (-not $Script:SchemaDefaultSecurityDescriptors.ContainsKey($c.lDAPDisplayName)) { continue }
 
                 $expectedSddl = $Script:SchemaDefaultSecurityDescriptors[$c.lDAPDisplayName]
                 $actualSddl   = "$($c.defaultSecurityDescriptor)"
-                if ($actualSddl -and $expectedSddl -and ($actualSddl -ne $expectedSddl)) {
-                    $modifiedClasses += [PSCustomObject]@{
-                        ClassName         = $c.lDAPDisplayName
-                        DistinguishedName = $c.DistinguishedName
-                        ExpectedSddl      = $expectedSddl
-                        ActualSddl        = $actualSddl
-                    }
-                }
-            }
+                if (-not ($actualSddl -and $expectedSddl -and ($actualSddl -ne $expectedSddl))) { continue }
 
-            if ($modifiedClasses.Count -gt 0) {
+                # One finding per modified class (not aggregated into one
+                # multi-class finding) - matches this project's established
+                # one-finding-per-affected-object convention, and puts each
+                # class's actual/expected SDDL where a reader can actually
+                # see it. REPORTING NOTE: Details is only specially
+                # rendered in the HTML report for the 'Attack Paths'
+                # category - for every other category (this one included)
+                # it is NOT displayed at all, only present in the raw JSON
+                # export or as a compact embedded JSON blob in the CSV
+                # column. A reported gap confirmed this: the original
+                # aggregated version put the actual/expected SDDL ONLY in
+                # Details, so a reader looking at the HTML/CSV report saw
+                # which classes were flagged but nothing about what
+                # actually differed. Fixed by putting both values directly
+                # in Description, where every report format displays them.
                 $finding = [ADSecurityFinding]::new()
                 $finding.Category = 'Schema Integrity'
                 $finding.Issue = 'Schema defaultSecurityDescriptor Modified'
                 $finding.Severity = 'High'
                 $finding.SeverityLevel = 3
-                $finding.AffectedObject = (($modifiedClasses | ForEach-Object { $_.ClassName }) -join ', ')
-                $finding.Description = "$($modifiedClasses.Count) schema class(es) have a defaultSecurityDescriptor differing from the documented Microsoft default: $(($modifiedClasses | ForEach-Object { $_.ClassName }) -join ', ')."
-                $finding.Impact = "Every future object of a modified class inherits the altered ACL at creation time - a forest-wide backdoor affecting objects that don't exist yet, and one of the least-audited AD persistence techniques since it requires no ongoing action once set."
-                $finding.Remediation = "Review the actual vs. expected SDDL for each listed class and restore Microsoft's documented default unless the deviation is confirmed intentional and documented."
+                $finding.AffectedObject = $c.DistinguishedName
+                $finding.Description = "Schema class '$($c.lDAPDisplayName)' ($($c.DistinguishedName)) has a defaultSecurityDescriptor differing from the documented Microsoft default.`n- Expected (Microsoft-documented default): $expectedSddl`n- Actual (currently set on this schema): $actualSddl"
+                $finding.Impact = "Every future object of the '$($c.lDAPDisplayName)' class inherits this altered ACL at creation time - a forest-wide backdoor affecting objects that don't exist yet, and one of the least-audited AD persistence techniques since it requires no ongoing action once set."
+                $finding.Remediation = "Compare the Expected and Actual SDDL strings above (``ConvertFrom-SddlString -Sddl '<value>'`` decodes either one into a readable Owner/Group/DiscretionaryAcl object, which is easier to review than the raw SDDL text) and restore Microsoft's documented default for '$($c.lDAPDisplayName)' unless the deviation is confirmed intentional and documented."
                 $finding.EstimatedEffort = 'Medium - schema changes require Schema Admins and are forest-wide; validate the corrected SDDL in a lab before applying to production.'
                 $finding.KnownRisks = 'Restoring the default defaultSecurityDescriptor does not retroactively fix already-created objects that inherited the modified ACL at creation time - those objects need to be separately identified and remediated.'
                 $finding.BackupRollback = 'Difficult - schema attribute value changes are not easily reverted once objects have been created under the modified default; back up the current value and plan for a separate remediation pass on already-affected objects.'
                 $finding.Details = @{
-                    ModifiedClasses = @($modifiedClasses)
+                    ClassName         = $c.lDAPDisplayName
+                    DistinguishedName = $c.DistinguishedName
+                    ExpectedSddl      = $expectedSddl
+                    ActualSddl        = $actualSddl
                 }
                 $findings += $finding
             }
-            else {
+
+            if (-not ($findings | Where-Object { $_.Issue -eq 'Schema defaultSecurityDescriptor Modified' })) {
                 Write-Verbose "Test-ADSchemaIntegrity: no defaultSecurityDescriptor deviation found against the populated reference table."
             }
         }

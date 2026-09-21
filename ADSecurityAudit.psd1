@@ -1,6 +1,6 @@
 @{
     RootModule = 'ADSecurityAudit.psm1'
-    ModuleVersion = '1.30.4'
+    ModuleVersion = '1.30.5'
     GUID = '7eaedb96-5ee9-4cdf-9ebf-c5618a0d2f14'
     Author = 'AlchemicalChef'
     CompanyName = 'Community'
@@ -78,6 +78,52 @@
             ProjectUri = 'https://github.com/AlchemicalChef/ADSecurityAudit'
             IconUri = ''
             ReleaseNotes = @'
+v1.30.5 - Bug fix: several findings didn't show their own comparison values
+- Reported from real testing: 'Schema defaultSecurityDescriptor Modified'
+  listed which schema classes were flagged, but never showed what the
+  actual vs. expected defaultSecurityDescriptor values actually WERE -
+  the exact data the check exists to compare. Root cause: the comparison
+  data (ExpectedSddl/ActualSddl) was only ever written to Details, and
+  Reporting.ps1 only specially renders Details for the 'Attack Paths'
+  category - for every other category, including this one, Details is
+  invisible in the HTML report and only shows up as a compact embedded
+  JSON blob in the CSV column, never in a human-readable form.
+- Fixed: both the Expected (Microsoft-documented default) and Actual
+  (currently set on this schema) SDDL strings now appear directly in
+  the finding's own Description text, where every report format
+  displays them - no need to open the raw JSON or decode a CSV blob.
+  Also split what was one aggregated multi-class finding into one
+  finding per modified class, matching this project's established
+  one-finding-per-affected-object convention (and making each class's
+  own comparison unambiguous rather than needing to match values back
+  to class names in a joined list). Remediation text now suggests
+  ConvertFrom-SddlString to decode either value, since the raw SDDL
+  strings for user/computer in particular are 1000+ characters and not
+  practically hand-readable.
+- Prompted by that report, systematically scanned every finding block in
+  the codebase (162 total) for the same class of bug - a comparison/
+  measured value present in Details but absent from Description. Most
+  candidates the scan initially flagged turned out to be false
+  positives on manual inspection (the codebase already surfaces the
+  meaningful DERIVED value - e.g. ".Days" instead of a raw timestamp -
+  correctly in Description; the scan's heuristic just couldn't match a
+  renamed variable). Two further genuine instances were found and fixed
+  the same way:
+  - 'Stale AzureADSSOACC Kerberos Key' (DomainSecurityAudits.ps1):
+    Description said only "has not been rotated within the last 30
+    days" with no indication of the actual age or last-set date - both
+    now included directly.
+  - 'Enterprise Key Admins Permissions Not Scoped to
+    msDS-KeyCredentialLink' (PermissionsAudits.ps1): Description said
+    only that rights were "not scoped" without showing what ObjectType
+    GUID the ACE actually was scoped to, versus the expected
+    msDS-KeyCredentialLink GUID - both now shown directly.
+- Verified all three fixes via real execution (mocked AD cmdlets): each
+  produces exactly the expected finding, with the actual/expected
+  values now visible in Description.
+- No Issue string, Category, or Scoring.ps1 mapping change for any of
+  the three - this release is a Description/output-detail fix only.
+
 v1.30.4 - Packaged synthetic fixture samples + new-check validation workflow
 - New tools/synthetic-fixtures-samples/: the actual, real (not
   hand-written) output from tools/New-ADSecurityAuditSyntheticFixtures.ps1
