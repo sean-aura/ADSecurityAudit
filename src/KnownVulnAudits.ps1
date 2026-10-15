@@ -164,6 +164,28 @@ $Script:KnownVulnServer2025Build = 26100
 # than disappearing.
 $Script:KnownVulnBadSuccessorPatchedUBR = 4946
 
+# Per-OS-build fixed-UBR reference tables for the two Netlogon RCE CVEs
+# (files/25-known-vuln-per-os-build-refinement.md). Keyed by OS build
+# number (14393 = Server 2016, 17763 = Server 2019, 20348 = Server 2022).
+# Values are drawn directly from the per-OS fixed-build boundaries already
+# cited inline above for each CVE (CERT-EU for Netlogon2026May, Microsoft's
+# own KB support articles for Netlogon2026Sep) - the UBR is simply the
+# third component of each documented build number (e.g. 14393.9140 ->
+# UBR 9140). Server 2025 is intentionally NOT a key here for either CVE:
+# neither fixed UBR was independently confirmed at authoring time, so
+# Server 2025 DCs continue to use FixDate-only evaluation below, exactly
+# as they did before this refinement.
+$Script:KnownVulnNetlogon2026MayPatchedUBR = @{
+    14393 = 9140   # Server 2016, per CERT-EU (10.0.14393.9140)
+    17763 = 8755   # Server 2019, per CERT-EU (10.0.17763.8755)
+    20348 = 5074   # Server 2022, per CERT-EU (10.0.20348.5074)
+}
+$Script:KnownVulnNetlogon2026SepPatchedUBR = @{
+    14393 = 9512   # Server 2016 (KB5122878), 10.0.14393.9512
+    17763 = 9245   # Server 2019 (KB5122876), 10.0.17763.9245
+    20348 = 5622   # Server 2022 (KB5122882), 10.0.20348.5622
+}
+
 function Get-ADKnownVulnUBR {
     <#
     .SYNOPSIS
@@ -322,6 +344,10 @@ function Test-ADKnownDCVulnerabilities {
             SpoolerStatus    = $null
             UBR              = $null
             BadSuccessorPatchStatus = $null
+            Netlogon2026MayUBR         = $null
+            Netlogon2026MayPatchStatus = $null
+            Netlogon2026SepUBR         = $null
+            Netlogon2026SepPatchStatus = $null
             Error            = $null
         }
 
@@ -427,6 +453,63 @@ function Test-ADKnownDCVulnerabilities {
             }
         }
 
+        # --- Per-OS-build UBR classification for the two Netlogon RCE
+        #     CVEs (files/25-known-vuln-per-os-build-refinement.md) ---
+        # Additive precision alongside the FixDate-only evaluation below;
+        # only performed for OS builds with an independently-confirmed
+        # fixed UBR. Reuses Get-ADKnownVulnUBR unmodified - the same
+        # generic remote-registry read already used for the BadSuccessor
+        # classification above.
+        if ($dcState.OSBuildNumber -and $Script:KnownVulnNetlogon2026MayPatchedUBR.ContainsKey($dcState.OSBuildNumber)) {
+            try {
+                $ubrMay = Invoke-ADQueryWithRetry -OperationName "Read UBR registry value on $dcName (CVE-2026-41089 classification)" -Query {
+                    Get-ADKnownVulnUBR -ComputerName $dcName
+                }
+                if ($null -ne $ubrMay) {
+                    $dcState.Netlogon2026MayUBR = [int]$ubrMay
+                    if ($dcState.Netlogon2026MayUBR -ge $Script:KnownVulnNetlogon2026MayPatchedUBR[$dcState.OSBuildNumber]) {
+                        $dcState.Netlogon2026MayPatchStatus = 'Patched'
+                    }
+                    else {
+                        $dcState.Netlogon2026MayPatchStatus = 'Unpatched'
+                    }
+                }
+                else {
+                    $dcState.Netlogon2026MayPatchStatus = 'Unknown'
+                }
+            }
+            catch {
+                Write-Verbose "Test-ADKnownDCVulnerabilities: could not read UBR on '$dcName' for CVE-2026-41089 per-OS-build classification; reported as unknown, never assumed patched: $_"
+                $dcState.Netlogon2026MayPatchStatus = 'Unknown'
+                if (-not $dcState.Error) { $dcState.Error = "$_" }
+            }
+        }
+
+        if ($dcState.OSBuildNumber -and $Script:KnownVulnNetlogon2026SepPatchedUBR.ContainsKey($dcState.OSBuildNumber)) {
+            try {
+                $ubrSep = Invoke-ADQueryWithRetry -OperationName "Read UBR registry value on $dcName (CVE-2026-72982 classification)" -Query {
+                    Get-ADKnownVulnUBR -ComputerName $dcName
+                }
+                if ($null -ne $ubrSep) {
+                    $dcState.Netlogon2026SepUBR = [int]$ubrSep
+                    if ($dcState.Netlogon2026SepUBR -ge $Script:KnownVulnNetlogon2026SepPatchedUBR[$dcState.OSBuildNumber]) {
+                        $dcState.Netlogon2026SepPatchStatus = 'Patched'
+                    }
+                    else {
+                        $dcState.Netlogon2026SepPatchStatus = 'Unpatched'
+                    }
+                }
+                else {
+                    $dcState.Netlogon2026SepPatchStatus = 'Unknown'
+                }
+            }
+            catch {
+                Write-Verbose "Test-ADKnownDCVulnerabilities: could not read UBR on '$dcName' for CVE-2026-72982 per-OS-build classification; reported as unknown, never assumed patched: $_"
+                $dcState.Netlogon2026SepPatchStatus = 'Unknown'
+                if (-not $dcState.Error) { $dcState.Error = "$_" }
+            }
+        }
+
         if (-not $dcState.Reachable) {
             Write-Verbose "Test-ADKnownDCVulnerabilities: DC '$dcName' unreachable; skipping (no finding for this DC)."
             [void]$perDcState.Add([PSCustomObject]$dcState)
@@ -447,12 +530,6 @@ function Test-ADKnownDCVulnerabilities {
             if ($dcState.SpoolerStatus -eq 'Running' -and $dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.PrintNightmare.FixDate) {
                 [void]$printNightmareDCs.Add($dcName)
             }
-            if ($dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.Netlogon2026May.FixDate) {
-                [void]$netlogon2026DCs.Add($dcName)
-            }
-            if ($dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.Netlogon2026Sep.FixDate) {
-                [void]$netlogon2026SepDCs.Add($dcName)
-            }
         }
         else {
             # No reliable patch-date evidence at all (neither an OS install
@@ -460,6 +537,39 @@ function Test-ADKnownDCVulnerabilities {
             # the legacy CVEs, so it is reported for manual review rather
             # than silently assumed patched or silently assumed vulnerable.
             Write-Verbose "Test-ADKnownDCVulnerabilities: no OS install date or hotfix record available for '$dcName'; cannot determine legacy-CVE patch status from this data alone."
+        }
+
+        # --- Netlogon2026May / Netlogon2026Sep final determination ---
+        # Per files/25-known-vuln-per-os-build-refinement.md: a CONCLUSIVE
+        # UBR classification (Patched or Unpatched) for this DC is
+        # authoritative and takes precedence over the FixDate-only result -
+        # this is what removes the FixDate-only over-reporting ambiguity
+        # described in that doc. An INCONCLUSIVE UBR read (Unknown - e.g.
+        # remote registry access failed or was unreachable) falls back to
+        # the ORIGINAL, unchanged FixDate-only evaluation for that DC,
+        # rather than being treated as an automatic flag - this refinement
+        # is additive precision on top of FixDate-only evaluation, not a
+        # replacement, so a DC this refinement can't get a confident read
+        # from is evaluated exactly as it always was, never more
+        # aggressively just because a registry read happened to fail.
+        if ($dcState.Netlogon2026MayPatchStatus -eq 'Patched') {
+            # Confirmed patched by UBR - do not flag, regardless of FixDate.
+        }
+        elseif ($dcState.Netlogon2026MayPatchStatus -eq 'Unpatched') {
+            [void]$netlogon2026DCs.Add($dcName)
+        }
+        elseif ($dcState.EffectivePatchDate -and $dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.Netlogon2026May.FixDate) {
+            [void]$netlogon2026DCs.Add($dcName)
+        }
+
+        if ($dcState.Netlogon2026SepPatchStatus -eq 'Patched') {
+            # Confirmed patched by UBR - do not flag, regardless of FixDate.
+        }
+        elseif ($dcState.Netlogon2026SepPatchStatus -eq 'Unpatched') {
+            [void]$netlogon2026SepDCs.Add($dcName)
+        }
+        elseif ($dcState.EffectivePatchDate -and $dcState.EffectivePatchDate -lt $Script:KnownVulnFixThresholds.Netlogon2026Sep.FixDate) {
+            [void]$netlogon2026SepDCs.Add($dcName)
         }
 
         [void]$perDcState.Add([PSCustomObject]$dcState)

@@ -274,6 +274,10 @@ function Test-ADCSExtended {
           - ROCA-vulnerable keys (CVE-2017-15361) and weak signature
             algorithms / RSA key sizes across the CA certificates, the
             NTAuthCertificates object, and the AIA/Root store.
+          - ESC15 ("EKUwu", CVE-2024-49019): a Schema Version 1 template
+            with low-privileged enrollment and no manager-approval gate,
+            which lets a requester inject arbitrary Application Policy
+            OIDs into the CSR, bypassing the template's declared EKUs.
 
         Detection only - reads template/CA attributes, ACLs, and published
         certificate bytes, plus (ESC8 only) remote service/web-configuration
@@ -671,6 +675,82 @@ function Test-ADCSExtended {
                 $findings += $finding
             }
         }
+    }
+
+    # -------------------------------------------------------------------
+    # ESC15 (EKUwu / Schema V1 EKU injection, CVE-2024-49019)
+    # -------------------------------------------------------------------
+    # An undocumented Microsoft AD CS vulnerability: a Schema Version 1
+    # certificate template has no application-policy/EKU extension
+    # enforced by the CA the way Schema V2+ templates do, so a requester
+    # can inject arbitrary Application Policy OIDs (EKUs) into the CSR
+    # itself, bypassing whatever EKU the template's own configuration
+    # would otherwise imply - including injecting Client Authentication
+    # to impersonate another account. Reuses the exact same template
+    # enumeration and low-privilege-enrollment ACL read already used
+    # above for ESC4/ESC13, plus the same manager-approval-gate check
+    # (CT_FLAG_PEND_ALL_REQUESTS) already used by the high-risk-without-
+    # approval check below - no new AD query.
+    foreach ($template in $certTemplates) {
+        $templateName15 = if ($template.displayName) { $template.displayName } else { $template.Name }
+
+        $schemaVersion15 = $template.'msPKI-Template-Schema-Version'
+        if ($schemaVersion15 -ne 1) { continue }
+
+        $templateAcl15 = try {
+            (Get-ADObject -Identity $template.DistinguishedName -Properties nTSecurityDescriptor -Server $__adServer -ErrorAction Stop).nTSecurityDescriptor
+        }
+        catch {
+            Write-Verbose "Test-ADCSExtended: could not get ACL for template '$templateName15' (ESC15 check): $_"
+            $null
+        }
+
+        $hasLowPrivEnrollment15 = $false
+        $enrollmentPrincipals15 = @()
+        if ($templateAcl15) {
+            foreach ($ace in $templateAcl15.Access) {
+                if ($ace.ActiveDirectoryRights -match 'ExtendedRight|GenericAll') {
+                    $principalName = $ace.IdentityReference.Value
+                    foreach ($lowPriv in $lowPrivilegedPrincipals) {
+                        if ($principalName -match [regex]::Escape($lowPriv)) {
+                            $hasLowPrivEnrollment15 = $true
+                            $enrollmentPrincipals15 += $principalName
+                        }
+                    }
+                }
+            }
+        }
+        $enrollmentPrincipals15 = @($enrollmentPrincipals15 | Select-Object -Unique)
+        if (-not $hasLowPrivEnrollment15) { continue }
+
+        # CT_FLAG_PEND_ALL_REQUESTS = 0x2 (manager approval required) -
+        # same bit, same helper convention as the high-risk-without-
+        # approval check below.
+        $enrollmentFlag15 = $template.'msPKI-Enrollment-Flag'
+        $requiresApproval15 = [bool]([int64]($enrollmentFlag15) -band 2)
+        if ($requiresApproval15) { continue }
+
+        $finding = [ADSecurityFinding]::new()
+        $finding.Category = 'Certificate Services'
+        $finding.Issue = 'Certificate Template Vulnerable to Schema V1 EKU Injection (ESC15)'
+        $finding.Severity = 'Critical'
+        $finding.SeverityLevel = 4
+        $finding.AffectedObject = $templateName15
+        $finding.Description = "Certificate template '$templateName15' is Schema Version 1 (msPKI-Template-Schema-Version = 1), allows enrollment by low-privileged principal(s) ($($enrollmentPrincipals15 -join ', ')), and does not require manager approval (CT_FLAG_PEND_ALL_REQUESTS is not set)."
+        $finding.Impact = "CVE-2024-49019 ('EKUwu'): on a Schema Version 1 template, the CA does not constrain the Application Policy OIDs (Extended Key Usages) a requester can inject into the CSR itself, regardless of the template's own declared EKUs. A low-privileged enrollee can inject Client Authentication (or another sensitive EKU) and obtain a certificate usable to authenticate as another account, including a privileged one - functionally similar in outcome to ESC1/ESC13 but reachable through a different, undocumented mechanism specific to Schema V1 templates."
+        $finding.Remediation = "Duplicate this template as a Schema Version 2 or later template (which enforces the CA-side EKU/application-policy constraint) and retire the Schema V1 original, or restrict enrollment on the existing template to trusted administrators only, or require manager approval (CT_FLAG_PEND_ALL_REQUESTS) as an interim mitigation. Apply the November 2024 security update (CVE-2024-49019, disclosed by TrustedSec and patched by Microsoft on November 12, 2024) to the issuing CA(s), which addresses the underlying vulnerability."
+        $finding.EstimatedEffort = 'Medium - duplicating a template as Schema V2+ and re-pointing enrollment is a routine AD CS operation, but requires confirming which systems currently enroll against the V1 original before retiring it.'
+        $finding.KnownRisks = 'Retiring a Schema V1 template can break legacy clients or workflows (e.g. very old Windows Server versions, or agents predating Schema V2 support) that specifically enroll against a V1 template - confirm no legitimate dependency before retiring rather than duplicating.'
+        $finding.BackupRollback = 'Easy - the original Schema V1 template is unaffected by publishing a new V2+ duplicate alongside it; only retiring/unpublishing the V1 original needs to be reversible (re-publish it) if an unexpected dependency surfaces.'
+        $finding.Details = @{
+            DistinguishedName    = $template.DistinguishedName
+            SchemaVersion        = $schemaVersion15
+            EnrollmentPrincipals = $enrollmentPrincipals15 -join '; '
+            RequiresApproval     = $requiresApproval15
+            ESCType              = 'ESC15'
+            Cve                  = 'CVE-2024-49019'
+        }
+        $findings += $finding
     }
 
     # -------------------------------------------------------------------

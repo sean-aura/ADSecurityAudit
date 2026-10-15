@@ -836,6 +836,56 @@ function Test-ADDomainAdminEquivalence {
             }
         }
 
+        # -------------------------------------------------------------------
+        # Constrained Delegation Configured to Decommissioned SPN
+        # (files/18-account-computer-hygiene-gaps.md). Extends the
+        # constrained-delegation enumeration already fetched above
+        # ($constrainedDelegation, via msDS-AllowedToDelegateTo) with a
+        # ghost-SPN cross-reference: for each listed SPN, extract the host
+        # component and check it against the full computer-object list
+        # already enumerated above for the Shadow Credentials check
+        # ($criticalComputers) - no new msDS-AllowedToDelegateTo query.
+        # -------------------------------------------------------------------
+        if ($criticalComputers) {
+            $knownComputerShortNames = @($criticalComputers | ForEach-Object { ($_.Name).ToLowerInvariant() })
+
+            foreach ($delegator in $constrainedDelegation) {
+                $ghostTargets = @()
+                foreach ($targetSPN in @($delegator.'msDS-AllowedToDelegateTo')) {
+                    $targetHostGhost = ($targetSPN -split '/')[1]
+                    if (-not $targetHostGhost) { continue }
+                    if ($targetHostGhost -match ':') { $targetHostGhost = ($targetHostGhost -split ':')[0] }
+                    $targetHostShortGhost = (($targetHostGhost -split '\.')[0]).ToLowerInvariant()
+
+                    if ($targetHostShortGhost -notin $knownComputerShortNames) {
+                        $ghostTargets += $targetSPN
+                    }
+                }
+                $ghostTargets = @($ghostTargets | Select-Object -Unique)
+
+                if ($ghostTargets.Count -gt 0) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Admin Equivalence'
+                    $finding.Issue = 'Constrained Delegation Configured to Decommissioned SPN'
+                    $finding.Severity = 'High'
+                    $finding.SeverityLevel = 3
+                    $finding.AffectedObject = $delegator.samAccountName
+                    $finding.Description = "Account '$($delegator.samAccountName)' has msDS-AllowedToDelegateTo listing SPN(s) whose host component does not resolve to any current computer object in the domain: $($ghostTargets -join '; ')."
+                    $finding.Impact = "A delegation target whose host no longer exists as a real computer object is a decommissioned target whose delegation configuration was never cleaned up. If an attacker can re-register a computer object with that same hostname (e.g. via a default, non-hardened Machine Account Quota), they could potentially receive delegated authentication traffic intended for the original, decommissioned host."
+                    $finding.Remediation = "Remove the stale SPN(s) listed above from '$($delegator.samAccountName)''s msDS-AllowedToDelegateTo attribute, since the delegation target no longer exists: Set-ADObject -Identity '$($delegator.DistinguishedName)' -Remove @{'msDS-AllowedToDelegateTo'='<stale SPN>'}"
+                    $finding.EstimatedEffort = 'Low - removing one or more stale SPN entries from a single account''s delegation configuration.'
+                    $finding.KnownRisks = 'Low - the target host doesn''t currently exist, so removing the stale delegation entry has no legitimate functional impact today; confirm the host is genuinely decommissioned (not simply temporarily offline) before removing.'
+                    $finding.BackupRollback = 'Easy - re-add the SPN to msDS-AllowedToDelegateTo if the host turns out to still be in use under a different naming scenario; no data loss either way.'
+                    $finding.Details = @{
+                        DistinguishedName  = $delegator.DistinguishedName
+                        GhostSPNs          = ($ghostTargets -join '; ')
+                        AllowedToDelegateTo = (@($delegator.'msDS-AllowedToDelegateTo') -join '; ')
+                    }
+                    $findings += $finding
+                }
+            }
+        }
+
         Write-Verbose "Checking RBCD (AllowedToActOnBehalfOfOtherIdentity) on Domain Controllers..."
         foreach ($dc in $dcComputers) {
             $dcObj = $null

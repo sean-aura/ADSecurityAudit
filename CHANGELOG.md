@@ -7,6 +7,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.30.5] - 2026-09-21
+
+Bug fix release, reported from real testing against a live environment.
+
+### Fixed
+
+- **`'Schema defaultSecurityDescriptor Modified'` didn't show its own comparison values.** The finding listed which schema classes were flagged, but never showed what the actual vs. expected `defaultSecurityDescriptor` values actually *were* - the exact data the check exists to compare. Root cause: the comparison data (`ExpectedSddl`/`ActualSddl`) was only ever written to `Details`, and `Reporting.ps1` only specially renders `Details` for the `'Attack Paths'` category - for every other category, including this one, `Details` is invisible in the HTML report and only shows up as a compact embedded JSON blob in the CSV column, never in a human-readable form.
+
+  Fixed: both the Expected (Microsoft-documented default) and Actual (currently set on this schema) SDDL strings now appear directly in the finding's own `Description` text, where every report format displays them - no need to open the raw JSON or decode a CSV blob. Also split what was one aggregated multi-class finding into **one finding per modified class**, matching this project's established one-finding-per-affected-object convention, and making each class's own comparison unambiguous rather than needing to match values back to class names in a joined list.
+
+  `Remediation` text now suggests `ConvertFrom-SddlString` to decode either value into a readable `Owner`/`Group`/`DiscretionaryAcl` object, since the raw SDDL strings for `user`/`computer` in particular are 1000+ characters and not practically hand-readable.
+
+- **Prompted by that report, systematically scanned every finding block in the codebase (162 total)** for the same class of bug - a comparison/measured value present in `Details` but absent from `Description`. Most candidates the scan initially flagged turned out to be false positives on manual inspection (the codebase already surfaces the meaningful *derived* value - e.g. `.Days` instead of a raw timestamp - correctly in `Description`; the scan's heuristic just couldn't match a renamed variable). Two further genuine instances were found and fixed the same way:
+
+  - **`'Stale AzureADSSOACC Kerberos Key'`** (`DomainSecurityAudits.ps1`): `Description` said only *"has not been rotated within the last 30 days"* with no indication of the actual age or last-set date - both now included directly.
+  - **`'Enterprise Key Admins Permissions Not Scoped to msDS-KeyCredentialLink'`** (`PermissionsAudits.ps1`): `Description` said only that rights were *"not scoped"* without showing what `ObjectType` GUID the ACE actually was scoped to, versus the expected `msDS-KeyCredentialLink` GUID - both now shown directly.
+
+  Verified all three fixes via real execution (mocked AD cmdlets): each produces exactly the expected finding, with the actual/expected values now visible in `Description`.
+
+No `Issue` string, `Category`, or `Scoring.ps1` mapping change for any of the three findings above - this release is a `Description`/output-detail fix only.
+
+## [1.30.4] - 2026-09-21
+
+Packaging and documentation only - no detection-logic, scoring, or output-contract changes.
+
+### Added
+
+- **`tools/synthetic-fixtures-samples/`** - the actual, real output from `tools/New-ADSecurityAuditSyntheticFixtures.ps1` (not hand-written): all four tiers (25/50/75/100%) of JSON findings, score sidecars, rebuilt HTML, and rebuilt CSV, checked in as reference samples. Includes a `README.md` documenting what they are, how to regenerate them, and a step-by-step checklist for validating a **new check** before it ships:
+  1. Confirm its `Scoring.ps1` entry exists (`$Script:ADFindingMetadataMap.ContainsKey(...)`)
+  2. Confirm it has a `FindingNarrativeLibrary.ps1` entry
+  3. Regenerate the synthetic fixtures and confirm the new Issue appears in the right tier/`Category`, and that `CategoryScores` moves as expected
+  4. Write/extend a Pester test for the check specifically
+  5. Run the full Pester suite
+
+### Fixed
+
+- **A real `.gitignore` collision**, found by actually testing with `git`: the blanket `AD_Security_Audit_*.json`/`.html`/`.csv` and `AD_Security_Score_*.json` patterns (which exist specifically to keep real audit output out of the repo) matched the new sample filenames exactly, so `git add` would have silently dropped every one of them. Added explicit negation exceptions scoped to `tools/synthetic-fixtures-samples/` only. Verified with a real `git add -A`: the samples now stage correctly (confirmed `git status` shows all 20 files as `A`), and genuine audit output elsewhere in the repo (tested with a synthetic `AD_Security_Audit_<real-timestamp>.json` outside that folder) is still correctly ignored.
+
+### Changed
+
+- `tools/New-ADSecurityAuditSyntheticFixtures.ps1`'s own `.NOTES` section now points at the samples folder.
+- `README.md`'s Test Coverage section links to the samples folder and the new-check checklist.
+
+## [1.30.3] - 2026-09-21
+
+First real PowerShell-execution validation pass of this whole delta-scan series. A PowerShell 7.6.6 runtime became available partway through this release series - everything before this was verified by hand-tracing PowerShell semantics only, with no way to actually parse or run any of it.
+
+### Verified (not fixed - confirmed correct via real execution)
+
+- Full AST parse of every file in `src/`, `tools/`, and `tests/` (87 files): **zero syntax errors**.
+- The entire module (all 44 `src/*.ps1` files) dot-sources cleanly with zero errors; every new and modified function loads correctly.
+- Direct execution (mocked AD cmdlets - Pester itself could not be installed/built in this environment; see below) of the highest-risk logic from this series, all passing:
+  - The Netlogon UBR/FixDate fallback regression fix (v1.30.0) - all 4 interaction cases (conclusive-Patched, conclusive-Unpatched, inconclusive-with-stale-FixDate, inconclusive-with-current-FixDate)
+  - The `AD Display Specifier Tampered` rework (v1.30.1), including the **exact reported false positive** (`remoteStorageServicePoint`/`RsAdmin.msc` - confirmed no longer flagged) alongside genuinely suspicious UNC/LOLBAS/extension cases (confirmed still flagged, with the bulleted-reason-list formatting rendering correctly)
+  - The three new checks covered by v1.30.2's Pester files (`AdminSDHolder Inheritance Re-Enabled`, `Legacy LAPS SearchFlags Exposes Password`, `SPN-Holding Account Also Has DCSync Rights`)
+- Pester could not be installed (PowerShell Gallery is network-blocked in this environment) or built from source (requires compiling a C# assembly via the .NET SDK, also unavailable here). Direct execution of the actual code paths above is not a substitute for a real Pester run, but it is genuine execution, not static analysis.
+
+### Fixed
+
+- **`tools/New-ADSecurityAuditSyntheticFixtures.ps1` (new in v1.30.2) had a real bug, found only by actually running it**: every synthetic finding was tagged with one shared `"Synthetic Fixture"` `Category`. `Get-ADRiskScore`'s scoring model computes each category's score independently (with diminishing returns) and takes the *max* across categories as `TotalScore` - concentrating every finding into one category saturated it almost immediately, so all four tiers (25/50/75/100%) came back with the identical `TotalScore=100`, defeating the entire point of a four-tier maturity demonstration.
+
+  Fixed by having the tool extract each Issue's **real** `Category` directly from its own `$finding.Category` assignment in `src/*.ps1` (a source-code scan, not a guess) before building synthetic findings.
+
+  Verified after the fix: the 25% tier now genuinely differs (`TotalScore=92`, 20 categories represented) from the 50/75/100% tiers (21/27/29 categories) - though `TotalScore` itself still saturates at 100 for those three once enough Critical-weight findings concentrate in any one category. That's a faithful reflection of the real "weakest link" scoring model, not a remaining bug - the category-count and per-category-score breakdown is where the tier gradient is genuinely visible at the higher tiers.
+
+  Ran the fixed generator end-to-end with `-GenerateReports`: confirmed real HTML (correct per-category grouping and finding counts) and CSV (`EstimatedEffort`/`KnownRisks`/`BackupRollback` correctly backfilled from `FindingNarrativeLibrary.ps1` via `Merge-ADFindingNarrativeGaps`, not left as placeholder text) output for all four tiers.
+
+No detection-logic or output-contract changes to any check beyond the synthetic-fixture-generator fix above; all `Issue`/`Scoring`/`Category` behavior for real (non-synthetic) findings is unchanged from v1.30.2.
+
+## [1.30.2] - 2026-09-21
+
+Follow-up fixes and tooling, addressing gaps found after v1.30.1 shipped.
+
+### Fixed
+
+- **`'Schema defaultSecurityDescriptor Modified'` is no longer a permanent stub.** `$Script:SchemaDefaultSecurityDescriptors` (`SchemaAudits.ps1`) is now populated with the actual current default SDDL for the `user`, `computer`, `group`, and `organizationalUnit` classes, sourced directly from [Microsoft's own AD Schema Reference class pages](https://learn.microsoft.com/windows/win32/adschema/) - not reconstructed from memory. Known caveat: Microsoft's public reference documents these values through Windows Server 2012 only; no later change has been found documented, but this has not been independently re-verified against a current, unmodified schema. Maintain this table the same way `KnownVulnAudits.ps1`'s CVE fix-date table is maintained - one inline citation per entry, re-verified periodically.
+
+### Changed
+
+- **`'AD Display Specifier Tampered'` formatting**: when a single entry matches more than one higher-risk pattern (e.g. a non-SYSVOL UNC path *and* a risky file extension), the matched reasons now render as a bulleted list in `Description` instead of a run-on joined sentence - reusing this project's own existing newline-to-`<br>` HTML rendering convention (already used elsewhere, e.g. Domain Admin Equivalence/ESC4 findings), rather than inventing a new formatting mechanism.
+
+### Added
+
+- **New Pester coverage for three files that had none at all**, despite shipping new v1.30.0 checks:
+  - `tests/AdminSDAudits.Tests.ps1` - `'AdminSDHolder Inheritance Re-Enabled'`
+  - `tests/LapsAudits.Tests.ps1` - `'Legacy LAPS SearchFlags Exposes Password'`
+  - `tests/ReplicationAudits.Tests.ps1` - `'SPN-Holding Account Also Has DCSync Rights'`
+
+  The DCSync cross-check tests deliberately use SID-format identity strings rather than `"DOMAIN\name"` strings: the real code path resolves non-SID identities via a live `[System.Security.Principal.NTAccount]::Translate()` .NET call that requires a real Windows account/domain to resolve and would fail in any non-domain-joined test environment. A SID string bypasses that call entirely, keeping the tests fully offline and deterministic.
+
+- **New `tools/New-ADSecurityAuditSyntheticFixtures.ps1`**: generates synthetic `AD_Security_Audit_*.json` findings files (and, with `-GenerateReports`, their HTML/CSV reports) at four failure-density tiers - 25%/50%/75%/100% of every Issue this project's own `$Script:ADFindingMetadataMap` knows about - so report rendering can be exercised across the full maturity spectrum without a real Active Directory environment. Every synthetic finding is clearly labeled `"[SYNTHETIC TEST DATA]"` in its `Description`/`Impact`/`Remediation` text; this proves report *rendering* works, not that detection logic is correct, and is not a substitute for testing against a real domain or running the Pester suite.
+
+No detection-logic or output-contract changes beyond the `defaultSecurityDescriptor` table populating (which lets an already-shipped, already-scored Issue fire for the first time) and the Display Specifier `Description` formatting change - the `Issue` strings and `Scoring.ps1` mappings from v1.30.0/v1.30.1 are unchanged.
+
+## [1.30.1] - 2026-09-21
+
+Bug fix release. Fixes a real false positive reported after v1.30.0 shipped, in `'AD Display Specifier Tampered'` (`SchemaAudits.ps1`).
+
+### Fixed
+
+- **`'AD Display Specifier Tampered'` false positive**: `remoteStorageServicePoint` - a native, Microsoft-defined AD schema class dating to Windows 2000 Server, part of the old Remote Storage feature - was flagged for its `adminContextMenu` entry pointing at `RsAdmin.msc`, a completely standard, Microsoft-shipped MMC console. The check's core assumption ("flag anything not under SYSVOL") was wrong: plenty of legitimate, built-in entries point at local system consoles/executables under `%SystemRoot%\System32`, which is the normal, healthy default state of a domain, not evidence of tampering.
+
+### Changed
+
+- **Reworked `'AD Display Specifier Tampered'` detection** to flag inherently-suspicious *patterns* instead of an allowlist of "known good" locations:
+  - A URL (`http://`, `https://`, `ftp://`, `file://`)
+  - A UNC path outside `SYSVOL\<domain>\Policies\`
+  - A path under a per-user-writable/temp location (`%TEMP%`, `%APPDATA%`, `\Users\`, `\Windows\Temp\`, etc.)
+  - **New, sourced from published community guidance rather than an invented heuristic**: a command naming a binary from the [LOLBAS (Living Off The Land Binaries And Scripts) project](https://lolbas-project.github.io)'s well-established, cross-referenced set of commonly-abused dual-use Windows binaries (`certutil`, `mshta`, `regsvr32`, `rundll32`, `wscript`/`cscript`, `bitsadmin`, `msiexec`, `installutil`, `msbuild`, `cmstp`, `forfiles`, `wmic`, `powershell`/`pwsh`, `regsvcs`, `regasm`, `msdt`, `odbcconf`, `control`), matching MITRE ATT&CK T1218 (System Binary Proxy Execution) / T1216 (System Script Proxy Execution) - this fires regardless of placement, since referencing one of these as a static admin-console command is itself unusual
+  - **New**: a script/direct-execution file extension Microsoft's own built-in registrations never use (`.hta`, `.vbs`, `.vbe`, `.js`, `.jse`, `.wsf`, `.wsh`, `.scr`, `.ps1`, `.psm1`, `.chm`, `.hlp`)
+  - A bare filename (Microsoft's own common built-in-console registration style) or a local path rooted under `%SystemRoot%`/`%ProgramFiles%` is treated as safe on placement alone
+- **Every finding from this check now carries an explicit, prominent statement that it does not validate whether the referenced file or URL is actually malicious** - it only flags a pattern that published guidance associates with elevated risk for this specific kind of registration. Machine-readable via `Details.MaliciousnessNotValidated = $true`; human-readable in the finding's own `Impact` text, quoting the LOLBAS maintainers' own framing that "the line between legitimate administration and attack sits in the context, not the file."
+- **Changed output shape**: previously every suspicious entry across the whole domain was aggregated into one finding with a single long, comma-joined `Description` string. Now emits **one finding per suspicious entry**, matching this project's established one-finding-per-affected-object convention used everywhere else in the codebase (see e.g. `UserAudits.ps1`) - easier to triage, sort, and filter than one long string.
+- No output-contract change beyond the per-entry finding split above; the `Issue` string, `Category`, and `Scoring.ps1` mapping are unchanged from v1.30.0, so no version-column or scoring-table update was needed for this fix.
+
+## [1.30.0] - 2026-09-21
+
+PingCastle+ delta scan implementation pass. Implements eleven of the fourteen docs queued in `00-IMPLEMENTATION-ORDER.md` (from the 2026-09 PingCastle+ delta scan and codebase health scan), in the order that table recommends, front-loading the smallest/lowest-risk items. `files/21` (GPO/endpoint hardening extensions), `files/22` (PSGuerrilla infrastructure hygiene), and `files/28` (real-BloodHound-collection diff) are **deliberately deferred** to a future release: each is explicitly flagged in its own doc as needing lab or real-collection verification before merging, and this pass avoided expanding into BloodHound-adjacent surface area for #22/#28 specifically.
+
+- **New (`files/14-adcs-esc15-schema-v1.md`):** ESC15 / "EKUwu" (CVE-2024-49019) added to `CertificateServicesExtendedAudits.ps1` - `'Certificate Template Vulnerable to Schema V1 EKU Injection (ESC15)'` flags a Schema Version 1 template with low-privileged enrollment and no manager-approval gate, reusing the existing template-enumeration and low-privilege-enrollment/approval-gate helpers already shared by ESC1/ESC2/ESC9/ESC13. No new AD query.
+- **New (`files/19-trust-pim-attribute.md`):** `'Trust Configured for Privileged Identity Management (PIM_TRUST)'` added to `DomainTrustAudits.ps1`, reusing the already-fetched `trustAttributes` property (sibling check to the existing Cross-Trust TGT Delegation check).
+- **New (`files/23-dcsync-spn-crosscheck.md`):** `'SPN-Holding Account Also Has DCSync Rights'` added to `ReplicationAudits.ps1` - cross-references the existing DCSync-rights identity set against `ServicePrincipalName`, per the September 2026 revision of the joint ASD/CISA/NSA/CCCS/NCSC-NZ/NCSC-UK "Detecting and mitigating Active Directory compromises" guidance. Scoped to direct ACE holders only, matching the existing DCSync check's own scope (documented limitation, not silently under-covered).
+- **New (`files/20-legacy-protocol-replication-hygiene.md`):** `'GPO Permits LM Hash Storage'` (NoLMHash, `LegacyAuthAudits.ps1` "Check 7") and `'Legacy FRS-Based SYSVOL Replication In Use'` (`StaleObjectDepthAudits.ps1`). The FRS/DFSR check was corrected during self-review before release: the initial implementation read a raw AD attribute (`msDFSR-Options`) and assumed a simple 0-3 integer state, which turned out to be the wrong attribute entirely (the real migration state lives in `msDFSR-Flags`, a bit-flag combination, not a simple integer). Rather than reverse-engineer that bit encoding from secondary sources, the check now runs `dfsrmig.exe /GetGlobalState` directly against the domain's PDC Emulator (the same authoritative source an administrator would consult manually) and parses its own reported state name. A further correction bounds this remote call with an explicit 10s/15s connect/operation timeout and a single attempt (no retry-with-backoff) rather than this project's usual defaults, since an AD/LDAP query timing out quickly is very different from a WinRM connection to an unreachable host, which can otherwise hang far longer than any other check in this project before failing closed - including, notably, during a fully-mocked unit test run where no real DC is reachable at all.
+- **New (`files/16-rogue-dc-registration-integrity.md`):** new `DomainControllerIntegrityAudits.ps1` with `'Domain Controller Registration Inconsistent'` and `'Rogue NTDS Settings Object Detected'` (the DCShadow-artifact check). Closes the `S-DCRegistration` claim-vs-code gap the codebase health scan independently found in `StaleObjectDepthAudits.ps1`'s header. Also adds the previously-missing `T1207` (Rogue Domain Controller) entry to `$Script:MitreTechniqueNames` - the doc that motivated this file assumed T1207 was already present; on direct read it was not, so it was added here rather than reused.
+- **New (`files/15-schema-persistence-tampering.md`):** `'AdminSDHolder Inheritance Re-Enabled'` added directly to `AdminSDAudits.ps1` (reuses the ACL already read for the existing ACE/deny-ACE checks). New `SchemaAudits.ps1` with `'Vulnerable Schema Class Allows Arbitrary Object Creation'` (PossSuperiorComputer/PossSuperiorUser, plus an explicit `msExchStorageGroup`/CVE-2021-34470 check) and `'AD Display Specifier Tampered'`. The latter was reworked TWICE before release: first, during self-review, to distinguish the two documented `adminContextMenu` registration shapes (2-field COM registration vs. 3-field static command); then again after a real false positive was reported in testing (`remoteStorageServicePoint` flagging Microsoft's own built-in `RsAdmin.msc` console). The original "flag anything not under SYSVOL" allowlist was fundamentally wrong - plenty of legitimate, Microsoft-shipped entries point at local system consoles under `%SystemRoot%\System32`. Reworked to instead flag only inherently-suspicious placement *patterns* regardless of what ships by default: a URL scheme, a UNC path outside `SYSVOL\<domain>\Policies\`, or a per-user-writable location (`%TEMP%`, `%APPDATA%`, `\Users\`, etc.) - a bare filename or a local system/Program Files path is now correctly treated as safe. `'Schema defaultSecurityDescriptor Modified'` is wired up but its reference table (`$Script:SchemaDefaultSecurityDescriptors`) ships **intentionally empty** rather than populated with unverified SDDL defaults from memory - it safely no-ops until populated from a verified schema source; see the doc's own Lab Test Notes.
+- **New (`files/17-key-material-exposure.md`):** `'Non-Default Access to gMSA KDS Root Key'` (new `Test-ADKdsRootKeySecurity` in `ManagedServiceAccountAudits.ps1`), `'Non-Default Access to Domain DPAPI Backup Key'` (new `DpapiAudits.ps1` - corrected during self-review: the initial version checked a non-existent "CN=DPAPI" container; the domain's real DPAPI backup key material is a set of `secret`-class objects, `BCKUPKEY_PREFERRED`/`BCKUPKEY_P`/`BCKUPKEY_<GUID>`, living directly under `CN=System`, and the check now targets those directly), and `'Legacy LAPS SearchFlags Exposes Password'` (added to `LapsAudits.ps1`, reusing the already-resolved `ms-Mcs-AdmPwd` schema path).
+- **New (`files/18-account-computer-hygiene-gaps.md`):** `'Built-in Guest Account Enabled'` (RID 501, `UserAudits.ps1`, alongside the existing RID-500 Administrator check), `'Constrained Delegation Configured to Decommissioned SPN'` (ghost-SPN cross-reference added to `DomainAdminEquivalence.ps1`'s existing constrained-delegation enumeration, no new `msDS-AllowedToDelegateTo` query), and new `AccountComputerHygieneAudits.ps1` with `'Computer Account Never Joined with No Password Set'` and `'Broad Membership in Distributed COM Users or Performance Log Users'`. The never-joined-computer attribute combination (`pwdLastSet=0` + old `whenCreated` + no `lastLogonTimestamp`) has not been lab-validated against a live pre-staged object, per the doc's own Lab Test Notes.
+- **Changed (`files/25-known-vuln-per-os-build-refinement.md`):** `KnownVulnAudits.ps1`'s two Netlogon RCE checks (CVE-2026-41089/CVE-2026-72982) now use confirmed per-OS-build (UBR) precision for Server 2016/2019/2022 (reusing `Get-ADKnownVulnUBR`, originally written for the BadSuccessor check, unmodified), while Server 2025 DCs continue to use FixDate-only evaluation unchanged - this is additive precision, not a replacement, for the OS versions where a confirmed build threshold exists. **Corrected during a further self-review pass**: the first version treated an *inconclusive* UBR read (registry access failed, or - as in `tests/KnownVulnAudits.Tests.ps1`'s existing mocks, which predate this feature and default to returning no value - simply not mocked) as an automatic flag, which silently overrode the FixDate-only result even when FixDate said "patched" and broke three existing Pester assertions in that test file. Fixed: only a *conclusive* UBR read (Patched or Unpatched) now takes precedence over FixDate; an inconclusive read correctly falls back to the unchanged, original FixDate-only evaluation for that DC, matching the "additive precision, not a replacement" design intent and restoring the existing tests to green.
+- **Changed (`files/27-cross-domain-risk-annotation-extension.md`):** `ForestConsolidation.ps1`'s cross-domain risk annotation, previously `'Domain Trusts'`-only, generalized into a shared helper (`Get-ADForestConsolidationTargetDomain`) and applied to `Test-ADControlPaths`' `'Attack Paths'` findings whose hop chain (`Details.TargetDN`) reaches a domain present in the same consolidation run. `Test-ADExchangeEscalation` was evaluated for applicability and found **not applicable** - it evaluates ACEs strictly within a single domain's own boundary and never names a cross-domain target in its finding output.
+- **Added (`files/26-remediation-burndown-projection.md`):** new offline command `Get-ADRemediationBurndown` (`RemediationBurndown.ps1`), combining `Get-ADRemediationState` and `Get-ADMaturityTrend` to project a domain's score/maturity trajectory if in-progress remediation completes at the historical pace. Reuses `Get-ADRiskScore` directly for the projection (a projected findings set with in-progress items removed, recomputed through the current scoring model) rather than a hand-rolled approximation. Computes an independent maturity-level rate/projection alongside the score-based one (`-TargetMaturityLevel` initially had no effect on the output at all - only `-TargetScore` drove the date estimate - fixed during self-review before release). Not registered in `Main.ps1`'s `$allTests` - same offline-post-processing posture as its sibling features.
+- `FunctionsToExport`/`$moduleScripts`/`$allTests` all updated for the eight new functions added this pass (`Test-ADDomainControllerIntegrity`, `Test-ADSchemaIntegrity`, `Test-ADKdsRootKeySecurity`, `Test-ADDpapiBackupKeySecurity`, `Test-ADAccountComputerHygiene`, `Get-ADRemediationBurndown`, plus the extensions to existing functions above).
+- **Not run in this environment:** no PowerShell/Active Directory runtime was available to execute `tests/*.Tests.ps1` or `tools/Build-ADFindingNarrativeLibrary.ps1` during this pass. `FindingNarrativeLibrary.ps1` entries for every new Issue string were added by hand, mirroring each finding's own `EstimatedEffort`/`KnownRisks`/`BackupRollback` text exactly - run the build tool's sync test (`tests/FindingNarrativeLibrary.Tests.ps1`) and the full Pester suite before merging.
+- **Also fixed during this pass's self-review (pre-existing, unrelated to the eleven docs above):** two Issue strings shipped in earlier releases had no `Scoring.ps1` entry at all - `'Computer Account with Unconstrained Delegation'` (`DelegationAudits.ps1`, added v1.24.1) and `'Cross-Domain Privileged Group Membership'` (`GroupAudits.ps1`). Both scored as 0-weight/`Unknown technique` findings until now. Found via a full-codebase cross-check of every `$finding.Issue` string against `$Script:ADFindingMetadataMap`, not by inspection of these two files specifically - worth re-running that cross-check after any future change to confirm no further drift.
+
 ## [1.29.2] - 2026-09-20
 
 Codebase health scan (claim-vs-code audit, cross-file registration consistency, version/schema-contract integrity, detection-only safety posture, open-ended enhancement scan). Documentation-only pass, per the scan prompt's own scope rules - no code changes in this release. Full report: `health-scan-2026-09-summary.md`.

@@ -122,6 +122,35 @@ function Test-ADDomainTrusts {
                 $findings += $finding
             }
             
+            # Check for the PIM_TRUST attribute (files/19-trust-pim-attribute.md).
+            # Sibling check to KerberosHardeningAudits.ps1's Cross-Trust TGT
+            # Delegation check - same trustAttributes property (already
+            # fetched above via -Properties *), a different bit
+            # (TRUST_ATTRIBUTE_PIM_TRUST = 0x00000400). No new AD query.
+            if ($null -ne $trust.trustAttributes) {
+                $pimTrustAttrs = [int]$trust.trustAttributes
+                if (($pimTrustAttrs -band 0x00000400) -ne 0) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Domain Trusts'
+                    $finding.Issue = 'Trust Configured for Privileged Identity Management (PIM_TRUST)'
+                    $finding.Severity = 'High'
+                    $finding.SeverityLevel = 3
+                    $finding.AffectedObject = $trust.Target
+                    $finding.Description = "Trust with '$($trust.Target)' has the TRUST_ATTRIBUTE_PIM_TRUST bit set in trustAttributes."
+                    $finding.Impact = "PIM_TRUST reduces the SID-filtering protection normally applied across the trust boundary, widening the set of SIDs/claims that can cross the trust and be honored on this side."
+                    $finding.Remediation = "Confirm this trust is a deliberate, currently-used Privileged Identity Management (PIM) trust relationship. If not, clear the TRUST_ATTRIBUTE_PIM_TRUST attribute using the appropriate trust-management tooling so normal SID filtering is restored."
+                    $finding.EstimatedEffort = 'Low - a single trust-attribute bit toggle, but confirm with the trust''s owning teams before clearing it, since PIM trusts are typically deliberate cross-forest identity-management configurations.'
+                    $finding.KnownRisks = 'Clearing PIM_TRUST restores standard SID filtering across the trust, which will break any legitimate Privileged Identity Management workflow that currently depends on the relaxed filtering - confirm the trust''s purpose with its owning teams before changing it.'
+                    $finding.BackupRollback = 'Easy - the attribute can be re-set if a legitimate dependency surfaces; effective immediately, no data loss.'
+                    $finding.Details = @{
+                        Target          = $trust.Target
+                        TrustType       = $trust.TrustType
+                        TrustAttributes = $pimTrustAttrs
+                    }
+                    $findings += $finding
+                }
+            }
+
             # Check trust password age
             if ($trust.Modified) {
                 $trustAge = (Get-Date) - $trust.Modified
