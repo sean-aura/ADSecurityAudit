@@ -494,6 +494,117 @@ function Test-ADStaleObjectDepth {
         Write-Warning "Test-ADStaleObjectDepth: DC count check failed: $_"
     }
 
+    # -------------------------------------------------------------------
+    # Check 6: Legacy FRS-Based SYSVOL Replication In Use
+    # (files/20-legacy-protocol-replication-hygiene.md)
+    # -------------------------------------------------------------------
+    # SYSVOL replication migrates from the legacy File Replication
+    # Service (FRS) to DFS Replication (DFSR) through four states (Start/
+    # Prepared/Redirected/Eliminated) that Microsoft's own dfsrmig.exe
+    # tool tracks and reports via `dfsrmig /GetGlobalState`. Only the
+    # Eliminated state means FRS is no longer involved in SYSVOL
+    # replication at all.
+    #
+    # NOTE ON DETECTION MECHANISM: an earlier version of this check read
+    # a raw AD attribute (msDFSR-Options on DFSR-GlobalSettings) directly
+    # and assumed a simple 0-3 integer value. On closer verification
+    # against Microsoft's own documentation, that was wrong on two
+    # counts: (1) msDFSR-Options is a generic DFSR object-options bit
+    # field used by several DFSR-related object classes, not the SYSVOL
+    # migration state tracker; the actual state is carried by msDFSR-Flags
+    # (a bit-flag combination, not a simple integer, and one that
+    # legitimately differs slightly in the presence of RODCs); and (2)
+    # decoding that bit-flag combination correctly from documentation
+    # alone (rather than a live-verified lab) risked introducing a
+    # confidently-wrong result. Following this project's own "verify,
+    # don't assume" principle, this check instead shells out to
+    # `dfsrmig.exe /GetGlobalState` on the domain's PDC Emulator (the
+    # same DC dfsrmig itself always contacts for this operation) and
+    # parses its own human-readable state name from the output - the
+    # same authoritative source an administrator would consult manually,
+    # rather than re-deriving the state from a raw, easy-to-misread
+    # attribute. Read-only: /GetGlobalState only reports state, it does
+    # not change it.
+    try {
+        Write-Verbose "Test-ADStaleObjectDepth: checking SYSVOL FRS/DFSR migration state via dfsrmig.exe..."
+        $domainForDfsr = Get-ADDomain -Server $__adServer
+        $dfsrTargetDc = Get-ADTargetDomainController
+        $dfsrTargetDcName = if ($dfsrTargetDc) { $dfsrTargetDc.HostName } else { $null }
+
+        $migrationStateLabel = $null
+        if ($dfsrTargetDcName) {
+            try {
+                # Bounded connection timeout (10s) on the remoting attempt
+                # itself: unlike an AD/LDAP query, a WinRM connection to an
+                # unreachable/nonexistent host can otherwise take
+                # significantly longer than this project's other
+                # Invoke-Command-based checks to fail closed, depending on
+                # the environment's own network/DNS timeout behavior - this
+                # check should never be the slow one in a run (or, in a
+                # fully-mocked/offline unit-test context where no real DC
+                # is reachable at all, drag out test execution far longer
+                # than a query that's supposed to be effectively
+                # instantaneous once caught).
+                $dfsrSessionOption = New-PSSessionOption -OpenTimeout 10000 -OperationTimeout 15000
+                $dfsrmigOutput = Invoke-ADQueryWithRetry -MaxAttempts 1 -OperationName "Run dfsrmig /GetGlobalState on $dfsrTargetDcName" -Query {
+                    Invoke-Command -ComputerName $dfsrTargetDcName -SessionOption $dfsrSessionOption -ErrorAction Stop -ScriptBlock {
+                        & dfsrmig.exe /GetGlobalState 2>&1 | Out-String
+                    }
+                }
+                if ($dfsrmigOutput) {
+                    # dfsrmig's own output names the state explicitly, e.g.
+                    # "Current DFSR global state: 'Eliminated'" - match the
+                    # state name directly rather than parsing a numeric
+                    # code, so this doesn't depend on assumptions about
+                    # dfsrmig's internal numbering.
+                    if ($dfsrmigOutput -match "(?i)\b(Eliminated|Redirected|Prepared|Start)\b") {
+                        $migrationStateLabel = $Matches[1]
+                    }
+                    else {
+                        Write-Verbose "Test-ADStaleObjectDepth: dfsrmig /GetGlobalState output did not contain a recognized state name on '$dfsrTargetDcName': $dfsrmigOutput"
+                    }
+                }
+            }
+            catch {
+                Write-Verbose "Test-ADStaleObjectDepth: could not run dfsrmig.exe /GetGlobalState on '$dfsrTargetDcName' (e.g. WinRM/PowerShell remoting unavailable, or the domain predates DFSR migration tooling); skipping this check rather than guessing at the migration state: $_"
+            }
+        }
+        else {
+            Write-Verbose "Test-ADStaleObjectDepth: could not resolve a target DC for the dfsrmig check; skipping."
+        }
+
+        if ($migrationStateLabel -and $migrationStateLabel -ine 'Eliminated') {
+            $finding = [ADSecurityFinding]::new()
+            $finding.Category = 'Stale-Object & Hygiene Depth'
+            $finding.Issue = 'Legacy FRS-Based SYSVOL Replication In Use'
+            $finding.Severity = 'Medium'
+            $finding.SeverityLevel = 2
+            $finding.AffectedObject = $domainForDfsr.DNSRoot
+            $finding.Description = "Domain '$($domainForDfsr.DNSRoot)' has not completed the FRS-to-DFSR SYSVOL migration (dfsrmig /GetGlobalState reports: $migrationStateLabel, confirmed against '$dfsrTargetDcName')."
+            $finding.Impact = "The File Replication Service (FRS) has been deprecated since Windows Server 2008 in favor of DFS Replication (DFSR) and receives no further security fixes. A domain still using FRS (or mid-migration, with FRS still present) for SYSVOL replication carries an unsupported, unpatched replication component for a critical directory-wide share (Group Policy templates, logon scripts)."
+            $finding.Remediation = "Complete the FRS-to-DFSR SYSVOL migration using ``Dfsrmig.exe`` (``/SetGlobalState 3`` progressing through Prepared -> Redirected -> Eliminated, verifying domain-wide replication health at each step with ``Dfsrmig.exe /GetMigrationState``) following Microsoft's documented migration procedure."
+            $finding.EstimatedEffort = 'High - a domain-wide replication-mechanism migration affecting every DC''s SYSVOL share; Microsoft''s own procedure requires progressing through and verifying each state (Prepared/Redirected/Eliminated) before advancing, and should be scheduled and tested rather than rushed.'
+            $finding.KnownRisks = 'A migration attempted without verifying full replication health at each intermediate state can leave some DCs serving a stale or incomplete SYSVOL, which can affect Group Policy application and logon scripts domain-wide - follow Microsoft''s documented state-by-state verification before advancing.'
+            $finding.BackupRollback = 'Difficult - FRS-to-DFSR migration state advances are one-directional by design (Microsoft does not support reverting from Eliminated back to FRS); back up SYSVOL content before starting and verify each intermediate state thoroughly rather than planning to roll back.'
+            $finding.Details = @{
+                Domain              = $domainForDfsr.DNSRoot
+                CheckedAgainstDC    = $dfsrTargetDcName
+                MigrationStateLabel = $migrationStateLabel
+                DetectionMethod     = 'dfsrmig.exe /GetGlobalState (remote execution via PowerShell remoting), not a raw AD attribute read.'
+            }
+            $findings += $finding
+        }
+        elseif ($migrationStateLabel) {
+            Write-Verbose "Test-ADStaleObjectDepth: SYSVOL FRS-to-DFSR migration is complete (state: Eliminated)."
+        }
+        else {
+            Write-Verbose "Test-ADStaleObjectDepth: could not confirm SYSVOL FRS/DFSR migration state; no finding emitted (avoiding a guess in either direction)."
+        }
+    }
+    catch {
+        Write-Warning "Test-ADStaleObjectDepth: SYSVOL FRS/DFSR migration state check failed: $_"
+    }
+
     Write-Verbose "Stale-Object & Hygiene Depth audit complete. Found $($findings.Count) issues."
     return $findings
 }

@@ -1,4 +1,22 @@
 #region Domain Trust Audits
+#
+# PingCastle-comparable check(s): S-DomainTrust-Bidirectional (informal -
+# PingCastle does not expose a single stable rule id for the equivalent
+# "review bidirectional trusts" behavior; comparable in effect, not a
+# literal rule-id match).
+#
+# Fixed 2026-09-20: 'Bidirectional Domain Trust' previously had no
+# TrustType scoping and fired on every bidirectional trust, including
+# ordinary intra-forest ParentChild/TreeRoot/CrossLink/Shortcut trusts,
+# which are bidirectional and transitive by design in any multi-domain
+# forest and are not a security concern the same way a bidirectional
+# External or Forest (inter-forest) trust is. Found while investigating a
+# PingCastle-comparable bug-fix candidate (3.5.x: "New CrossRef-based
+# filtering logic correctly identifies within-forest trusts and no longer
+# flags them as insecure") - the exact mechanism differs, but the
+# practical effect (over-flagging benign within-forest trust structure)
+# is the same class of issue. The other two checks in this file already
+# scoped correctly by TrustType; only this one didn't.
 
 function Test-ADDomainTrusts {
     <#
@@ -25,8 +43,20 @@ function Test-ADDomainTrusts {
         Write-Verbose "Analyzing $($trusts.Count) domain trust(s)..."
         
         foreach ($trust in $trusts) {
-            # Check for bidirectional trusts
-            if ($trust.Direction -eq 'Bidirectional') {
+            # Check for bidirectional trusts - excluding intra-forest trust
+            # types (ParentChild, TreeRoot, CrossLink, Shortcut), which are
+            # bidirectional and transitive by design in every multi-domain
+            # forest and are not a security concern the way a bidirectional
+            # External or Forest (inter-forest) trust is. Without this
+            # exclusion, this check fired on every normal parent-child
+            # domain relationship in a multi-domain forest - a false-
+            # positive class analogous to one PingCastle fixed in its own
+            # trust-classification logic (3.5.x: "New CrossRef-based
+            # filtering logic correctly identifies within-forest trusts and
+            # no longer flags them as insecure"). The other two checks in
+            # this function (SID filtering, selective authentication)
+            # already correctly scope by TrustType; this one didn't.
+            if ($trust.Direction -eq 'Bidirectional' -and $trust.TrustType -notin @('ParentChild', 'TreeRoot', 'CrossLink', 'Shortcut')) {
                 $finding = [ADSecurityFinding]::new()
                 $finding.Category = 'Domain Trusts'
                 $finding.Issue = 'Bidirectional Domain Trust'
@@ -92,6 +122,35 @@ function Test-ADDomainTrusts {
                 $findings += $finding
             }
             
+            # Check for the PIM_TRUST attribute (files/19-trust-pim-attribute.md).
+            # Sibling check to KerberosHardeningAudits.ps1's Cross-Trust TGT
+            # Delegation check - same trustAttributes property (already
+            # fetched above via -Properties *), a different bit
+            # (TRUST_ATTRIBUTE_PIM_TRUST = 0x00000400). No new AD query.
+            if ($null -ne $trust.trustAttributes) {
+                $pimTrustAttrs = [int]$trust.trustAttributes
+                if (($pimTrustAttrs -band 0x00000400) -ne 0) {
+                    $finding = [ADSecurityFinding]::new()
+                    $finding.Category = 'Domain Trusts'
+                    $finding.Issue = 'Trust Configured for Privileged Identity Management (PIM_TRUST)'
+                    $finding.Severity = 'High'
+                    $finding.SeverityLevel = 3
+                    $finding.AffectedObject = $trust.Target
+                    $finding.Description = "Trust with '$($trust.Target)' has the TRUST_ATTRIBUTE_PIM_TRUST bit set in trustAttributes."
+                    $finding.Impact = "PIM_TRUST reduces the SID-filtering protection normally applied across the trust boundary, widening the set of SIDs/claims that can cross the trust and be honored on this side."
+                    $finding.Remediation = "Confirm this trust is a deliberate, currently-used Privileged Identity Management (PIM) trust relationship. If not, clear the TRUST_ATTRIBUTE_PIM_TRUST attribute using the appropriate trust-management tooling so normal SID filtering is restored."
+                    $finding.EstimatedEffort = 'Low - a single trust-attribute bit toggle, but confirm with the trust''s owning teams before clearing it, since PIM trusts are typically deliberate cross-forest identity-management configurations.'
+                    $finding.KnownRisks = 'Clearing PIM_TRUST restores standard SID filtering across the trust, which will break any legitimate Privileged Identity Management workflow that currently depends on the relaxed filtering - confirm the trust''s purpose with its owning teams before changing it.'
+                    $finding.BackupRollback = 'Easy - the attribute can be re-set if a legitimate dependency surfaces; effective immediately, no data loss.'
+                    $finding.Details = @{
+                        Target          = $trust.Target
+                        TrustType       = $trust.TrustType
+                        TrustAttributes = $pimTrustAttrs
+                    }
+                    $findings += $finding
+                }
+            }
+
             # Check trust password age
             if ($trust.Modified) {
                 $trustAge = (Get-Date) - $trust.Modified

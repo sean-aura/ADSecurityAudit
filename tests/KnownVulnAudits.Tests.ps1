@@ -44,14 +44,65 @@ Describe 'Test-ADKnownDCVulnerabilities / CVE-2026-41089 (Netlogon RCE)' {
     }
 
     It 'is unaffected by, and does not affect, the existing ZeroLogon/MS17-010/MS14-068 checks' {
-        function Get-CimInstance { param($ComputerName, $ClassName) [PSCustomObject]@{ Caption = 'Windows Server 2016'; BuildNumber = '14393'; InstallDate = (Get-Date '2015-01-01') } }
-        function Get-HotFix { param($ComputerName) @([PSCustomObject]@{ InstalledOn = (Get-Date '2015-01-01') }) }
+        function Get-CimInstance { param($ComputerName, $ClassName) [PSCustomObject]@{ Caption = 'Windows Server 2016'; BuildNumber = '14393'; InstallDate = (Get-Date '2010-01-01') } }
+        function Get-HotFix { param($ComputerName) @([PSCustomObject]@{ InstalledOn = (Get-Date '2010-01-01') }) }
 
         $findings = Test-ADKnownDCVulnerabilities
         ($findings | Where-Object { $_.Issue -eq 'DC Missing ZeroLogon Patch' }) | Should -Not -BeNullOrEmpty
         ($findings | Where-Object { $_.Issue -eq 'DC Vulnerable to MS17-010' }) | Should -Not -BeNullOrEmpty
         ($findings | Where-Object { $_.Issue -eq 'DC Vulnerable to MS14-068' }) | Should -Not -BeNullOrEmpty
         ($findings | Where-Object { $_.Issue -eq 'DC Missing CVE-2026-41089 Patch (Netlogon RCE)' }) | Should -Not -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-ADKnownDCVulnerabilities / CVE-2026-72982 (Netlogon RCE)' {
+    BeforeEach {
+        function Get-ADDomainController { param($Filter) @([PSCustomObject]@{ HostName = 'dc1.contoso.com' }) }
+        function Get-Service { param($ComputerName, $Name) [PSCustomObject]@{ Status = 'Stopped' } }
+        function Get-ADKnownVulnUBR { param($ComputerName) $null }
+    }
+
+    It 'flags a DC whose latest hotfix predates the September 8, 2026 fix date' {
+        function Get-CimInstance { param($ComputerName, $ClassName) [PSCustomObject]@{ Caption = 'Windows Server 2022'; BuildNumber = '20348'; InstallDate = (Get-Date '2024-01-01') } }
+        function Get-HotFix { param($ComputerName) @([PSCustomObject]@{ InstalledOn = (Get-Date '2026-08-01') }) }
+
+        $findings = Test-ADKnownDCVulnerabilities
+        $netlogonFinding = $findings | Where-Object { $_.Issue -eq 'DC Missing CVE-2026-72982 Patch (Netlogon RCE)' }
+        $netlogonFinding | Should -Not -BeNullOrEmpty
+        $netlogonFinding.Severity | Should -Be 'Critical'
+        $netlogonFinding.Details.AffectedDomainControllers | Should -Contain 'dc1.contoso.com'
+    }
+
+    It 'does not flag a DC whose latest hotfix is on/after the fix date' {
+        function Get-CimInstance { param($ComputerName, $ClassName) [PSCustomObject]@{ Caption = 'Windows Server 2022'; BuildNumber = '20348'; InstallDate = (Get-Date '2024-01-01') } }
+        function Get-HotFix { param($ComputerName) @([PSCustomObject]@{ InstalledOn = (Get-Date '2026-09-08') }) }
+
+        $findings = Test-ADKnownDCVulnerabilities
+        ($findings | Where-Object { $_.Issue -eq 'DC Missing CVE-2026-72982 Patch (Netlogon RCE)' }) | Should -BeNullOrEmpty
+    }
+
+    It 'is evaluated independently from CVE-2026-41089 - a DC patched for one is not assumed patched for the other' {
+        # Patched for the May 2026 Netlogon CVE (CVE-2026-41089) but not yet
+        # patched for the September 2026 one (CVE-2026-72982): the whole
+        # point of keeping these as two separate threshold entries.
+        function Get-CimInstance { param($ComputerName, $ClassName) [PSCustomObject]@{ Caption = 'Windows Server 2022'; BuildNumber = '20348'; InstallDate = (Get-Date '2024-01-01') } }
+        function Get-HotFix { param($ComputerName) @([PSCustomObject]@{ InstalledOn = (Get-Date '2026-07-01') }) }
+
+        $findings = Test-ADKnownDCVulnerabilities
+        ($findings | Where-Object { $_.Issue -eq 'DC Missing CVE-2026-41089 Patch (Netlogon RCE)' }) | Should -BeNullOrEmpty
+        ($findings | Where-Object { $_.Issue -eq 'DC Missing CVE-2026-72982 Patch (Netlogon RCE)' }) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'is unaffected by, and does not affect, the existing ZeroLogon/MS17-010/MS14-068/CVE-2026-41089 checks' {
+        function Get-CimInstance { param($ComputerName, $ClassName) [PSCustomObject]@{ Caption = 'Windows Server 2016'; BuildNumber = '14393'; InstallDate = (Get-Date '2010-01-01') } }
+        function Get-HotFix { param($ComputerName) @([PSCustomObject]@{ InstalledOn = (Get-Date '2010-01-01') }) }
+
+        $findings = Test-ADKnownDCVulnerabilities
+        ($findings | Where-Object { $_.Issue -eq 'DC Missing ZeroLogon Patch' }) | Should -Not -BeNullOrEmpty
+        ($findings | Where-Object { $_.Issue -eq 'DC Vulnerable to MS17-010' }) | Should -Not -BeNullOrEmpty
+        ($findings | Where-Object { $_.Issue -eq 'DC Vulnerable to MS14-068' }) | Should -Not -BeNullOrEmpty
+        ($findings | Where-Object { $_.Issue -eq 'DC Missing CVE-2026-41089 Patch (Netlogon RCE)' }) | Should -Not -BeNullOrEmpty
+        ($findings | Where-Object { $_.Issue -eq 'DC Missing CVE-2026-72982 Patch (Netlogon RCE)' }) | Should -Not -BeNullOrEmpty
     }
 }
 

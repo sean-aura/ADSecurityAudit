@@ -9,7 +9,7 @@
 
 .NOTES
     Author: AlchemicalChef
-    Version: 1.17.0
+    Version: 1.30.0
     Requires: Active Directory PowerShell Module, Windows Server 2016+
 
 .EXAMPLE
@@ -57,6 +57,8 @@ $moduleScripts = @(
     'src/DomainTrustAudits.ps1',
     'src/LapsAudits.ps1',
     'src/ManagedServiceAccountAudits.ps1',
+    'src/DpapiAudits.ps1',
+    'src/AccountComputerHygieneAudits.ps1',
     'src/AuditPolicyAudits.ps1',
     'src/DelegationAudits.ps1',
     'src/DomainAdminEquivalence.ps1',
@@ -68,6 +70,8 @@ $moduleScripts = @(
     'src/LegacyAuthAudits.ps1',
     'src/KerberosHardeningAudits.ps1',
     'src/StaleObjectDepthAudits.ps1',
+    'src/DomainControllerIntegrityAudits.ps1',
+    'src/SchemaAudits.ps1',
     'src/GpoSecretsAudits.ps1',
     'src/KnownVulnAudits.ps1',
     'src/ExchangeEscalationAudits.ps1',
@@ -76,6 +80,7 @@ $moduleScripts = @(
     'src/ForestConsolidation.ps1',
     'src/RetestComparison.ps1',
     'src/RemediationState.ps1',
+    'src/RemediationBurndown.ps1',
     'src/MaturityTrend.ps1',
     'src/Main.ps1',
     'src/Reporting.ps1'
@@ -120,6 +125,11 @@ Export-ModuleMember -Function @(
     'Test-ADLegacyAuthSurface',
     'Test-ADKerberosHardening',
     'Test-ADStaleObjectDepth',
+    'Test-ADDomainControllerIntegrity',
+    'Test-ADSchemaIntegrity',
+    'Test-ADKdsRootKeySecurity',
+    'Test-ADDpapiBackupKeySecurity',
+    'Test-ADAccountComputerHygiene',
     'Test-ADGpoDeployedSecrets',
     'Test-ADKnownDCVulnerabilities',
     'Test-ADExchangeEscalation',
@@ -134,6 +144,7 @@ Export-ModuleMember -Function @(
     'Set-ADRemediationState',
     'Get-ADRemediationState',
     'Get-ADMaturityTrend',
+    'Get-ADRemediationBurndown',
     'Export-ADMaturityTrendHTML',
     'Export-ADSecurityReportHTML',
     'Export-ADSecurityReportHTMLFromJson',
